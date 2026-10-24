@@ -164,7 +164,7 @@ fn check(path: &Path, external: bool) -> Row {
             row.faces = s.meshes.iter().map(|m| m.mesh.face_count).sum();
             row.triangles = s.drawn_triangles();
             row.components = s.components.iter().filter(|c| !c.is_assembly).count();
-            row.missing = s.missing_components();
+            row.missing = if s.kind == DocKind::Assembly { s.missing_components() } else { 0 };
             row.preview = s.preview.is_some();
             row.status = if !s.has_geometry() {
                 Status::NoMesh

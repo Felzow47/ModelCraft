@@ -48,7 +48,33 @@ fn main() -> eframe::Result {
         centered: true,
         ..Default::default()
     };
-    eframe::run_native("SW Craft", native, Box::new(move |cc| Ok(Box::new(app::SwCraftApp::new(cc, opts)))))
+    let res = eframe::run_native("SW Craft", native, Box::new(move |cc| Ok(Box::new(app::SwCraftApp::new(cc, opts)))));
+    if let Err(e) = &res {
+        // GPU init failed with the default backend (e.g. broken DX12 driver, VM, Wine):
+        // relaunch ourselves with the next backend. Each attempt is a fresh process
+        // because a window event loop can only be created once per process.
+        if matches!(e, eframe::Error::Wgpu(_)) {
+            if let Some(code) = relaunch_with_next_backend() {
+                std::process::exit(code);
+            }
+        }
+    }
+    res
+}
+
+fn relaunch_with_next_backend() -> Option<i32> {
+    const ORDER: [&str; 3] = ["primary", "vulkan", "gl"];
+    let current = std::env::var("WGPU_BACKEND").unwrap_or_else(|_| "primary".into());
+    let idx = ORDER.iter().position(|b| *b == current)?;
+    let next = ORDER.get(idx + 1)?;
+    log::warn!("échec d'initialisation GPU avec '{current}', nouvel essai avec '{next}'");
+    let exe = std::env::current_exe().ok()?;
+    let status = std::process::Command::new(exe)
+        .args(std::env::args_os().skip(1))
+        .env("WGPU_BACKEND", next)
+        .status()
+        .ok()?;
+    Some(status.code().unwrap_or(1))
 }
 
 /// Small procedurally generated app icon (blue diamond).

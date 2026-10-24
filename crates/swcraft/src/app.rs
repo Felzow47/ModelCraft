@@ -866,8 +866,9 @@ pub fn fmt_int(n: usize) -> String {
 }
 
 fn setup_style(ctx: &egui::Context) {
-    ctx.set_visuals(egui::Visuals::dark());
-    ctx.global_style_mut(|style| {
+    // Always dark, regardless of the OS light/dark setting.
+    ctx.set_theme(egui::ThemePreference::Dark);
+    ctx.style_mut_of(egui::Theme::Dark, |style| {
         style.spacing.item_spacing = Vec2::new(8.0, 6.0);
         style.spacing.button_padding = Vec2::new(10.0, 4.0);
         let v = &mut style.visuals;
