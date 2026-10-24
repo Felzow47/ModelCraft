@@ -38,3 +38,4 @@
 # captures faites avec les échantillons privés (samples2) : non versionnées
 /screenshots/v2/step_*.png
 /screenshots/v2/wine_step*.png
+/screenshots/v2/private_*.png
