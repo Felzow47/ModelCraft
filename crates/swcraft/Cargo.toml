@@ -15,7 +15,7 @@ craft-formats = { path = "../craft-formats" }
 eframe = { version = "0.37", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland"] }
 egui = { version = "0.37", default-features = false }
 egui-wgpu = "0.37"
-egui_extras = { version = "0.37", default-features = false, features = ["svg"] }
+egui_extras = { version = "0.37", default-features = false, features = ["svg", "image"] }
 bytemuck = { version = "1", features = ["derive"] }
 glam = { version = "0.30", features = ["bytemuck"] }
 rfd = "0.17"

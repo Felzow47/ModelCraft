@@ -35,7 +35,6 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.pasteboard)).show_inside(ui, |ui| {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             egui::Frame::NONE.inner_margin(egui::Margin { left: 36, right: 36, top: 28, bottom: 28 }).show(ui, |ui| {
-                ui.set_max_width(1100.0);
                 header(app, ui, &t);
                 ui.add_space(22.0);
                 formats(app, ui, &t);

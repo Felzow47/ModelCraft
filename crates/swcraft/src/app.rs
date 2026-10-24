@@ -525,6 +525,7 @@ impl App {
             "measure" => {
                 // pick a hole if there is one: probe the model with rays and keep a cylinder hit
                 crate::script::demo_measures(d, &st);
+                d.measure.tool = crate::measure::Tool::Distance;
             }
             "ctx" | "tree" => {
                 if let Some(s) = &d.scene {

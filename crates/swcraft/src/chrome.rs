@@ -215,8 +215,15 @@ pub fn mode_bar(app: &mut App, ui: &mut egui::Ui) {
 
 /// "Menu" button (ArtCraft) followed by the classic menus Fichier / Édition / Affichage / Outils / Aide.
 fn main_menu(app: &mut App, ui: &mut egui::Ui) {
+    let t = Tokens::get(ui.ctx());
     for g in commands::GROUPS {
-        let r = ui.add(egui::Button::new(egui::RichText::new(tr(g)).font(theme::medium(13.0))).frame(false).min_size(vec2(0.0, 30.0)));
+        let font = theme::medium(13.0);
+        let w = widgets::text_width(ui, tr(g), &font) + 20.0;
+        let (rect, r) = ui.allocate_exact_size(vec2(w, 30.0), Sense::click());
+        let open = egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&r));
+        let press = Press::track(ui, &r);
+        press.wash(ui, rect, 6, open);
+        ui.painter().text(rect.center() + press.offset(), Align2::CENTER_CENTER, tr(g), font, if open { t.text } else { t.text.gamma_multiply(0.92) });
         let r = theme::hand(r);
         egui::Popup::menu(&r).show(|ui| {
             ui.set_min_width(250.0);
@@ -329,7 +336,10 @@ pub fn status_bar(app: &mut App, ui: &mut egui::Ui) {
                                 ui.label(small(trf("{n} pièces", &[("n", &widgets::fmt_int(d.stats.parts))])));
                             }
                             if let Some((lo, hi)) = d.stats.bbox {
-                                let e = hi - lo;
+                                let mut e = hi - lo;
+                                if s.up_z {
+                                    e = glam::vec3(e.x, e.z, e.y);
+                                }
                                 let st = &app.settings;
                                 ui.label(small(format!("{} × {} × {}", st.fmt_len_bare(e.x as f64), st.fmt_len_bare(e.y as f64), st.fmt_len(e.z as f64))));
                             }
