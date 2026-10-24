@@ -5,11 +5,25 @@ struct Globals {
     edge_color: vec4<f32>,
     bg_top: vec4<f32>,
     bg_bottom: vec4<f32>,
-    // x: ortho flag
+    // x: ortho flag, y: section enabled, z: viewport width px, w: viewport height px
     params: vec4<f32>,
+    // section plane: xyz normal, w offset (fragments with dot(p, n) > w are cut away)
+    clip: vec4<f32>,
+    // x key, y fill, z ambient, w specular
+    light: vec4<f32>,
+    // x rim, y flat shading flag, z hemisphere contrast, w shininess
+    light2: vec4<f32>,
+    // section cap colour
+    cap: vec4<f32>,
+};
+
+struct Pass {
+    // pixel offset of this edge pass
+    offset: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
+@group(0) @binding(1) var<uniform> pass_: Pass;
 
 struct VsIn {
     @location(0) pos: vec3<f32>,
@@ -19,6 +33,7 @@ struct VsIn {
     @location(4) m2: vec4<f32>,
     @location(5) m3: vec4<f32>,
     @location(6) tint: vec4<f32>,
+    @location(7) color: vec4<f32>,
 };
 
 struct VsOut {
@@ -26,6 +41,8 @@ struct VsOut {
     @location(0) n_view: vec3<f32>,
     @location(1) p_view: vec3<f32>,
     @location(2) tint: vec4<f32>,
+    @location(3) color: vec4<f32>,
+    @location(4) p_world: vec3<f32>,
 };
 
 @vertex
@@ -38,6 +55,8 @@ fn vs_mesh(v: VsIn) -> VsOut {
     o.n_view = (mv * vec4<f32>(v.nrm, 0.0)).xyz;
     o.p_view = (g.view * world).xyz;
     o.tint = v.tint;
+    o.color = v.color;
+    o.p_world = world.xyz;
     return o;
 }
 
@@ -45,47 +64,94 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     return pow(c, vec3<f32>(2.2));
 }
 
+fn cut(p: vec3<f32>) -> bool {
+    return g.params.y > 0.5 && dot(p, g.clip.xyz) > g.clip.w;
+}
+
 @fragment
 fn fs_mesh(i: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32> {
+    if (cut(i.p_world)) {
+        discard;
+    }
     var n = normalize(i.n_view);
     var v = normalize(-i.p_view);
     if (g.params.x > 0.5) {
         v = vec3<f32>(0.0, 0.0, 1.0);
     }
-    // two-sided lighting: face the viewer
+    let base_srgb = mix(mix(g.base_color.rgb, i.color.rgb, i.color.a), i.tint.rgb, i.tint.a);
+    // inside of a sectioned solid: flat cap colour
+    if (g.params.y > 0.5 && dot(n, v) < 0.0) {
+        return vec4<f32>(srgb_to_linear(g.cap.rgb), 1.0);
+    }
     if (dot(n, v) < 0.0) {
         n = -n;
     }
-    let base = srgb_to_linear(mix(g.base_color.rgb, i.tint.rgb, i.tint.a));
-    // key light (upper left, slightly toward the viewer), fill and rim, in view space
+    let base = srgb_to_linear(base_srgb);
+    if (g.light2.y > 0.5) {
+        let k = 0.78 + 0.22 * max(dot(n, v), 0.0);
+        return vec4<f32>(base * k, 1.0);
+    }
     let l1 = normalize(vec3<f32>(-0.45, 0.65, 0.62));
     let l2 = normalize(vec3<f32>(0.6, -0.25, 0.75));
     let d1 = max(dot(n, l1), 0.0);
     let d2 = max(dot(n, l2), 0.0);
     let hemi = 0.5 + 0.5 * n.y;
-    let ambient = mix(vec3<f32>(0.16, 0.16, 0.18), vec3<f32>(0.30, 0.32, 0.36), hemi);
+    let amb = g.light.z * mix(vec3<f32>(1.0 - g.light2.z), vec3<f32>(1.0 + g.light2.z), hemi);
     let h = normalize(l1 + v);
-    let spec = pow(max(dot(n, h), 0.0), 48.0) * 0.35;
-    let rim = pow(1.0 - max(dot(n, v), 0.0), 3.0) * 0.12;
-    let col = base * (ambient + 0.85 * d1 + 0.30 * d2) + vec3<f32>(spec + rim);
+    let spec = pow(max(dot(n, h), 0.0), g.light2.w) * g.light.w;
+    let rim = pow(1.0 - max(dot(n, v), 0.0), 3.0) * g.light2.x;
+    let col = base * (amb + g.light.x * d1 + g.light.y * d2) + vec3<f32>(spec + rim);
     return vec4<f32>(col, 1.0);
 }
 
 struct EdgeOut {
     @builtin(position) clip: vec4<f32>,
+    @location(0) p_world: vec3<f32>,
 };
 
 @vertex
 fn vs_edge(v: VsIn) -> EdgeOut {
     let model = mat4x4<f32>(v.m0, v.m1, v.m2, v.m3);
+    let world = model * vec4<f32>(v.pos, 1.0);
     var o: EdgeOut;
-    o.clip = g.view_proj * (model * vec4<f32>(v.pos, 1.0));
+    var c = g.view_proj * world;
+    let px = vec2<f32>(2.0 / max(g.params.z, 1.0), 2.0 / max(g.params.w, 1.0));
+    c = vec4<f32>(c.xy + pass_.offset.xy * px * c.w, c.z, c.w);
+    o.clip = c;
+    o.p_world = world.xyz;
     return o;
 }
 
 @fragment
-fn fs_edge() -> @location(0) vec4<f32> {
+fn fs_edge(i: EdgeOut) -> @location(0) vec4<f32> {
+    if (cut(i.p_world)) {
+        discard;
+    }
     return vec4<f32>(srgb_to_linear(g.edge_color.rgb), g.edge_color.a);
+}
+
+// Coloured world-space lines (grid, bounding box, section outline).
+struct LineIn {
+    @location(0) pos: vec3<f32>,
+    @location(1) col: vec4<f32>,
+};
+
+struct LineOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) col: vec4<f32>,
+};
+
+@vertex
+fn vs_line(v: LineIn) -> LineOut {
+    var o: LineOut;
+    o.clip = g.view_proj * vec4<f32>(v.pos, 1.0);
+    o.col = v.col;
+    return o;
+}
+
+@fragment
+fn fs_line(i: LineOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(srgb_to_linear(i.col.rgb), i.col.a);
 }
 
 struct BgOut {

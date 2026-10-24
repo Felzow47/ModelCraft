@@ -7,3 +7,31 @@
 /dist/*.exe
 /scan-*.csv
 /scan-*.json
+# private sample models: never commit (tests read SW_SAMPLES)
+*.step
+*.STEP
+*.stp
+*.STP
+*.iges
+*.IGES
+*.igs
+*.IGS
+*.stl
+*.STL
+*.3ds
+*.3DS
+*.obj
+*.OBJ
+*.mtl
+*.easm
+*.EASM
+*.eprt
+*.EPRT
+*.3dxml
+*.3DXML
+*.x_t
+*.X_T
+*.x_b
+# third-party reference screenshots (not ours)
+/ref
+/screenshots/tmp

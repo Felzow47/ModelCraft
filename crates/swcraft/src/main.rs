@@ -1,17 +1,35 @@
-//! SW Craft — fast SolidWorks part/assembly viewer.
+//! ModelCraft — the ultimate native 3D viewer (SolidWorks, STEP, IGES, STL, OBJ, 3DS, 3DXML).
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod branding;
 mod camera;
+mod chrome;
+mod commands;
+mod dialogs;
+mod document;
+mod home;
+mod i18n;
+mod i18n_en;
+mod icons;
+mod measure;
+mod palette;
+mod platform;
 mod render;
+mod script;
+mod settings;
+mod theme;
+mod viewer;
+mod widgets;
 
 use eframe::egui;
 use std::path::PathBuf;
 
 fn usage() -> ! {
     eprintln!(
-        "SW Craft {} — visionneuse SolidWorks\n\nUsage: swcraft [fichier.SLDPRT|fichier.SLDASM] [--screenshot out.png] [--view iso|front|top|right] [--size LxH] [--no-edges]",
-        env!("CARGO_PKG_VERSION")
+        "{} {} — visionneuse 3D\n\nUsage: modelcraft [fichiers…] [--lang fr|en] [--theme dark|light] [--screenshot out.png] [--view iso|front|top|right|back|bottom|left]\n       [--size LxH] [--no-edges] [--show settings|settings-display|about|shortcuts|formats|palette|measure|section|bbox|tree] [--ephemeral]",
+        branding::NAME,
+        branding::VERSION
     );
     std::process::exit(0)
 }
@@ -19,40 +37,48 @@ fn usage() -> ! {
 fn main() -> eframe::Result {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     let mut opts = app::StartupOptions::default();
-    let mut size = [1400.0f32, 900.0];
+    let mut size = [1440.0f32, 900.0];
     let mut args = std::env::args_os().skip(1);
     while let Some(a) = args.next() {
+        let next = |args: &mut std::iter::Skip<std::env::ArgsOs>| args.next().and_then(|s| s.into_string().ok());
         match a.to_str() {
             Some("-h") | Some("--help") => usage(),
-            Some("--screenshot") => opts.screenshot = args.next().map(PathBuf::from),
-            Some("--view") => opts.view = args.next().and_then(|s| s.into_string().ok()),
+            Some("--screenshot") => {
+                opts.screenshot = args.next().map(PathBuf::from);
+                opts.ephemeral = true;
+            }
+            Some("--view") => opts.view = next(&mut args),
             Some("--no-edges") => opts.no_edges = true,
+            Some("--ephemeral") => opts.ephemeral = true,
+            Some("--show") => opts.show = next(&mut args),
+            Some("--lang") => opts.lang = next(&mut args).map(|l| if l.starts_with("en") { i18n::Lang::En } else { i18n::Lang::Fr }),
+            Some("--theme") => opts.theme = next(&mut args).map(|l| if l == "light" { theme::ThemeKind::Light } else { theme::ThemeKind::Dark }),
             Some("--size") => {
-                if let Some(s) = args.next().and_then(|s| s.into_string().ok()) {
+                if let Some(s) = next(&mut args) {
                     if let Some((w, h)) = s.split_once('x') {
                         size = [w.parse().unwrap_or(size[0]), h.parse().unwrap_or(size[1])];
                     }
                 }
             }
-            _ => opts.file = Some(PathBuf::from(a)),
+            _ => opts.files.push(PathBuf::from(a)),
         }
     }
     let native = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("SW Craft")
+            .with_title(branding::NAME)
+            .with_app_id("modelcraft")
             .with_inner_size(size)
-            .with_min_inner_size([640.0, 420.0])
+            .with_min_inner_size([760.0, 480.0])
             .with_drag_and_drop(true)
             .with_icon(icon()),
         renderer: eframe::Renderer::Wgpu,
         centered: true,
         ..Default::default()
     };
-    let res = eframe::run_native("SW Craft", native, Box::new(move |cc| Ok(Box::new(app::SwCraftApp::new(cc, opts)))));
+    let res = eframe::run_native(branding::NAME, native, Box::new(move |cc| Ok(Box::new(app::App::new(cc, opts)))));
     if let Err(e) = &res {
-        // GPU init failed with the default backend (e.g. broken DX12 driver, VM, Wine):
-        // relaunch ourselves with the next backend. Each attempt is a fresh process
-        // because a window event loop can only be created once per process.
+        // GPU init failed with the default backend (broken DX12 driver, VM, Wine):
+        // relaunch with the next backend in a fresh process.
         if matches!(e, eframe::Error::Wgpu(_)) {
             if let Some(code) = relaunch_with_next_backend() {
                 std::process::exit(code);
@@ -77,24 +103,8 @@ fn relaunch_with_next_backend() -> Option<i32> {
     Some(status.code().unwrap_or(1))
 }
 
-/// Small procedurally generated app icon (blue diamond).
 fn icon() -> egui::IconData {
-    let n = 64u32;
-    let mut rgba = vec![0u8; (n * n * 4) as usize];
-    for y in 0..n {
-        for x in 0..n {
-            let dx = (x as f32 - 31.5).abs();
-            let dy = (y as f32 - 31.5).abs();
-            let d = dx + dy;
-            let i = ((y * n + x) * 4) as usize;
-            if d < 28.0 {
-                let t = 1.0 - y as f32 / n as f32;
-                rgba[i] = (70.0 + 40.0 * t) as u8;
-                rgba[i + 1] = (130.0 + 50.0 * t) as u8;
-                rgba[i + 2] = 255;
-                rgba[i + 3] = 255;
-            }
-        }
-    }
-    egui::IconData { rgba, width: n, height: n }
+    let img = image::load_from_memory(branding::ICON_PNG).expect("icon").to_rgba8();
+    let (w, h) = img.dimensions();
+    egui::IconData { rgba: img.into_raw(), width: w, height: h }
 }

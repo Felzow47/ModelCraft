@@ -29,6 +29,8 @@ pub enum ContainerKind {
     Ole,
     /// Disguised ZIP container (SolidWorks 2015+)
     Sw2015,
+    /// Not a SolidWorks container: another file format (label is the format name).
+    Other(&'static str),
 }
 
 impl ContainerKind {
@@ -36,6 +38,7 @@ impl ContainerKind {
         match self {
             ContainerKind::Ole => "OLE (<2015)",
             ContainerKind::Sw2015 => "SW2015+",
+            ContainerKind::Other(s) => s,
         }
     }
 }

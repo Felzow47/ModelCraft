@@ -85,7 +85,7 @@ impl Camera {
 
     pub fn orbit(&mut self, delta: Vec2) {
         self.yaw -= delta.x * 0.008;
-        self.pitch = (self.pitch + delta.y * 0.008).clamp(-89.99f32.to_radians(), 89.99f32.to_radians());
+        self.pitch = (self.pitch + delta.y * 0.008).clamp(-89.9f32.to_radians(), 89.9f32.to_radians());
     }
 
     /// Pan by a pixel delta, given the viewport height in pixels.
@@ -103,5 +103,36 @@ impl Camera {
         let f = new_dist / self.distance;
         self.target = p + (self.target - p) * f;
         self.distance = new_dist;
+    }
+
+    /// World-space ray through a point given in NDC ([-1,1]², y up).
+    pub fn ray(&self, ndc: Vec2, aspect: f32) -> (Vec3, Vec3) {
+        let h = (self.fov_y * 0.5).tan();
+        let fwd = -self.forward_dir();
+        if self.ortho {
+            let half = self.distance * h;
+            let o = self.eye() + self.right() * (ndc.x * half * aspect) + self.up() * (ndc.y * half);
+            (o - fwd * self.radius * 4.0, fwd)
+        } else {
+            let d = (fwd + self.right() * (ndc.x * h * aspect) + self.up() * (ndc.y * h)).normalize();
+            (self.eye(), d)
+        }
+    }
+
+    /// Smoothly move towards another orientation (used by the view cube).
+    pub fn lerp_towards(&mut self, yaw: f32, pitch: f32, k: f32) {
+        let mut dy = (yaw - self.yaw) % std::f32::consts::TAU;
+        if dy > std::f32::consts::PI {
+            dy -= std::f32::consts::TAU;
+        } else if dy < -std::f32::consts::PI {
+            dy += std::f32::consts::TAU;
+        }
+        self.yaw += dy * k;
+        self.pitch += (pitch - self.pitch) * k;
+    }
+
+    /// Distance multiplier (dolly) without moving the target.
+    pub fn dolly(&mut self, factor: f32) {
+        self.distance = (self.distance * factor).clamp(self.radius * 1e-4, self.radius * 1e4);
     }
 }

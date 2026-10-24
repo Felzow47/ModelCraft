@@ -43,6 +43,8 @@ pub const COMP_TREE: &str = "swXmlContents/COMPINSTANCETREE";
 pub enum DocKind {
     Part,
     Assembly,
+    /// Generic model from another format (STL, OBJ, STEP…), possibly with several objects.
+    Model,
 }
 
 /// Read the display list of an opened container (decompressed), if any.
@@ -99,6 +101,8 @@ pub struct SceneMesh {
     pub name: String,
     pub mesh: TriMesh,
     pub source: MeshSource,
+    /// Display colour (linear-ish sRGB 0..1, alpha) if the file defines one.
+    pub color: Option<[f32; 4]>,
 }
 
 #[derive(Debug, Clone)]
@@ -113,6 +117,8 @@ pub struct SceneComponent {
     pub mesh: Option<usize>,
     pub suppressed: bool,
     pub hidden: bool,
+    /// Colour override for this component (takes precedence over the mesh colour).
+    pub color: Option<[f32; 4]>,
 }
 
 #[derive(Debug, Clone)]
@@ -126,6 +132,8 @@ pub struct Scene {
     pub preview: Option<Rgba>,
     pub warnings: Vec<String>,
     pub timings: Timings,
+    /// The model's vertical axis is +Z (most CAD exchange formats); SolidWorks is Y-up.
+    pub up_z: bool,
 }
 
 impl Scene {
@@ -279,10 +287,11 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
     let mut ext_time = Duration::ZERO;
 
     match kind {
+        DocKind::Model => {}
         DocKind::Part => {
             let faces: Vec<dl::FacePatch> = list.blocks.into_iter().flat_map(|b| b.faces).collect();
             if !faces.is_empty() {
-                meshes.push(SceneMesh { name: file_stem.clone(), mesh: mesh::build(&faces, opts.edges), source: MeshSource::Embedded });
+                meshes.push(SceneMesh { name: file_stem.clone(), mesh: mesh::build(&faces, opts.edges), source: MeshSource::Embedded, color: None });
             }
             components.push(SceneComponent {
                 name: file_stem.clone(),
@@ -294,6 +303,7 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
                 mesh: (!meshes.is_empty()).then_some(0),
                 suppressed: false,
                 hidden: false,
+                color: None,
             });
         }
         DocKind::Assembly => {
@@ -302,7 +312,7 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
             let mut unkeyed: Vec<usize> = Vec::new();
             for b in &list.blocks {
                 let name = b.path.as_deref().map(stem_of).unwrap_or_else(|| file_stem.clone());
-                meshes.push(SceneMesh { name, mesh: mesh::build(&b.faces, opts.edges), source: MeshSource::Embedded });
+                meshes.push(SceneMesh { name, mesh: mesh::build(&b.faces, opts.edges), source: MeshSource::Embedded, color: None });
                 match b.key() {
                     Some(k) => {
                         by_key.insert(k, meshes.len() - 1);
@@ -340,6 +350,7 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
                                     name: stem_of(&comp.path),
                                     mesh: mesh::build(&faces, opts.edges),
                                     source: MeshSource::External(p),
+                                    color: None,
                                 });
                                 used.push(true);
                                 Some(meshes.len() - 1)
@@ -362,6 +373,7 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
                     mesh: mesh_idx,
                     suppressed: comp.suppressed,
                     hidden: comp.hidden,
+                    color: None,
                 });
             }
             // Cached meshes not matched by any component: show them untransformed.
@@ -380,6 +392,7 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
                         mesh: Some(i),
                         suppressed: false,
                         hidden: false,
+                        color: None,
                     });
                 }
             }
@@ -404,5 +417,6 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
         preview,
         warnings,
         timings,
+        up_z: false,
     })
 }
