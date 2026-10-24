@@ -18,11 +18,23 @@ fn occt() {
     let target = std::env::var("TARGET").unwrap();
     let windows = target.contains("windows");
     let mut b = cc::Build::new();
-    b.cpp(true).file("occt/shim.cpp").include(&inc).flag_if_supported("-std=c++17").flag_if_supported("-w").define("OCCT_STATIC", None);
+    b.cpp(true).file("occt/shim.cpp").include(&inc).flag_if_supported("-std=gnu++17").define("_USE_MATH_DEFINES", None).flag_if_supported("-w").define("OCCT_STATIC", None);
     if windows {
         b.define("HAVE_NO_DLL", None);
     }
+    let cxx = b.get_compiler().path().to_path_buf();
     b.compile("occtshim");
+    if windows {
+        // static libstdc++/winpthread live next to the cross compiler, not in the default search path
+        for f in ["libstdc++.a", "libwinpthread.a"] {
+            if let Ok(o) = std::process::Command::new(&cxx).arg(format!("-print-file-name={f}")).output() {
+                let p = PathBuf::from(String::from_utf8_lossy(&o.stdout).trim());
+                if let Some(d) = p.parent().filter(|_| p.is_absolute()) {
+                    println!("cargo:rustc-link-search=native={}", d.display());
+                }
+            }
+        }
+    }
     println!("cargo:rustc-link-search=native={}", lib.display());
     // dependency order: users first
     let libs = [

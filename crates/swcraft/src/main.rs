@@ -27,7 +27,7 @@ use std::path::PathBuf;
 
 fn usage() -> ! {
     eprintln!(
-        "{} {} — visionneuse 3D\n\nUsage: modelcraft [fichiers…] [--lang fr|en] [--theme dark|light] [--screenshot out.png] [--view iso|front|top|right|back|bottom|left]\n       [--size LxH] [--no-edges] [--show settings|settings-display|about|shortcuts|formats|palette|measure|section|bbox|tree] [--ephemeral]",
+        "{} {} — visionneuse 3D\n\nUsage: modelcraft [fichiers…] [--lang fr|en] [--theme dark|light] [--screenshot out.png] [--view iso|front|top|right|back|bottom|left]\n       [--size LxH] [--no-edges] [--show settings|settings-display|about|shortcuts|formats|palette|measure|section|bbox|tree] [--ephemeral]\n       modelcraft --associate   (associe les extensions 3D pour l'utilisateur courant, Windows)",
         branding::NAME,
         branding::VERSION
     );
@@ -43,6 +43,16 @@ fn main() -> eframe::Result {
         let next = |args: &mut std::iter::Skip<std::env::ArgsOs>| args.next().and_then(|s| s.into_string().ok());
         match a.to_str() {
             Some("-h") | Some("--help") => usage(),
+            Some("--associate") => match platform::associate() {
+                Ok(n) => {
+                    println!("{n} extensions associées à {}", branding::NAME);
+                    std::process::exit(0)
+                }
+                Err(e) => {
+                    eprintln!("association impossible : {e}");
+                    std::process::exit(1)
+                }
+            },
             Some("--screenshot") => {
                 opts.screenshot = args.next().map(PathBuf::from);
                 opts.ephemeral = true;

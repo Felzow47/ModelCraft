@@ -46,7 +46,8 @@ pub fn associate() -> Result<usize, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let exe = exe.display().to_string();
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-    let classes = hkcu.open_subkey_with_flags("Software\\Classes", winreg::enums::KEY_ALL_ACCESS).map_err(|e| e.to_string())?;
+    // create_subkey opens the key when it exists (always the case on real Windows)
+    let (classes, _) = hkcu.create_subkey("Software\\Classes").map_err(|e| e.to_string())?;
     let prog = crate::branding::PROG_ID;
     let (k, _) = classes.create_subkey(prog).map_err(|e| e.to_string())?;
     k.set_value("", &format!("{} 3D", crate::branding::NAME)).map_err(|e| e.to_string())?;

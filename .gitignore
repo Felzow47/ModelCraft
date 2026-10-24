@@ -35,3 +35,6 @@
 # third-party reference screenshots (not ours)
 /ref
 /screenshots/tmp
+# captures faites avec les échantillons privés (samples2) : non versionnées
+/screenshots/v2/step_*.png
+/screenshots/v2/wine_step*.png
