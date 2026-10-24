@@ -1,0 +1,9 @@
+[package]
+name = "swcraft-scan"
+description = "Read-only batch checker for SolidWorks files (can swcraft open them?)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sw-format = { path = "../sw-format" }

@@ -1,0 +1,9 @@
+/target
+*.SLDPRT
+*.SLDASM
+*.sldprt
+*.sldasm
+/samples
+/dist/*.exe
+/scan-*.csv
+/scan-*.json

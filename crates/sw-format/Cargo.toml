@@ -1,0 +1,16 @@
+[package]
+name = "sw-format"
+description = "Clean-room reader for SolidWorks .SLDPRT/.SLDASM files (containers, display-list meshes, previews, assembly tree)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cfb = "0.15"
+miniz_oxide = "0.8"
+memchr = "2"
+memmap2 = "0.9"
+roxmltree = "0.20"
+glam = "0.30"
+image = { version = "0.25", default-features = false, features = ["png", "bmp"] }
+thiserror = "2"
