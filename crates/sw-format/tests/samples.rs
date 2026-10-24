@@ -1,0 +1,87 @@
+//! Integration tests on real SolidWorks files.
+//! Set SW_SAMPLES=/path/to/folder containing p1..p4.SLDPRT, a1.SLDASM, a2.SLDASM.
+//! Tests are skipped (pass trivially) when the variable or files are absent.
+
+use std::path::PathBuf;
+use sw_format::{load_scene, ContainerKind, DocKind, LoadOptions};
+
+fn sample(name: &str) -> Option<PathBuf> {
+    let dir = std::env::var_os("SW_SAMPLES")?;
+    let p = PathBuf::from(dir).join(name);
+    if p.exists() {
+        Some(p)
+    } else {
+        eprintln!("skip: {} absent", p.display());
+        None
+    }
+}
+
+fn check_part(name: &str, kind: ContainerKind, min_faces: usize, min_tris: usize) {
+    let Some(p) = sample(name) else { return };
+    let s = load_scene(&p, &LoadOptions::default()).expect("load");
+    assert_eq!(s.kind, DocKind::Part);
+    assert_eq!(s.container, kind);
+    assert!(s.has_geometry());
+    let faces: usize = s.meshes.iter().map(|m| m.mesh.face_count).sum();
+    assert!(faces >= min_faces, "{name}: {faces} faces");
+    assert!(s.drawn_triangles() >= min_tris, "{name}: {} tris", s.drawn_triangles());
+    for m in &s.meshes {
+        let n = m.mesh.positions.len() as u32;
+        assert!(m.mesh.indices.iter().all(|&i| i < n));
+    }
+}
+
+#[test]
+fn p1_sw2015() {
+    check_part("p1.SLDPRT", ContainerKind::Sw2015, 9, 160);
+}
+
+#[test]
+fn p2_ole() {
+    check_part("p2.SLDPRT", ContainerKind::Ole, 13, 1600);
+}
+
+#[test]
+fn p3_ole_no_preview() {
+    check_part("p3.SLDPRT", ContainerKind::Ole, 18, 8000);
+}
+
+#[test]
+fn p4_ole() {
+    check_part("p4.SLDPRT", ContainerKind::Ole, 148, 5000);
+    let Some(p) = sample("p4.SLDPRT") else { return };
+    let s = load_scene(&p, &LoadOptions::default()).unwrap();
+    let (lo, hi) = s.bounds().unwrap();
+    assert!((hi[0] - lo[0] - 1.304).abs() < 0.01, "length {}", hi[0] - lo[0]);
+}
+
+#[test]
+fn a1_assembly_sw2015() {
+    let Some(p) = sample("a1.SLDASM") else { return };
+    let s = load_scene(&p, &LoadOptions::default()).unwrap();
+    assert_eq!(s.kind, DocKind::Assembly);
+    assert_eq!(s.container, ContainerKind::Sw2015);
+    assert_eq!(s.meshes.len(), 2);
+    assert_eq!(s.missing_components(), 0);
+    assert!(s.drawn_triangles() >= 5000);
+}
+
+#[test]
+fn a2_nested_assembly_transforms() {
+    let Some(p) = sample("a2.SLDASM") else { return };
+    let s = load_scene(&p, &LoadOptions::default()).unwrap();
+    assert_eq!(s.kind, DocKind::Assembly);
+    assert_eq!(s.container, ContainerKind::Ole);
+    assert_eq!(s.missing_components(), 0);
+    assert!(s.components.iter().any(|c| c.depth >= 2), "nested subassemblies expected");
+    // the two latch subassemblies sit left and right of the grille (x ≈ ±0.249 m)
+    let xs: Vec<f32> = s
+        .components
+        .iter()
+        .filter(|c| c.is_assembly && c.depth == 0)
+        .map(|c| c.world[12])
+        .collect();
+    assert!(xs.iter().any(|&x| (x - 0.249).abs() < 0.01), "{xs:?}");
+    assert!(xs.iter().any(|&x| (x + 0.249).abs() < 0.01), "{xs:?}");
+    assert!(s.drawn_triangles() >= 70_000);
+}

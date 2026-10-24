@@ -246,7 +246,14 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
 
     let ext_asm = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("sldasm"));
     let t1 = Instant::now();
-    let dl_bytes = read_display_lists(&c)?;
+    let mut warnings = Vec::new();
+    let dl_bytes = match read_display_lists(&c) {
+        Ok(d) => d,
+        Err(e) => {
+            warnings.push(format!("Maillage illisible ({e}) : seule la vignette est affichée"));
+            None
+        }
+    };
     let tree_xml = c.read(COMP_TREE).ok().flatten();
     timings.read = t1.elapsed();
     let kind = if ext_asm || (tree_xml.is_some() && !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("sldprt"))) {
@@ -259,8 +266,7 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
     let list = dl_bytes.as_deref().map(dl::decode).unwrap_or_default();
     timings.decode = t2.elapsed();
 
-    let mut warnings = Vec::new();
-    if dl_bytes.is_none() {
+    if dl_bytes.is_none() && warnings.is_empty() {
         warnings.push("Pas de flux DisplayLists (fichier enregistré sans données graphiques)".into());
     } else if list.is_empty() {
         warnings.push("DisplayLists présent mais aucun maillage décodé".into());
