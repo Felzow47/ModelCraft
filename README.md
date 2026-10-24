@@ -76,7 +76,7 @@ swcraft-scan.exe "F:\Dev\disneyAutoSorter\Sorted Archive IA" --csv C:\Temp\scan.
 
 ## Compiler depuis les sources
 
-Prérequis : [Rust](https://rustup.rs) ≥ 1.92.
+Prérequis : [Rust](https://rustup.rs) ≥ 1.95.
 
 Sous Windows (MSVC ou GNU) :
 ```
