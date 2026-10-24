@@ -14,3 +14,6 @@ roxmltree = "0.20"
 glam = "0.30"
 image = { version = "0.25", default-features = false, features = ["png", "bmp"] }
 thiserror = "2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_SystemInformation"] }

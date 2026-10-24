@@ -39,3 +39,10 @@
 /screenshots/v2/step_*.png
 /screenshots/v2/wine_step*.png
 /screenshots/v2/private_*.png
+*.rvt
+*.RVT
+*.rfa
+*.RFA
+*.rte
+*.rft
+/screenshots/v3/private_*.png

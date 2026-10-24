@@ -28,6 +28,8 @@ struct Instance {
     model: [f32; 16],
     tint: [f32; 4],
     color: [f32; 4],
+    /// x: opacity
+    extra: [f32; 4],
 }
 
 #[repr(C)]
@@ -53,13 +55,25 @@ struct Globals {
     cap: [f32; 4],
 }
 
+/// Largest single GPU buffer we create. wgpu's default `max_buffer_size` is 256 MiB and many
+/// adapters refuse more, so a large scene is split into several vertex/index buffer chunks.
+const CHUNK_BYTES: u64 = 128 << 20;
+
+/// Part of one mesh stored in one chunk.
 #[derive(Clone, Copy, Default)]
-struct MeshRange {
+struct Piece {
+    chunk: u32,
     base_vertex: i32,
     tri_start: u32,
     tri_count: u32,
     edge_start: u32,
     edge_count: u32,
+}
+
+struct Chunk {
+    vbuf: wgpu::Buffer,
+    tri_ibuf: Option<wgpu::Buffer>,
+    edge_ibuf: Option<wgpu::Buffer>,
 }
 
 /// One drawable instance of a mesh.
@@ -70,76 +84,156 @@ pub struct InstanceDesc {
     pub tint: [f32; 4],
     /// Own colour from the file (alpha 0 = use the base colour).
     pub color: [f32; 4],
+    /// 1 = opaque; below 1 the instance is drawn in the sorted transparent pass.
+    pub opacity: f32,
+    /// World-space centre (for back-to-front sorting of transparent instances).
+    pub center: [f32; 3],
 }
 
 /// GPU copy of a loaded scene.
 pub struct GpuScene {
-    vbuf: wgpu::Buffer,
-    tri_ibuf: wgpu::Buffer,
-    edge_ibuf: Option<wgpu::Buffer>,
-    ranges: Vec<MeshRange>,
+    chunks: Vec<Chunk>,
+    /// Pieces of each mesh (usually one).
+    pieces: Vec<Vec<Piece>>,
     inst_buf: Option<wgpu::Buffer>,
-    /// (mesh index, first instance, instance count)
+    /// Opaque batches: (mesh index, first instance, instance count)
     batches: Vec<(usize, u32, u32)>,
+    /// Transparent instances: (mesh, instance index, world centre)
+    transparent: Vec<(usize, u32, [f32; 3])>,
     /// Highlighted triangles (already in world space): vertices, instance, index count.
     hl: Option<(wgpu::Buffer, wgpu::Buffer, u32)>,
+    pub gpu_bytes: u64,
+}
+
+/// CPU-side chunk under construction.
+#[derive(Default)]
+struct ChunkBuild {
+    verts: Vec<Vertex>,
+    tris: Vec<u32>,
+    edges: Vec<u32>,
 }
 
 impl GpuScene {
     pub fn upload(device: &wgpu::Device, scene: &Scene) -> GpuScene {
-        let mut verts: Vec<Vertex> = Vec::new();
-        let mut tris: Vec<u32> = Vec::new();
-        let mut edges: Vec<u32> = Vec::new();
-        let mut ranges = Vec::with_capacity(scene.meshes.len());
+        // MODELCRAFT_GPU_CHUNK_KB forces small chunks (tests the splitting path)
+        let chunk = std::env::var("MODELCRAFT_GPU_CHUNK_KB").ok().and_then(|v| v.parse::<u64>().ok()).map(|k| k << 10).unwrap_or(CHUNK_BYTES);
+        let max = device.limits().max_buffer_size.min(chunk).max(4096);
+        let vmax = (max / std::mem::size_of::<Vertex>() as u64) as usize;
+        let imax = (max / 4) as usize;
+        let mut gs = GpuScene { chunks: Vec::new(), pieces: Vec::with_capacity(scene.meshes.len()), inst_buf: None, batches: Vec::new(), transparent: Vec::new(), hl: None, gpu_bytes: 0 };
+        let mut cur = ChunkBuild::default();
         for m in &scene.meshes {
             let m = &m.mesh;
-            ranges.push(MeshRange {
-                base_vertex: verts.len() as i32,
-                tri_start: tris.len() as u32,
-                tri_count: m.indices.len() as u32,
-                edge_start: edges.len() as u32,
-                edge_count: m.edges.len() as u32,
-            });
-            verts.extend(m.positions.iter().zip(&m.normals).map(|(p, n)| Vertex { pos: *p, nrm: *n }));
-            tris.extend_from_slice(&m.indices);
-            edges.extend_from_slice(&m.edges);
+            let mut pieces = Vec::new();
+            let nv = m.positions.len().min(m.normals.len());
+            if nv == 0 || (m.indices.is_empty() && m.edges.is_empty()) {
+                gs.pieces.push(pieces);
+                continue;
+            }
+            let fits = |c: &ChunkBuild| c.verts.len() + nv <= vmax && c.tris.len() + m.indices.len() <= imax && c.edges.len() + m.edges.len() <= imax;
+            if !fits(&cur) && !cur.verts.is_empty() {
+                gs.flush(device, &mut cur);
+            }
+            if fits(&cur) {
+                pieces.push(Piece {
+                    chunk: gs.chunks.len() as u32,
+                    base_vertex: cur.verts.len() as i32,
+                    tri_start: cur.tris.len() as u32,
+                    tri_count: m.indices.len() as u32,
+                    edge_start: cur.edges.len() as u32,
+                    edge_count: m.edges.len() as u32,
+                });
+                cur.verts.extend(m.positions[..nv].iter().zip(&m.normals[..nv]).map(|(p, n)| Vertex { pos: *p, nrm: *n }));
+                cur.tris.extend(m.indices.iter().map(|&i| i.min(nv as u32 - 1)));
+                cur.edges.extend(m.edges.iter().map(|&i| i.min(nv as u32 - 1)));
+            } else {
+                // a single mesh larger than a chunk: split triangles then edges into pieces
+                gs.split(device, m, nv, &m.indices, 3, vmax, imax, &mut pieces);
+                gs.split(device, m, nv, &m.edges, 2, vmax, imax, &mut pieces);
+            }
+            gs.pieces.push(pieces);
         }
-        if verts.is_empty() {
-            verts.push(Vertex::zeroed());
+        if !cur.verts.is_empty() || gs.chunks.is_empty() {
+            if cur.verts.is_empty() {
+                cur.verts.push(Vertex::zeroed());
+            }
+            gs.flush(device, &mut cur);
         }
-        if tris.is_empty() {
-            tris.extend_from_slice(&[0, 0, 0]);
+        gs
+    }
+
+    fn flush(&mut self, device: &wgpu::Device, c: &mut ChunkBuild) {
+        let mk = |label, bytes: &[u8], usage| device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some(label), contents: bytes, usage });
+        let vbuf = mk("vertices", bytemuck::cast_slice(&c.verts), wgpu::BufferUsages::VERTEX);
+        let tri_ibuf = (!c.tris.is_empty()).then(|| mk("triangles", bytemuck::cast_slice(&c.tris), wgpu::BufferUsages::INDEX));
+        let edge_ibuf = (!c.edges.is_empty()).then(|| mk("edges", bytemuck::cast_slice(&c.edges), wgpu::BufferUsages::INDEX));
+        self.gpu_bytes += (c.verts.len() * std::mem::size_of::<Vertex>() + c.tris.len() * 4 + c.edges.len() * 4) as u64;
+        self.chunks.push(Chunk { vbuf, tri_ibuf, edge_ibuf });
+        *c = ChunkBuild::default();
+    }
+
+    /// Split the primitives of an oversized mesh into chunks with their own (remapped) vertices.
+    #[allow(clippy::too_many_arguments)]
+    fn split(&mut self, device: &wgpu::Device, m: &sw_format::TriMesh, nv: usize, idx: &[u32], k: usize, vmax: usize, imax: usize, out: &mut Vec<Piece>) {
+        if idx.is_empty() {
+            return;
         }
-        let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("vertices"),
-            contents: bytemuck::cast_slice(&verts),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let tri_ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("triangles"),
-            contents: bytemuck::cast_slice(&tris),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-        let edge_ibuf = (!edges.is_empty()).then(|| {
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("edges"),
-                contents: bytemuck::cast_slice(&edges),
-                usage: wgpu::BufferUsages::INDEX,
-            })
-        });
-        GpuScene { vbuf, tri_ibuf, edge_ibuf, ranges, inst_buf: None, batches: Vec::new(), hl: None }
+        let mut remap = vec![u32::MAX; nv];
+        let mut touched: Vec<u32> = Vec::new();
+        let mut c = ChunkBuild::default();
+        let mut prims = idx.chunks_exact(k).peekable();
+        while prims.peek().is_some() {
+            while let Some(p) = prims.peek() {
+                if c.verts.len() + k > vmax || c.tris.len() + c.edges.len() + k > imax {
+                    break;
+                }
+                for &v in p.iter() {
+                    let v = (v as usize).min(nv - 1);
+                    if remap[v] == u32::MAX {
+                        remap[v] = c.verts.len() as u32;
+                        touched.push(v as u32);
+                        c.verts.push(Vertex { pos: m.positions[v], nrm: m.normals[v] });
+                    }
+                    let local = remap[v];
+                    if k == 3 { c.tris.push(local) } else { c.edges.push(local) }
+                }
+                prims.next();
+            }
+            let piece = Piece {
+                chunk: self.chunks.len() as u32,
+                base_vertex: 0,
+                tri_start: 0,
+                tri_count: c.tris.len() as u32,
+                edge_start: 0,
+                edge_count: c.edges.len() as u32,
+            };
+            self.flush(device, &mut c);
+            out.push(piece);
+            for v in touched.drain(..) {
+                remap[v as usize] = u32::MAX;
+            }
+        }
     }
 
     pub fn set_instances(&mut self, device: &wgpu::Device, mut items: Vec<InstanceDesc>) {
-        items.sort_by_key(|i| i.mesh);
+        // opaque first (batched by mesh), then transparent ones (drawn one by one, sorted per frame)
+        items.sort_by_key(|i| (i.opacity < 0.999, i.mesh));
         let mut batches: Vec<(usize, u32, u32)> = Vec::new();
+        let mut transparent = Vec::new();
         for (k, it) in items.iter().enumerate() {
+            if it.opacity < 0.999 {
+                transparent.push((it.mesh, k as u32, it.center));
+                continue;
+            }
             match batches.last_mut() {
                 Some(b) if b.0 == it.mesh => b.2 += 1,
                 _ => batches.push((it.mesh, k as u32, 1)),
             }
         }
-        let inst: Vec<Instance> = items.into_iter().map(|i| Instance { model: i.model, tint: i.tint, color: i.color }).collect();
+        let inst: Vec<Instance> = items
+            .into_iter()
+            .map(|i| Instance { model: i.model, tint: i.tint, color: i.color, extra: [i.opacity.clamp(0.0, 1.0), 0.0, 0.0, 0.0] })
+            .collect();
         self.inst_buf = (!inst.is_empty()).then(|| {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("instances"),
@@ -148,6 +242,7 @@ impl GpuScene {
             })
         });
         self.batches = batches;
+        self.transparent = transparent;
     }
 
     /// Triangles to draw on top in the highlight colour (world space, 3 vertices per triangle).
@@ -161,7 +256,7 @@ impl GpuScene {
             contents: bytemuck::cast_slice(tris),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        let inst = Instance { model: Mat4::IDENTITY.to_cols_array(), tint: color, color: [0.0; 4] };
+        let inst = Instance { model: Mat4::IDENTITY.to_cols_array(), tint: color, color: [0.0; 4], extra: [1.0, 0.0, 0.0, 0.0] };
         let ib = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("highlight inst"),
             contents: bytemuck::bytes_of(&inst),
@@ -216,6 +311,8 @@ pub struct ViewSettings {
 pub struct Renderer {
     pub samples: u32,
     pipe_mesh: wgpu::RenderPipeline,
+    pipe_tr_depth: wgpu::RenderPipeline,
+    pipe_tr: wgpu::RenderPipeline,
     pipe_hl: wgpu::RenderPipeline,
     pipe_edge: wgpu::RenderPipeline,
     pipe_line: wgpu::RenderPipeline,
@@ -291,7 +388,7 @@ impl Renderer {
             immediate_size: 0,
         });
         let vattrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
-        let iattrs = wgpu::vertex_attr_array![2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4];
+        let iattrs = wgpu::vertex_attr_array![2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4];
         let lattrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4];
         let buffers = [
             Some(wgpu::VertexBufferLayout {
@@ -316,6 +413,7 @@ impl Renderer {
             blend: Some(wgpu::BlendState::ALPHA_BLENDING),
             write_mask: wgpu::ColorWrites::ALL,
         })];
+        let target_none = [Some(wgpu::ColorTargetState { format: COLOR_FORMAT, blend: None, write_mask: wgpu::ColorWrites::empty() })];
         let depth = |write: bool, cmp: wgpu::CompareFunction, bias: wgpu::DepthBiasState| {
             Some(wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
@@ -330,7 +428,8 @@ impl Renderer {
                     fs: &str,
                     bufs: &[Option<wgpu::VertexBufferLayout>],
                     topo: wgpu::PrimitiveTopology,
-                    ds: Option<wgpu::DepthStencilState>| {
+                    ds: Option<wgpu::DepthStencilState>,
+                    color: bool| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&layout),
@@ -338,7 +437,7 @@ impl Renderer {
                 primitive: wgpu::PrimitiveState { topology: topo, cull_mode: None, ..Default::default() },
                 depth_stencil: ds,
                 multisample: ms,
-                fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some(fs), compilation_options: Default::default(), targets: &target }),
+                fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some(fs), compilation_options: Default::default(), targets: if color { &target } else { &target_none } }),
                 multiview_mask: None,
                 cache: None,
             })
@@ -352,6 +451,27 @@ impl Renderer {
             &buffers,
             T::TriangleList,
             depth(true, C::Less, wgpu::DepthBiasState { constant: 2, slope_scale: 1.5, clamp: 0.0 }),
+            true,
+        );
+        // transparent instances: depth-only prepass per instance, then colour where depth is equal
+        // (only the nearest layer of each transparent part is blended → clean "x-ray" look)
+        let pipe_tr_depth = pipe(
+            "transparent depth",
+            "vs_mesh",
+            "fs_mesh",
+            &buffers,
+            T::TriangleList,
+            depth(true, C::Less, wgpu::DepthBiasState { constant: 2, slope_scale: 1.5, clamp: 0.0 }),
+            false,
+        );
+        let pipe_tr = pipe(
+            "transparent",
+            "vs_mesh",
+            "fs_mesh",
+            &buffers,
+            T::TriangleList,
+            depth(false, C::LessEqual, wgpu::DepthBiasState { constant: 2, slope_scale: 1.5, clamp: 0.0 }),
+            true,
         );
         let pipe_hl = pipe(
             "highlight",
@@ -360,11 +480,12 @@ impl Renderer {
             &buffers,
             T::TriangleList,
             depth(false, C::LessEqual, wgpu::DepthBiasState { constant: -1, slope_scale: -1.0, clamp: 0.0 }),
+            true,
         );
-        let pipe_edge = pipe("edges", "vs_edge", "fs_edge", &buffers, T::LineList, depth(false, C::LessEqual, Default::default()));
-        let pipe_line = pipe("lines", "vs_line", "fs_line", &line_buffers, T::LineList, depth(false, C::LessEqual, Default::default()));
-        let pipe_bg = pipe("background", "vs_bg", "fs_bg", &[], T::TriangleList, depth(false, C::Always, Default::default()));
-        Renderer { samples, pipe_mesh, pipe_hl, pipe_edge, pipe_line, pipe_bg, globals, passes, bind, target: None }
+        let pipe_edge = pipe("edges", "vs_edge", "fs_edge", &buffers, T::LineList, depth(false, C::LessEqual, Default::default()), true);
+        let pipe_line = pipe("lines", "vs_line", "fs_line", &line_buffers, T::LineList, depth(false, C::LessEqual, Default::default()), true);
+        let pipe_bg = pipe("background", "vs_bg", "fs_bg", &[], T::TriangleList, depth(false, C::Always, Default::default()), true);
+        Renderer { samples, pipe_mesh, pipe_tr_depth, pipe_tr, pipe_hl, pipe_edge, pipe_line, pipe_bg, globals, passes, bind, target: None }
     }
 
     /// Ensure the offscreen target has the given size. Returns true if (re)created.
@@ -475,30 +596,68 @@ impl Renderer {
             rp.draw(0..3, 0..1);
             if let Some(gs) = gs {
                 if let Some(ib) = &gs.inst_buf {
-                    rp.set_vertex_buffer(0, gs.vbuf.slice(..));
                     rp.set_vertex_buffer(1, ib.slice(..));
+                    // opaque
                     rp.set_pipeline(&self.pipe_mesh);
-                    rp.set_index_buffer(gs.tri_ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                    for &(m, first, count) in &gs.batches {
-                        let r = gs.ranges[m];
-                        if r.tri_count > 0 {
-                            rp.draw_indexed(r.tri_start..r.tri_start + r.tri_count, r.base_vertex, first..first + count);
+                    for (ci, ch) in gs.chunks.iter().enumerate() {
+                        let Some(tb) = &ch.tri_ibuf else { continue };
+                        rp.set_vertex_buffer(0, ch.vbuf.slice(..));
+                        rp.set_index_buffer(tb.slice(..), wgpu::IndexFormat::Uint32);
+                        for &(m, first, count) in &gs.batches {
+                            for p in gs.pieces[m].iter().filter(|p| p.chunk as usize == ci && p.tri_count > 0) {
+                                rp.draw_indexed(p.tri_start..p.tri_start + p.tri_count, p.base_vertex, first..first + count);
+                            }
                         }
                     }
                     if vs.edges {
-                        if let Some(eb) = &gs.edge_ibuf {
-                            rp.set_pipeline(&self.pipe_edge);
-                            rp.set_index_buffer(eb.slice(..), wgpu::IndexFormat::Uint32);
-                            for k in 0..offsets.len() {
-                                rp.set_bind_group(0, &self.bind, &[(k as u64 * PASS_STRIDE) as u32]);
+                        rp.set_pipeline(&self.pipe_edge);
+                        for k in 0..offsets.len() {
+                            rp.set_bind_group(0, &self.bind, &[(k as u64 * PASS_STRIDE) as u32]);
+                            for (ci, ch) in gs.chunks.iter().enumerate() {
+                                let Some(eb) = &ch.edge_ibuf else { continue };
+                                rp.set_vertex_buffer(0, ch.vbuf.slice(..));
+                                rp.set_index_buffer(eb.slice(..), wgpu::IndexFormat::Uint32);
                                 for &(m, first, count) in &gs.batches {
-                                    let r = gs.ranges[m];
-                                    if r.edge_count > 0 {
-                                        rp.draw_indexed(r.edge_start..r.edge_start + r.edge_count, r.base_vertex, first..first + count);
+                                    for p in gs.pieces[m].iter().filter(|p| p.chunk as usize == ci && p.edge_count > 0) {
+                                        rp.draw_indexed(p.edge_start..p.edge_start + p.edge_count, p.base_vertex, first..first + count);
                                     }
                                 }
                             }
-                            rp.set_bind_group(0, &self.bind, &[0]);
+                        }
+                        rp.set_bind_group(0, &self.bind, &[0]);
+                    }
+                    // transparent, far to near
+                    if !gs.transparent.is_empty() {
+                        let mut order: Vec<(f32, usize, u32)> = gs
+                            .transparent
+                            .iter()
+                            .map(|&(m, inst, c)| ((vs.view * glam::Vec3::from(c).extend(1.0)).z, m, inst))
+                            .collect();
+                        order.sort_by(|a, b| a.0.total_cmp(&b.0));
+                        for &(_, m, inst) in &order {
+                            for pass in 0..3 {
+                                match pass {
+                                    0 => rp.set_pipeline(&self.pipe_tr_depth),
+                                    1 => rp.set_pipeline(&self.pipe_tr),
+                                    _ => {
+                                        if !vs.edges {
+                                            continue;
+                                        }
+                                        rp.set_pipeline(&self.pipe_edge)
+                                    }
+                                }
+                                for p in &gs.pieces[m] {
+                                    let ch = &gs.chunks[p.chunk as usize];
+                                    let (buf, start, count) = if pass < 2 { (&ch.tri_ibuf, p.tri_start, p.tri_count) } else { (&ch.edge_ibuf, p.edge_start, p.edge_count) };
+                                    let Some(b) = buf else { continue };
+                                    if count == 0 {
+                                        continue;
+                                    }
+                                    rp.set_vertex_buffer(0, ch.vbuf.slice(..));
+                                    rp.set_index_buffer(b.slice(..), wgpu::IndexFormat::Uint32);
+                                    rp.draw_indexed(start..start + count, p.base_vertex, inst..inst + 1);
+                                }
+                            }
                         }
                     }
                 }

@@ -167,63 +167,202 @@ fn face_at(d: &[u8], i: usize) -> Option<(FacePatch, usize)> {
 
 /// Decode all face tessellations in a DisplayLists stream.
 pub fn decode(d: &[u8]) -> DisplayList {
-    // 1. document path markers
-    let mut paths: Vec<(usize, String)> = Vec::new();
-    let marker = memchr::memmem::Finder::new(&[0xff, 0xfe, 0xff]);
-    let mut pos = 0;
-    while let Some(r) = marker.find(&d[pos..]) {
-        let o = pos + r;
-        if let Some((s, end)) = cstring_at(d, o) {
-            if is_doc_path(&s) {
-                paths.push((o, s));
-            }
-            pos = end.max(o + 1);
-        } else {
-            pos = o + 1;
-        }
-    }
+    decode_ctl(d, &crate::Ctl::default(), (0.0, 0.0)).unwrap_or_default()
+}
 
-    // 2. faces
-    let mut list = DisplayList::default();
-    let mut cur = DlBlock::default();
-    let mut pi = 0usize;
-    let finder = memchr::memmem::Finder::new(&POS_HDR);
-    let mut pos = 0usize;
-    while let Some(r) = finder.find(&d[pos..]) {
-        let i = pos + r;
-        match face_at(d, i) {
-            Some((face, next)) => {
-                // switch block if a document path appeared before this face
-                let mut new_path = None;
-                while pi < paths.len() && paths[pi].0 < i {
-                    new_path = Some(paths[pi].1.clone());
-                    pi += 1;
+/// [`decode`] with progress (mapped onto `range`) and cancellation.
+pub fn decode_ctl(d: &[u8], ctl: &crate::Ctl, range: (f32, f32)) -> crate::Result<DisplayList> {
+    let stage = "Analyse du maillage…";
+    let mut blocks: Vec<DlBlock> = Vec::new();
+    let mut index: std::collections::HashMap<Option<String>, usize> = std::collections::HashMap::new();
+    let mut dec = Decoder::default();
+    let len = d.len().max(1);
+    let mut visit = |path: Option<&str>, face: FacePatch| -> crate::Result<()> {
+        // Blocks referring to the same document are merged (they can be split by other strings).
+        let key = path.map(file_key);
+        let k = match index.get(&key) {
+            Some(&k) => k,
+            None => {
+                index.insert(key, blocks.len());
+                blocks.push(DlBlock { path: path.map(str::to_string), faces: Vec::new() });
+                blocks.len() - 1
+            }
+        };
+        blocks[k].faces.push(face);
+        Ok(())
+    };
+    let mut prog = |pos: usize| -> crate::Result<()> {
+        ctl.report(range.0 + (range.1 - range.0) * (pos as f32 / len as f32), stage);
+        ctl.check()
+    };
+    dec.run(d, 0, true, &mut visit, &mut prog)?;
+    Ok(DisplayList { blocks })
+}
+
+/// Incremental display-list decoder: the stream can be fed in pieces (see [`StreamDecoder`])
+/// so a multi-gigabyte decompressed stream never has to be held in memory at once.
+///
+/// Events (document path strings and face records) are processed in stream order; a face is
+/// attributed to the most recent document path seen before it.
+#[derive(Default)]
+pub struct Decoder {
+    cur_path: Option<String>,
+    /// Global offsets of the next place to search for a path marker / a face header.
+    mpos: usize,
+    fpos: usize,
+    next_m: Option<usize>,
+    next_f: Option<usize>,
+    next_report: usize,
+}
+
+enum Extent {
+    Complete,
+    NeedMore,
+    Invalid,
+}
+
+/// Is the face record at `i` entirely inside `d`?
+fn face_extent(d: &[u8], i: usize) -> Extent {
+    let Some(h) = d.get(i..i + 16) else { return Extent::NeedMore };
+    let n = u32::from_le_bytes(h[12..16].try_into().unwrap()) as usize;
+    if n > 50_000_000 {
+        return Extent::Invalid;
+    }
+    let pe = i + 16 + 12 * n;
+    let Some(h) = d.get(pe..pe + 16) else { return Extent::NeedMore };
+    let es = u32::from_le_bytes(h[0..4].try_into().unwrap());
+    let two = u32::from_le_bytes(h[8..12].try_into().unwrap());
+    let nn = u32::from_le_bytes(h[12..16].try_into().unwrap()) as usize;
+    if es != 12 || two != 2 || !(nn == n || nn == 1) {
+        return Extent::Invalid;
+    }
+    if pe + 16 + 12 * nn > d.len() {
+        return Extent::NeedMore;
+    }
+    Extent::Complete
+}
+
+/// Bytes kept before the current position when compacting a streaming buffer (strip-count
+/// arrays precede each face's position array).
+pub const LOOKBACK: usize = 4 << 20;
+
+impl Decoder {
+    /// Process the events of `d`, whose first byte is at global offset `base`. With `last`
+    /// false, processing stops before an event that may continue past the end of `d`.
+    /// Returns the global offset from which data must be kept for the next call.
+    pub fn run(
+        &mut self,
+        d: &[u8],
+        base: usize,
+        last: bool,
+        visit: &mut dyn FnMut(Option<&str>, FacePatch) -> crate::Result<()>,
+        prog: &mut dyn FnMut(usize) -> crate::Result<()>,
+    ) -> crate::Result<usize> {
+        const STEP: usize = 16 << 20;
+        let end = base + d.len();
+        let marker = memchr::memmem::Finder::new(&[0xff, 0xfe, 0xff]);
+        let finder = memchr::memmem::Finder::new(&POS_HDR);
+        loop {
+            // next candidates (global offsets); None = not in this buffer
+            if self.next_m.is_none_or(|m| m < self.mpos) {
+                let from = self.mpos.max(base);
+                self.next_m = if from < end { marker.find(&d[from - base..]).map(|r| from + r) } else { None };
+                if self.next_m.is_none() {
+                    self.mpos = self.mpos.max(end.saturating_sub(2));
                 }
-                if let Some(p) = new_path {
-                    if cur.path.as_deref() != Some(p.as_str()) {
-                        if !cur.faces.is_empty() {
-                            list.blocks.push(std::mem::take(&mut cur));
+            }
+            if self.next_f.is_none_or(|f| f < self.fpos) {
+                let from = self.fpos.max(base);
+                self.next_f = if from < end { finder.find(&d[from - base..]).map(|r| from + r) } else { None };
+                if self.next_f.is_none() {
+                    self.fpos = self.fpos.max(end.saturating_sub(11));
+                }
+            }
+            let (m, f) = (self.next_m, self.next_f);
+            let take_marker = match (m, f) {
+                (None, None) => break,
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+                (Some(m), Some(f)) => m < f,
+            };
+            let at = if take_marker { m.unwrap() } else { f.unwrap() };
+            if at >= self.next_report {
+                self.next_report = at + STEP;
+                prog(at)?;
+            }
+            let li = at - base;
+            if take_marker {
+                match cstring_at(d, li) {
+                    Some((s, e)) => {
+                        if is_doc_path(&s) {
+                            self.cur_path = Some(s);
                         }
-                        cur = DlBlock { path: Some(p), faces: Vec::new() };
+                        self.mpos = (base + e).max(at + 1);
+                    }
+                    None => {
+                        if !last && d.len() - li < 16 + 2 * 4096 {
+                            break; // the string may continue in the next piece
+                        }
+                        self.mpos = at + 1;
                     }
                 }
-                cur.faces.push(face);
-                pos = next;
+            } else {
+                match face_extent(d, li) {
+                    Extent::NeedMore if !last => break,
+                    Extent::Complete => match face_at(d, li) {
+                        Some((mut face, next)) => {
+                            face.offset = at;
+                            visit(self.cur_path.as_deref(), face)?;
+                            self.fpos = base + next;
+                        }
+                        None => self.fpos = at + 1,
+                    },
+                    _ => self.fpos = at + 1,
+                }
             }
-            None => pos = i + 1,
         }
+        Ok(self.mpos.min(self.fpos).saturating_sub(LOOKBACK))
     }
-    if !cur.faces.is_empty() {
-        list.blocks.push(cur);
+}
+
+/// Feed a display-list stream piece by piece (e.g. straight from the decompressor).
+/// Memory use is bounded by the largest face record plus [`LOOKBACK`] and the piece size.
+pub struct StreamDecoder<'a> {
+    dec: Decoder,
+    buf: Vec<u8>,
+    base: usize,
+    keep: usize,
+    visit: &'a mut dyn FnMut(Option<&str>, FacePatch) -> crate::Result<()>,
+    ctl: &'a crate::Ctl,
+}
+
+impl<'a> StreamDecoder<'a> {
+    pub fn new(ctl: &'a crate::Ctl, visit: &'a mut dyn FnMut(Option<&str>, FacePatch) -> crate::Result<()>) -> Self {
+        StreamDecoder { dec: Decoder::default(), buf: Vec::new(), base: 0, keep: 0, visit, ctl }
     }
-    // Merge blocks referring to the same document (can be split by other strings).
-    let mut merged: Vec<DlBlock> = Vec::new();
-    for b in list.blocks {
-        if let Some(m) = merged.iter_mut().find(|m| m.key() == b.key()) {
-            m.faces.extend(b.faces);
-        } else {
-            merged.push(b);
+
+    pub fn feed(&mut self, chunk: &[u8]) -> crate::Result<()> {
+        // compact once enough consumed data has accumulated
+        let drop = self.keep.saturating_sub(self.base).min(self.buf.len());
+        if drop >= 32 << 20 || (drop > 0 && drop * 2 >= self.buf.len()) {
+            self.buf.drain(..drop);
+            self.base += drop;
         }
+        crate::ctl::reserve(&mut self.buf, chunk.len(), "analyse du maillage")?;
+        self.buf.extend_from_slice(chunk);
+        let ctl = self.ctl;
+        self.keep = self.dec.run(&self.buf, self.base, false, self.visit, &mut |_| ctl.check())?;
+        Ok(())
     }
-    DisplayList { blocks: merged }
+
+    pub fn finish(mut self) -> crate::Result<()> {
+        let ctl = self.ctl;
+        self.dec.run(&self.buf, self.base, true, self.visit, &mut |_| ctl.check())?;
+        Ok(())
+    }
+
+    /// Current size of the internal buffer (diagnostics).
+    pub fn buffer_len(&self) -> usize {
+        self.buf.len()
+    }
 }

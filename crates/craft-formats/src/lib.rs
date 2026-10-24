@@ -14,6 +14,7 @@
 
 pub mod easm;
 pub mod obj;
+pub mod rvt;
 pub mod stl;
 pub mod tds;
 pub mod xml3d;
@@ -54,6 +55,7 @@ pub fn formats() -> Vec<FormatInfo> {
         FormatInfo { exts: &["3ds"], name: "3D Studio", support: Support::Full, note: "Objets, matrices et couleurs des matériaux." },
         FormatInfo { exts: &["3dxml"], name: "3D XML", support: Support::Partial, note: "Représentations maillées 3DXML (pas de B-rep CATIA)." },
         FormatInfo { exts: &["easm", "eprt"], name: "eDrawings", support: Support::Partial, note: "Aperçu et maillages lisibles uniquement." },
+        FormatInfo { exts: &["rvt", "rfa", "rte", "rft"], name: "Autodesk Revit", support: Support::Partial, note: "Vignette et informations du projet (géométrie propriétaire non lisible)." },
         FormatInfo { exts: &["x_t", "x_b"], name: "Parasolid", support: Support::None, note: "Format B-rep propriétaire ; exportez en STEP depuis SolidWorks." },
     ]
 }
@@ -82,31 +84,49 @@ pub struct Options {
     pub quality: f32,
     /// Optional progress sink (fraction 0..1, stage label), called from the loading thread.
     pub progress: Option<Progress>,
+    /// Set to true to stop loading as soon as possible.
+    pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { edges: true, resolve_external: true, preview: true, quality: 0.5, progress: None }
+        Options { edges: true, resolve_external: true, preview: true, quality: 0.5, progress: None, cancel: None }
     }
 }
 
-/// Thread-safe progress callback.
-#[derive(Clone)]
-pub struct Progress(pub std::sync::Arc<dyn Fn(f32, &str) + Send + Sync>);
-
-impl Progress {
-    pub fn new(f: impl Fn(f32, &str) + Send + Sync + 'static) -> Self {
-        Progress(std::sync::Arc::new(f))
-    }
-    pub fn report(&self, fraction: f32, stage: &str) {
-        (self.0)(fraction, stage)
+impl Options {
+    pub fn ctl(&self) -> sw_format::Ctl {
+        sw_format::Ctl { progress: self.progress.clone(), cancel: self.cancel.clone() }
     }
 }
 
-impl std::fmt::Debug for Progress {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Progress")
+pub use sw_format::Progress;
+
+/// Read a whole file with byte progress, cancellation and fallible allocation.
+fn read_file(path: &Path, opts: &Options, mem_factor: f64) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let ctl = opts.ctl();
+    let mut f = std::fs::File::open(path).map_err(|e| format!("lecture impossible : {e}"))?;
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    sw_format::ctl::check_memory(len, mem_factor, "lecture").map_err(|e| e.to_string())?;
+    let mut v: Vec<u8> = Vec::new();
+    sw_format::ctl::reserve(&mut v, len as usize, "lecture").map_err(|e| e.to_string())?;
+    let mut buf = vec![0u8; 8 << 20];
+    loop {
+        let n = f.read(&mut buf).map_err(|e| format!("lecture impossible : {e}"))?;
+        if n == 0 {
+            break;
+        }
+        if v.capacity() - v.len() < n {
+            let extra = n.max(v.len() / 4);
+            sw_format::ctl::reserve(&mut v, extra, "lecture").map_err(|e| e.to_string())?;
+        }
+        v.extend_from_slice(&buf[..n]);
+        ctl.report(0.01 + 0.3 * (v.len() as f32 / len.max(1) as f32).min(1.0), "Lecture du fichier…");
+        ctl.bytes(v.len() as u64, len);
+        ctl.check().map_err(|e| e.to_string())?;
     }
+    Ok(v)
 }
 
 /// Load any supported file.
@@ -116,17 +136,19 @@ pub fn load_any(path: &Path, opts: &Options) -> Result<Scene, String> {
     if let Some(p) = &opts.progress {
         p.report(0.01, "Lecture du fichier…");
     }
-    let read = || std::fs::read(path).map_err(|e| format!("lecture impossible : {e}"));
+    // triangle-soup formats weld vertices through hash maps: several times the file size in RAM
+    let read = |factor: f64| read_file(path, opts, factor);
     let mut scene = match ext.as_str() {
-        "easm" | "eprt" => easm::load(path, &read()?)?,
+        "easm" | "eprt" => easm::load(path, &read(4.0)?)?,
+        "rvt" | "rfa" | "rte" | "rft" => rvt::load(path, opts)?,
         "sldprt" | "sldasm" => {
-            let lo = LoadOptions { edges: opts.edges, resolve_external: opts.resolve_external, preview: opts.preview };
+            let lo = LoadOptions { edges: opts.edges, resolve_external: opts.resolve_external, preview: opts.preview, ctl: opts.ctl() };
             sw_format::load_scene(path, &lo).map_err(|e| e.to_string())?
         }
-        "stl" => stl::load(path, &read()?)?,
-        "obj" => obj::load(path, &read()?)?,
-        "3ds" => tds::load(path, &read()?)?,
-        "3dxml" => xml3d::load(path, &read()?)?,
+        "stl" => stl::load(path, &read(6.0)?)?,
+        "obj" => obj::load(path, &read(6.0)?)?,
+        "3ds" => tds::load(path, &read(6.0)?)?,
+        "3dxml" => xml3d::load(path, &read(4.0)?)?,
         #[cfg(feature = "occt")]
         "step" | "stp" | "iges" | "igs" => occt::load(path, opts)?,
         #[cfg(not(feature = "occt"))]
@@ -136,6 +158,7 @@ pub fn load_any(path: &Path, opts: &Options) -> Result<Scene, String> {
         }
         _ => return Err(format!("Format « .{ext} » non supporté")),
     };
+    opts.ctl().check().map_err(|e| e.to_string())?;
     scene.timings.total = t0.elapsed();
     Ok(scene)
 }
@@ -164,6 +187,7 @@ pub fn empty_scene(path: &Path, format: &'static str) -> Scene {
         components: Vec::new(),
         preview: None,
         warnings: Vec::new(),
+        properties: Vec::new(),
         timings: Timings::default(),
         up_z: true,
     }

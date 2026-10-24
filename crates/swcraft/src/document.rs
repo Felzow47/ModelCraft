@@ -13,8 +13,18 @@ use sw_format::Scene;
 
 pub type LoadResult = Result<Scene, String>;
 
+/// Live loading state shared with the loader thread.
+#[derive(Clone, Default)]
+pub struct LoadProgress {
+    pub fraction: f32,
+    pub stage: String,
+    /// Bytes done / total of the current stage (reading or decompressing).
+    pub bytes: Option<(u64, u64)>,
+    pub secs: f32,
+}
+
 pub enum DocState {
-    Loading { rx: mpsc::Receiver<LoadResult>, progress: Arc<Mutex<(f32, String)>>, started: Instant },
+    Loading { rx: mpsc::Receiver<LoadResult>, progress: Arc<Mutex<LoadProgress>>, started: Instant },
     Ready,
     Failed(String),
 }
@@ -49,6 +59,29 @@ pub struct FaceSel {
     pub tri: u32,
 }
 
+/// Part of the move gizmo being dragged.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Handle {
+    /// Translate along world axis 0/1/2.
+    Axis(usize),
+    /// Rotate around world axis 0/1/2.
+    Ring(usize),
+    /// Free move in the view plane.
+    Free,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct GizmoDrag {
+    pub comp: usize,
+    pub handle: Handle,
+    /// Pivot / line origin, fixed for the whole drag.
+    pub origin: Vec3,
+    /// Plane normal (free / ring drags).
+    pub normal: Vec3,
+    /// Last axis parameter or angle (x) / last plane point.
+    pub last: Vec3,
+}
+
 pub struct Document {
     pub id: u64,
     pub path: PathBuf,
@@ -64,6 +97,10 @@ pub struct Document {
     pub visible: Vec<bool>,
     /// Display-space world matrix per component (Z-up formats are turned Y-up).
     pub display: Vec<Mat4>,
+    /// Accumulated viewer transform per component (display = acc * loaded matrix).
+    pub acc: Vec<Mat4>,
+    /// Viewer-only moves, explosion and opacity.
+    pub asm: crate::assembly::Assembly,
     pub expanded: HashSet<usize>,
     pub selected: Option<usize>,
     pub face_sel: Option<FaceSel>,
@@ -80,8 +117,23 @@ pub struct Document {
     pub cam_goal: Option<(f32, f32)>,
     pub tree_filter: String,
     pub load_time: Option<f64>,
+    /// Set to stop the loader thread.
+    pub cancel: Arc<std::sync::atomic::AtomicBool>,
     /// Scroll the tree to the selected row once.
     pub reveal_in_tree: bool,
+    /// Move mode: translate gizmo on the selected component (viewer-only).
+    pub gizmo: bool,
+    /// Also show the rotation rings of the gizmo.
+    pub gizmo_rotate: bool,
+    /// Gizmo / free drag in progress.
+    pub drag: Option<GizmoDrag>,
+}
+
+impl Drop for Document {
+    fn drop(&mut self) {
+        // closing / reloading a tab stops its loader
+        self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -89,41 +141,63 @@ static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new
 impl Document {
     pub fn open(path: &Path, opts: craft_formats::Options, ctx: &egui::Context) -> Document {
         let (tx, rx) = mpsc::channel();
-        let progress = Arc::new(Mutex::new((0.0f32, String::from("Lecture du fichier…"))));
+        let progress = Arc::new(Mutex::new(LoadProgress { stage: "Lecture du fichier…".into(), ..Default::default() }));
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut opts = opts;
+        opts.cancel = Some(cancel.clone());
         {
             let progress = progress.clone();
+            let progress2 = progress.clone();
             let ctx = ctx.clone();
-            opts.progress = Some(craft_formats::Progress::new(move |f, stage| {
-                if let Ok(mut p) = progress.lock() {
-                    *p = (f, stage.to_string());
-                }
-                ctx.request_repaint();
-            }));
+            let ctx2 = ctx.clone();
+            opts.progress = Some(
+                craft_formats::Progress::new(move |f, stage| {
+                    if let Ok(mut p) = progress.lock() {
+                        if p.stage != stage {
+                            p.bytes = None;
+                        }
+                        p.fraction = f;
+                        p.stage = stage.to_string();
+                    }
+                    ctx.request_repaint();
+                })
+                .with_bytes(move |done, total| {
+                    if let Ok(mut p) = progress2.lock() {
+                        p.bytes = Some((done, total));
+                    }
+                    ctx2.request_repaint();
+                }),
+            );
         }
         let p = path.to_path_buf();
         let ctx2 = ctx.clone();
-        std::thread::Builder::new()
-            .name("loader".into())
-            .spawn(move || {
-                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| craft_formats::load_any(&p, &opts)))
-                    .unwrap_or_else(|_| Err("le lecteur a planté sur ce fichier (erreur interne)".into()));
-                let _ = tx.send(r);
-                ctx2.request_repaint();
-            })
-            .expect("thread");
+        let spawned = std::thread::Builder::new().name("loader".into()).spawn(move || {
+            crate::crash::set_current_file(Some(&p));
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| craft_formats::load_any(&p, &opts)))
+                .unwrap_or_else(|e| Err(format!("le lecteur a planté sur ce fichier (erreur interne : {})", crate::crash::panic_text(&*e))));
+            crate::crash::set_current_file(None);
+            let _ = tx.send(r);
+            ctx2.request_repaint();
+        });
+        let failed = spawned.err().map(|e| format!("impossible de lancer le chargement : {e}"));
         Document {
             id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             path: path.to_path_buf(),
             title: path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
             size: std::fs::metadata(path).map(|m| m.len()).unwrap_or(0),
-            state: DocState::Loading { rx, progress, started: Instant::now() },
+            state: match failed {
+                Some(e) => DocState::Failed(e),
+                None => DocState::Loading { rx, progress, started: Instant::now() },
+            },
+            cancel,
             scene: None,
             gpu: None,
             camera: Camera::default(),
             hidden: Vec::new(),
             visible: Vec::new(),
             display: Vec::new(),
+            acc: Vec::new(),
+            asm: crate::assembly::Assembly::empty(),
             expanded: HashSet::new(),
             selected: None,
             face_sel: None,
@@ -141,6 +215,9 @@ impl Document {
             tree_filter: String::new(),
             load_time: None,
             reveal_in_tree: false,
+            gizmo: false,
+            gizmo_rotate: false,
+            drag: None,
         }
     }
 
@@ -148,13 +225,22 @@ impl Document {
         matches!(self.state, DocState::Loading { .. })
     }
 
-    pub fn progress(&self) -> Option<(f32, String, f32)> {
+    pub fn progress(&self) -> Option<LoadProgress> {
         match &self.state {
             DocState::Loading { progress, started, .. } => {
-                let p = progress.lock().map(|p| p.clone()).unwrap_or_default();
-                Some((p.0, p.1, started.elapsed().as_secs_f32()))
+                let mut p = progress.lock().map(|p| p.clone()).unwrap_or_default();
+                p.secs = started.elapsed().as_secs_f32();
+                Some(p)
             }
             _ => None,
+        }
+    }
+
+    /// Ask the loader to stop (it checks between steps and every few megabytes).
+    pub fn cancel_load(&mut self) {
+        self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        if self.is_loading() {
+            self.state = DocState::Failed("Chargement annulé".into());
         }
     }
 
@@ -169,9 +255,9 @@ impl Document {
         self.load_time = Some(started.elapsed().as_secs_f64());
         match r {
             Ok(scene) => {
-                self.set_scene(scene, device, ctx);
                 self.state = DocState::Ready;
-                true
+                self.set_scene(scene, device, ctx);
+                matches!(self.state, DocState::Ready)
             }
             Err(e) => {
                 self.state = DocState::Failed(e);
@@ -184,7 +270,10 @@ impl Document {
         let n = scene.components.len();
         self.hidden = scene.components.iter().map(|c| c.hidden).collect();
         let rot = if scene.up_z { Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2) } else { Mat4::IDENTITY };
-        self.display = scene.components.iter().map(|c| rot * Mat4::from_cols_array(&c.world)).collect();
+        let base: Vec<Mat4> = scene.components.iter().map(|c| rot * Mat4::from_cols_array(&c.world)).collect();
+        self.asm = crate::assembly::Assembly::new(&scene, base.clone());
+        self.acc = vec![Mat4::IDENTITY; n];
+        self.display = base;
         self.mesh_va = scene.meshes.iter().map(|m| m.mesh.volume_area()).collect();
         // expand the first levels of the tree
         for (i, c) in scene.components.iter().enumerate() {
@@ -199,7 +288,20 @@ impl Document {
             let img = egui::ColorImage::from_rgba_unmultiplied([p.width as usize, p.height as usize], &p.pixels);
             self.preview = Some(ctx.load_texture(format!("preview-{}", self.id), img, egui::TextureOptions::LINEAR));
         }
-        self.gpu = Some(GpuScene::upload(device, &scene));
+        let before = crate::crash::gpu_errors().0;
+        let up = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| GpuScene::upload(device, &scene)));
+        let (after, msg) = crate::crash::gpu_errors();
+        match up {
+            Ok(g) if after == before => self.gpu = Some(g),
+            Ok(_) => {
+                self.state = DocState::Failed(format!("la carte graphique a refusé le modèle ({msg})"));
+                return;
+            }
+            Err(e) => {
+                self.state = DocState::Failed(format!("envoi au GPU impossible ({})", crate::crash::panic_text(&*e)));
+                return;
+            }
+        }
         self.scene = Some(scene);
         self.update_visibility();
         self.needs_fit = true;
@@ -375,7 +477,9 @@ impl Document {
                     [0.0; 4]
                 };
                 let color = c.color.or(s.meshes[mi].color).map(|c| [c[0], c[1], c[2], 1.0]).unwrap_or([0.0; 4]);
-                items.push(InstanceDesc { mesh: mi, model: self.display[i].to_cols_array(), tint, color });
+                let opacity = effective_opacity(&self.asm, i, &sel);
+                let center = self.acc[i].transform_point3(self.asm.center0[i]).to_array();
+                items.push(InstanceDesc { mesh: mi, model: self.display[i].to_cols_array(), tint, color, opacity, center });
             }
             gs.set_instances(device, items);
         }
@@ -399,6 +503,80 @@ impl Document {
             }
             gs.set_highlight(device, &tris, [highlight[0], highlight[1], highlight[2], 0.8]);
         }
+    }
+
+    /// Recompute display matrices after a move / explosion change.
+    pub fn apply_transforms(&mut self) {
+        if self.scene.is_none() {
+            return;
+        }
+        let (d, a) = self.asm.compute();
+        self.display = d;
+        self.acc = a;
+        self.instances_dirty = true;
+        self.highlight_dirty = true;
+        self.compute_stats();
+        // keep moved / exploded parts inside the camera's clipping range
+        if let Some((lo, hi)) = self.stats.bbox {
+            let r = (lo - self.camera.target).length().max((hi - self.camera.target).length());
+            if r.is_finite() && r > self.camera.radius {
+                self.camera.radius = r;
+            }
+        }
+    }
+
+    /// Move the subtree of `i` by a world-space transform.
+    pub fn move_component(&mut self, i: usize, w: Mat4) {
+        if i < self.acc.len() {
+            self.asm.apply_world(&self.acc, i, w);
+            self.apply_transforms();
+        }
+    }
+
+    /// Current world-space centre of the subtree of `i` (gizmo pivot).
+    pub fn component_center(&self, i: usize) -> Option<Vec3> {
+        Some(self.acc.get(i)?.transform_point3(*self.asm.center0.get(i)?))
+    }
+
+    pub fn reset_position(&mut self, i: Option<usize>) {
+        match i {
+            Some(i) => {
+                for k in self.subtree(i) {
+                    self.asm.reset(k);
+                }
+            }
+            None => self.asm.reset_all(),
+        }
+        self.apply_transforms();
+    }
+
+    pub fn set_opacity(&mut self, i: Option<usize>, v: f32) {
+        let v = v.clamp(0.02, 1.0);
+        match i {
+            Some(i) => {
+                if let Some(o) = self.asm.opacity.get_mut(i) {
+                    *o = v;
+                }
+            }
+            None => self.asm.global_opacity = v,
+        }
+        self.instances_dirty = true;
+    }
+
+    /// Advance animations (explosion). Returns true if the view changed.
+    pub fn tick(&mut self, dt: f32) -> bool {
+        if self.asm.tick(dt) {
+            self.apply_transforms();
+            return true;
+        }
+        false
+    }
+
+    /// Explosion lines (world space) for the overlay.
+    pub fn explode_lines(&self) -> Vec<(Vec3, Vec3)> {
+        let Some(s) = &self.scene else { return vec![] };
+        let with_mesh: Vec<bool> = s.components.iter().enumerate().map(|(i, c)| c.mesh.is_some() && self.visible.get(i).copied().unwrap_or(true)).collect();
+        self.asm.lines(&self.acc, &with_mesh)
     }
 
     fn subtree_of(&self, _s: &Scene, r: usize) -> HashSet<usize> {
@@ -463,4 +641,13 @@ impl Document {
     pub fn file_kind_label(&self) -> String {
         craft_formats::ext_of(&self.path).to_uppercase()
     }
+}
+
+/// Opacity of component `i` with the per-part, global and "others" settings.
+fn effective_opacity(asm: &crate::assembly::Assembly, i: usize, sel: &HashSet<usize>) -> f32 {
+    let mut o = asm.chain_opacity(i);
+    if asm.others_transparent && !sel.is_empty() && !sel.contains(&i) {
+        o = o.min(crate::assembly::OTHERS_OPACITY);
+    }
+    o
 }

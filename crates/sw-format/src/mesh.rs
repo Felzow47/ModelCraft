@@ -95,50 +95,213 @@ fn normalize(a: [f32; 3]) -> [f32; 3] {
 
 /// Build one mesh from a set of faces.
 pub fn build(faces: &[FacePatch], with_edges: bool) -> TriMesh {
+    try_build(faces, with_edges, &crate::Ctl::default()).unwrap_or_default()
+}
+
+/// Above this many vertices in one mesh, B-rep edges are not computed (memory / time).
+pub const EDGE_VERTEX_LIMIT: usize = 12_000_000;
+
+/// [`build`] with fallible allocation, overflow checks and cancellation.
+pub fn try_build(faces: &[FacePatch], with_edges: bool, ctl: &crate::Ctl) -> crate::Result<TriMesh> {
     let nv: usize = faces.iter().map(|f| f.positions.len()).sum();
-    let mut m = TriMesh {
-        positions: Vec::with_capacity(nv),
-        normals: Vec::with_capacity(nv),
-        indices: Vec::with_capacity(nv * 3),
-        bbox_min: [f32::INFINITY; 3],
-        bbox_max: [f32::NEG_INFINITY; 3],
-        ..Default::default()
-    };
-    let mut edge_count: HashMap<(u32, u32), (u32, u32, u32)> = HashMap::new();
-    for f in faces {
-        let base = m.positions.len() as u32;
+    let mut b = MeshBuilder::new(nv, faces.len(), with_edges, None)?;
+    for (fi, f) in faces.iter().enumerate() {
+        if fi % 4096 == 4095 {
+            ctl.check()?;
+        }
+        b.add_face(f)?;
+    }
+    Ok(b.finish())
+}
+
+/// Size statistics of a set of faces, gathered in a first streaming pass so the mesh can be
+/// allocated exactly (or simplified) in the second one.
+#[derive(Debug, Clone, Copy)]
+pub struct FaceStats {
+    pub faces: usize,
+    pub vertices: usize,
+    pub triangles: usize,
+    pub area: f64,
+    pub bbox_min: [f32; 3],
+    pub bbox_max: [f32; 3],
+}
+
+impl Default for FaceStats {
+    fn default() -> Self {
+        FaceStats { faces: 0, vertices: 0, triangles: 0, area: 0.0, bbox_min: [f32::INFINITY; 3], bbox_max: [f32::NEG_INFINITY; 3] }
+    }
+}
+
+impl FaceStats {
+    pub fn add(&mut self, f: &FacePatch) {
+        self.faces += 1;
+        self.vertices += f.positions.len();
+        for p in &f.positions {
+            for k in 0..3 {
+                self.bbox_min[k] = self.bbox_min[k].min(p[k]);
+                self.bbox_max[k] = self.bbox_max[k].max(p[k]);
+            }
+        }
+        for_each_triangle(f, |a, b, c| {
+            self.triangles += 1;
+            let n = cross(sub(f.positions[b], f.positions[a]), sub(f.positions[c], f.positions[a]));
+            self.area += 0.5 * (dot(n, n) as f64).sqrt();
+        });
+    }
+}
+
+/// Visit the non-degenerate triangles of a face's strips (local vertex indices).
+fn for_each_triangle(f: &FacePatch, mut cb: impl FnMut(usize, usize, usize)) {
+    let n = f.positions.len();
+    let mut o = 0usize;
+    for &sv in &f.strips {
+        let sv = sv as usize;
+        if sv >= 3 && o + sv <= n {
+            for j in 0..sv - 2 {
+                let (a, b, c) = if j % 2 == 0 { (o + j, o + j + 1, o + j + 2) } else { (o + j + 1, o + j, o + j + 2) };
+                let (pa, pb, pc) = (f.positions[a], f.positions[b], f.positions[c]);
+                if pa == pb || pb == pc || pa == pc {
+                    continue; // degenerate (strip stitching)
+                }
+                cb(a, b, c);
+            }
+        }
+        o += sv;
+    }
+}
+
+/// Vertex clustering on a uniform grid (display simplification of huge meshes).
+struct Cluster {
+    lo: [f32; 3],
+    inv: f32,
+    map: HashMap<u64, u32>,
+    count: Vec<u32>,
+    local: Vec<u32>,
+}
+
+/// Incremental mesh construction: faces are added one at a time (and can be freed right
+/// after), so a huge display list never needs all its faces in memory at once.
+pub struct MeshBuilder {
+    m: TriMesh,
+    with_edges: bool,
+    cluster: Option<Cluster>,
+    edge_count: HashMap<(u32, u32), (u32, u32, u32)>,
+}
+
+impl MeshBuilder {
+    /// `expect_vertices` / `expect_faces` size the buffers (fallibly). With `cluster =
+    /// Some((origin, cell))`, vertices are merged per grid cell of size `cell` (simplified
+    /// display mesh, no B-rep edges).
+    pub fn new(expect_vertices: usize, expect_faces: usize, with_edges: bool, cluster: Option<([f32; 3], f32)>) -> crate::Result<Self> {
+        use crate::ctl::reserve;
+        if expect_vertices >= u32::MAX as usize / 2 {
+            return Err(crate::Error::TooLarge(format!("{expect_vertices} sommets dans une seule pièce")));
+        }
+        let mut m = TriMesh { bbox_min: [f32::INFINITY; 3], bbox_max: [f32::NEG_INFINITY; 3], ..Default::default() };
+        let cluster = cluster.map(|(lo, cell)| Cluster { lo, inv: 1.0 / cell.max(1e-12), map: HashMap::new(), count: Vec::new(), local: Vec::new() });
+        if cluster.is_none() {
+            reserve(&mut m.positions, expect_vertices, "sommets")?;
+            reserve(&mut m.normals, expect_vertices, "normales")?;
+            reserve(&mut m.indices, expect_vertices.saturating_mul(3), "triangles")?;
+        }
+        reserve(&mut m.face_start, expect_faces, "faces")?;
+        let with_edges = with_edges && cluster.is_none() && expect_vertices <= EDGE_VERTEX_LIMIT;
+        Ok(MeshBuilder { m, with_edges, cluster, edge_count: HashMap::new() })
+    }
+
+    pub fn vertex_count(&self) -> usize {
+        self.m.positions.len()
+    }
+
+    fn grow<T>(v: &mut Vec<T>, extra: usize, what: &str) -> crate::Result<()> {
+        if v.capacity() - v.len() < extra {
+            crate::ctl::reserve(v, extra.max(v.len() / 4), what)?;
+        }
+        Ok(())
+    }
+
+    pub fn add_face(&mut self, f: &FacePatch) -> crate::Result<()> {
         let n = f.positions.len();
-        m.positions.extend_from_slice(&f.positions);
-        if f.normals.len() == n {
-            m.normals.extend(f.normals.iter().map(|&x| normalize(x)));
-        } else if f.normals.len() == 1 {
-            let x = normalize(f.normals[0]);
-            m.normals.extend(std::iter::repeat_n(x, n));
-        } else {
-            m.normals.extend(std::iter::repeat_n([0.0, 0.0, 0.0], n));
+        if self.m.positions.len() + n >= u32::MAX as usize / 2 {
+            return Err(crate::Error::TooLarge(format!("plus de {} sommets dans une seule pièce", self.m.positions.len())));
         }
         for p in &f.positions {
             for k in 0..3 {
-                m.bbox_min[k] = m.bbox_min[k].min(p[k]);
-                m.bbox_max[k] = m.bbox_max[k].max(p[k]);
+                self.m.bbox_min[k] = self.m.bbox_min[k].min(p[k]);
+                self.m.bbox_max[k] = self.m.bbox_max[k].max(p[k]);
             }
         }
-        let tri_start = m.indices.len();
-        m.face_start.push((tri_start / 3) as u32);
-        let mut o = 0u32;
-        for &sv in &f.strips {
-            if sv >= 3 {
-                for j in 0..sv - 2 {
-                    let (a, b, c) = if j % 2 == 0 { (o + j, o + j + 1, o + j + 2) } else { (o + j + 1, o + j, o + j + 2) };
-                    let (pa, pb, pc) = (f.positions[a as usize], f.positions[b as usize], f.positions[c as usize]);
-                    if pa == pb || pb == pc || pa == pc {
-                        continue; // degenerate (strip stitching)
+        let face_normal = |i: usize| -> [f32; 3] {
+            if f.normals.len() == n {
+                normalize(f.normals[i])
+            } else if f.normals.len() == 1 {
+                normalize(f.normals[0])
+            } else {
+                [0.0, 0.0, 0.0]
+            }
+        };
+        let tri_start = self.m.indices.len();
+        self.m.face_start.push((tri_start / 3) as u32);
+        self.m.face_count += 1;
+        if let Some(cl) = self.cluster.as_mut() {
+            // Map each vertex to its grid cell; positions/normals are accumulated and averaged
+            // in `finish`.
+            cl.local.clear();
+            for (i, p) in f.positions.iter().enumerate() {
+                let q = |k: usize| (((p[k] - cl.lo[k]) * cl.inv).floor() as i64).clamp(0, (1 << 21) - 1) as u64;
+                let key = q(0) | (q(1) << 21) | (q(2) << 42);
+                let idx = match cl.map.get(&key) {
+                    Some(&v) => v,
+                    None => {
+                        let v = self.m.positions.len() as u32;
+                        Self::grow(&mut self.m.positions, 1, "sommets")?;
+                        Self::grow(&mut self.m.normals, 1, "normales")?;
+                        Self::grow(&mut cl.count, 1, "sommets")?;
+                        self.m.positions.push([0.0; 3]);
+                        self.m.normals.push([0.0; 3]);
+                        cl.count.push(0);
+                        cl.map.insert(key, v);
+                        v
                     }
-                    m.indices.extend_from_slice(&[base + a, base + b, base + c]);
+                };
+                let k = idx as usize;
+                for c in 0..3 {
+                    self.m.positions[k][c] += p[c];
                 }
+                let nn = face_normal(i);
+                for c in 0..3 {
+                    self.m.normals[k][c] += nn[c];
+                }
+                cl.count[k] += 1;
+                cl.local.push(idx);
             }
-            o += sv;
+            let local = std::mem::take(&mut cl.local);
+            let mut tris = 0usize;
+            for_each_triangle(f, |_, _, _| tris += 1);
+            Self::grow(&mut self.m.indices, tris * 3, "triangles")?;
+            let idx = &mut self.m.indices;
+            for_each_triangle(f, |a, b, c| {
+                let (a, b, c) = (local[a], local[b], local[c]);
+                if a != b && b != c && a != c {
+                    idx.extend_from_slice(&[a, b, c]);
+                }
+            });
+            self.cluster.as_mut().unwrap().local = local;
+            return Ok(());
         }
+        let base = self.m.positions.len() as u32;
+        Self::grow(&mut self.m.positions, n, "sommets")?;
+        Self::grow(&mut self.m.normals, n, "normales")?;
+        self.m.positions.extend_from_slice(&f.positions);
+        for i in 0..n {
+            self.m.normals.push(face_normal(i));
+        }
+        let mut tris = 0usize;
+        for_each_triangle(f, |_, _, _| tris += 1);
+        Self::grow(&mut self.m.indices, tris * 3, "triangles")?;
+        let idx = &mut self.m.indices;
+        for_each_triangle(f, |a, b, c| idx.extend_from_slice(&[base + a as u32, base + b as u32, base + c as u32]));
+        let m = &mut self.m;
         // Missing normals -> flat normals from triangles.
         if f.normals.len() != n && f.normals.len() != 1 {
             for t in m.indices[tri_start..].chunks_exact(3) {
@@ -150,7 +313,8 @@ pub fn build(faces: &[FacePatch], with_edges: bool) -> TriMesh {
             }
         }
         // Edges: segments used by exactly one triangle of this face (welded by position).
-        if with_edges {
+        if self.with_edges {
+            let edge_count = &mut self.edge_count;
             edge_count.clear();
             let mut weld: HashMap<[u32; 3], u32> = HashMap::new();
             let key = |p: [f32; 3]| [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()];
@@ -170,13 +334,34 @@ pub fn build(faces: &[FacePatch], with_edges: bool) -> TriMesh {
                 }
             }
         }
-        m.face_count += 1;
+        Ok(())
     }
-    if m.positions.is_empty() {
-        m.bbox_min = [0.0; 3];
-        m.bbox_max = [0.0; 3];
+
+    pub fn finish(mut self) -> TriMesh {
+        if let Some(cl) = self.cluster.take() {
+            drop(cl.map);
+            for (k, &c) in cl.count.iter().enumerate() {
+                let c = c.max(1) as f32;
+                let p = &mut self.m.positions[k];
+                *p = [p[0] / c, p[1] / c, p[2] / c];
+                self.m.normals[k] = normalize(self.m.normals[k]);
+            }
+            self.m.positions.shrink_to_fit();
+            self.m.normals.shrink_to_fit();
+            self.m.indices.shrink_to_fit();
+        }
+        if self.m.positions.is_empty() {
+            self.m.bbox_min = [0.0; 3];
+            self.m.bbox_max = [0.0; 3];
+        }
+        self.m
     }
-    m
+}
+
+/// Grid cell size giving roughly `target` vertices when clustering a surface of `area`
+/// (each cell crossed by the surface gives one vertex; about `area / cell²` cells).
+pub fn cluster_cell(area: f64, target: usize) -> f32 {
+    ((area / target.max(1) as f64).sqrt() * 0.9).max(1e-9) as f32
 }
 
 /// Build a display mesh from a raw triangle soup (STL, OBJ, 3DS, STEP tessellation…).

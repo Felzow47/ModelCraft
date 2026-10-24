@@ -276,6 +276,9 @@ fn family(id: &str) -> &'static str {
         "view.tree" | "view.info" | "view.theme" | "view.fullscreen" => "d",
         "tool.select" | "tool.distance" | "tool.edge" | "tool.diameter" | "tool.angle" => "a",
         "tool.clear" => "b",
+        "asm.move" | "asm.rotate" | "asm.reset_sel" | "asm.reset_all" => "c",
+        "asm.explode" | "asm.explode_lines" => "d",
+        "asm.transparent" | "asm.others" | "asm.xray" => "e",
         "help.palette" | "help.shortcuts" => "a",
         _ => "z",
     }
@@ -307,6 +310,13 @@ pub fn checked(app: &App, id: &str) -> Option<bool> {
         "tool.edge" => d.is_some_and(|d| d.measure.tool == Tool::Edge),
         "tool.diameter" => d.is_some_and(|d| d.measure.tool == Tool::Diameter),
         "tool.angle" => d.is_some_and(|d| d.measure.tool == Tool::Angle),
+        "asm.move" => d.is_some_and(|d| d.gizmo),
+        "asm.rotate" => d.is_some_and(|d| d.gizmo_rotate),
+        "asm.explode" => d.is_some_and(|d| d.asm.explode_goal > 0.0),
+        "asm.explode_lines" => d.is_some_and(|d| d.asm.explode_lines),
+        "asm.transparent" => d.is_some_and(|d| d.selected.is_some_and(|i| d.asm.opacity.get(i).is_some_and(|o| *o < 0.999))),
+        "asm.others" => d.is_some_and(|d| d.asm.others_transparent),
+        "asm.xray" => d.is_some_and(|d| d.asm.global_opacity < 0.999),
         _ => return None,
     })
 }
@@ -326,9 +336,9 @@ pub fn status_bar(app: &mut App, ui: &mut egui::Ui) {
                         ui.label(small(tr("Glissez un fichier ou un dossier dans la fenêtre").to_string()));
                     }
                     Some(d) => {
-                        if let Some((f, stage, secs)) = d.progress() {
+                        if let Some(lp) = d.progress() {
                             ui.add(egui::Spinner::new().size(12.0).color(t.accent));
-                            ui.label(small(format!("{} {:.0} % · {:.1} s", viewer::tr_stage(&stage), f * 100.0, secs)));
+                            ui.label(small(format!("{} {:.0} % · {:.1} s · {}", viewer::tr_stage(&lp.stage), lp.fraction * 100.0, lp.secs, widgets::human_size(d.size))));
                         } else if let Some(s) = &d.scene {
                             ui.label(small(d.file_kind_label()));
                             ui.label(small(trf("{n} triangles", &[("n", &widgets::fmt_int(d.stats.triangles))])));

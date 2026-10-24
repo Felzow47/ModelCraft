@@ -1,7 +1,7 @@
 //! The document view: model tree, 3D viewport (navigation, picking, measurements, view cube,
 //! overlays) and the information panel.
 
-use crate::document::{DocState, Document, FaceSel, Section};
+use crate::document::{DocState, Document, FaceSel, GizmoDrag, Handle, Section};
 use crate::i18n::{tr, trf};
 use crate::measure::{self, Measure, Tool};
 use crate::render::{Light, LineVertex, Renderer, ViewSettings};
@@ -152,6 +152,24 @@ pub fn tree_panel(ui: &mut egui::Ui, doc: &mut Document, cmds: &mut Cmds) {
                     ui.close();
                 }
                 ui.separator();
+                if widgets::menu_icon_item(ui, "move-3d", tr("Déplacer"), "M").clicked() {
+                    action = Some((i, "move"));
+                    ui.close();
+                }
+                if doc.asm.is_moved(i) && widgets::menu_icon_item(ui, "rotate-ccw", tr("Réinitialiser la position"), "").clicked() {
+                    action = Some((i, "reset_pos"));
+                    ui.close();
+                }
+                let transp = doc.asm.opacity.get(i).is_some_and(|o| *o < 0.999);
+                if widgets::menu_check(ui, transp, tr("Transparent"), "J").clicked() {
+                    action = Some((i, "transparent"));
+                    ui.close();
+                }
+                if widgets::menu_check(ui, doc.asm.others_transparent && doc.selected == Some(i), tr("Transparence des autres"), "").clicked() {
+                    action = Some((i, "others"));
+                    ui.close();
+                }
+                ui.separator();
                 if widgets::menu_icon_item(ui, "copy", tr("Copier le nom"), "").clicked() {
                     ui.ctx().copy_text(c.name.clone());
                     ui.close();
@@ -180,6 +198,25 @@ pub fn tree_panel(ui: &mut egui::Ui, doc: &mut Document, cmds: &mut Cmds) {
             }
             "toggle_hidden" => doc.toggle_hidden(i),
             "isolate" => doc.isolate(i),
+            "move" => {
+                doc.select(Some(i));
+                doc.reveal_in_tree = false;
+                if !doc.gizmo {
+                    cmds.push("asm.move");
+                }
+            }
+            "reset_pos" => doc.reset_position(Some(i)),
+            "transparent" => {
+                let o = doc.asm.opacity.get(i).copied().unwrap_or(1.0);
+                doc.set_opacity(Some(i), if o < 0.999 { 1.0 } else { 0.3 });
+            }
+            "others" => {
+                let on = !(doc.asm.others_transparent && doc.selected == Some(i));
+                doc.select(Some(i));
+                doc.reveal_in_tree = false;
+                doc.asm.others_transparent = on;
+                doc.instances_dirty = true;
+            }
             "show_all" => doc.show_all(),
             "select" => {
                 doc.face_sel = None;
@@ -196,7 +233,6 @@ pub fn tree_panel(ui: &mut egui::Ui, doc: &mut Document, cmds: &mut Cmds) {
             _ => {}
         }
     }
-    let _ = cmds;
 }
 
 /// Frame the camera on a component's subtree.
@@ -241,7 +277,7 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
     let geometry = doc.scene.as_ref().is_some_and(|s| s.has_geometry());
     if !geometry {
         empty_or_preview(ui, doc, rect);
-        loading_overlay(ui, doc, rect);
+        loading_overlay(ui, doc, rect, cmds);
         return;
     }
     if gfx.renderer.ensure_target(&gfx.rs.device, px) {
@@ -269,7 +305,15 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
     // ---- navigation
     let (scroll, zoom2, pointer, mods) = ui.input(|i| (i.smooth_scroll_delta.y, i.zoom_delta(), i.pointer.hover_pos(), i.modifiers));
     let to_ndc = |p: Pos2| GVec2::new((p.x - rect.center().x) / (rect.width() * 0.5), -(p.y - rect.center().y) / (rect.height() * 0.5));
-    if resp.dragged() {
+    // move gizmo (viewer-only component moves) takes the left drag before navigation
+    let mut gizmo_hover = None;
+    let gizmo_busy = if doc.gizmo && doc.measure.tool == Tool::Select {
+        gizmo_input(ui, doc, &resp, rect, aspect, pointer, &mut gizmo_hover)
+    } else {
+        doc.drag = None;
+        false
+    };
+    if resp.dragged() && !gizmo_busy {
         let d = resp.drag_delta();
         let gd = GVec2::new(d.x, d.y);
         use egui::PointerButton::*;
@@ -384,6 +428,13 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
     if doc.show_bbox {
         bbox_lines(doc, t.accent, &mut lines);
     }
+    {
+        let col = if t.dark() { [1.0, 0.85, 0.35, 0.75] } else { [0.55, 0.38, 0.0, 0.8] };
+        for (a, b) in doc.explode_lines() {
+            lines.push(LineVertex { pos: a.to_array(), col });
+            lines.push(LineVertex { pos: b.to_array(), col });
+        }
+    }
     let vs = ViewSettings {
         view_proj: vp,
         view,
@@ -418,6 +469,16 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
         bbox_labels(&painter, doc, st, &t, &project);
     }
     draw_measures(&painter, doc, st, &t, &project, hover_hit);
+    if doc.gizmo && doc.measure.tool == Tool::Select {
+        draw_gizmo(&painter, doc, view, &project, gizmo_hover, &t);
+        if resp.hovered() {
+            if doc.drag.is_some() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            } else if gizmo_hover.is_some() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+            }
+        }
+    }
     if st.show_axes {
         triad(&painter, rect, view, &t);
     }
@@ -438,7 +499,236 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
 
     // ---- context menu
     resp.context_menu(|ui| viewport_menu(ui, doc, st, cmds));
-    loading_overlay(ui, doc, rect);
+    loading_overlay(ui, doc, rect, cmds);
+}
+
+// ---- move gizmo -------------------------------------------------------------------------
+
+const AXIS_COLORS: [Color32; 3] = [Color32::from_rgb(232, 76, 76), Color32::from_rgb(98, 196, 82), Color32::from_rgb(70, 132, 240)];
+
+/// Screen geometry of the gizmo of component `i`: centre, world length of an arrow, projected
+/// centre, arrow tips and (sampled) rings.
+struct GizmoGeom {
+    c: Vec3,
+    len: f32,
+    c2: Pos2,
+    tips: [Option<Pos2>; 3],
+    rings: [Vec<Pos2>; 3],
+}
+
+fn ortho_basis(a: Vec3) -> (Vec3, Vec3) {
+    let u = if a.x.abs() < 0.9 { Vec3::X.cross(a) } else { Vec3::Y.cross(a) }.normalize();
+    (u, a.cross(u))
+}
+
+fn gizmo_geom(doc: &Document, view: Mat4, project: &dyn Fn(Vec3) -> Option<Pos2>, with_rings: bool) -> Option<GizmoGeom> {
+    let i = doc.selected?;
+    let c = doc.component_center(i)?;
+    let c2 = project(c)?;
+    let right = view.inverse().x_axis.truncate().normalize_or_zero();
+    let ppu = (project(c + right)? - c2).length();
+    if !(ppu > 1e-9) {
+        return None;
+    }
+    let len = 88.0 / ppu;
+    let axes = [Vec3::X, Vec3::Y, Vec3::Z];
+    let tips = axes.map(|a| project(c + a * len));
+    let rings = axes.map(|a| {
+        if !with_rings {
+            return vec![];
+        }
+        let (u, v) = ortho_basis(a);
+        (0..=48)
+            .filter_map(|k| {
+                let th = k as f32 / 48.0 * std::f32::consts::TAU;
+                project(c + (u * th.cos() + v * th.sin()) * len * 0.72)
+            })
+            .collect()
+    });
+    Some(GizmoGeom { c, len, c2, tips, rings })
+}
+
+fn seg_dist(p: Pos2, a: Pos2, b: Pos2) -> f32 {
+    let ab = b - a;
+    let t = ((p - a).dot(ab) / ab.length_sq().max(1e-6)).clamp(0.0, 1.0);
+    (a + ab * t - p).length()
+}
+
+fn gizmo_hit(g: &GizmoGeom, p: Pos2) -> Option<Handle> {
+    let mut best: Option<(f32, Handle)> = None;
+    let mut consider = |d: f32, h: Handle| {
+        if d < 9.0 && best.is_none_or(|(bd, _)| d < bd) {
+            best = Some((d, h));
+        }
+    };
+    for k in 0..3 {
+        if let Some(tip) = g.tips[k] {
+            consider(seg_dist(p, g.c2, tip), Handle::Axis(k));
+        }
+        for w in g.rings[k].windows(2) {
+            consider(seg_dist(p, w[0], w[1]) + 0.5, Handle::Ring(k));
+        }
+    }
+    if (p - g.c2).length() < 8.0 {
+        return Some(Handle::Free);
+    }
+    best.map(|b| b.1)
+}
+
+/// Closest point parameter on the line `o + t·a` to the ray `ro + s·rd`.
+fn line_param(o: Vec3, a: Vec3, ro: Vec3, rd: Vec3) -> Option<f32> {
+    let w0 = o - ro;
+    let (b, c, d, e) = (a.dot(rd), rd.dot(rd), a.dot(w0), rd.dot(w0));
+    let den = a.dot(a) * c - b * b;
+    (den.abs() > 1e-6 * c.max(1e-12)).then(|| (b * e - c * d) / den)
+}
+
+fn plane_hit(o: Vec3, n: Vec3, ro: Vec3, rd: Vec3) -> Option<Vec3> {
+    let dn = rd.dot(n);
+    if dn.abs() < 1e-7 {
+        return None;
+    }
+    let s = (o - ro).dot(n) / dn;
+    Some(ro + rd * s)
+}
+
+fn ring_angle(o: Vec3, a: Vec3, p: Vec3) -> f32 {
+    let (u, v) = ortho_basis(a);
+    let d = p - o;
+    d.dot(v).atan2(d.dot(u))
+}
+
+/// Gizmo / free drag handling. Returns true while it owns the pointer (no camera navigation).
+fn gizmo_input(ui: &egui::Ui, doc: &mut Document, resp: &egui::Response, rect: Rect, aspect: f32, pointer: Option<Pos2>, hover: &mut Option<Handle>) -> bool {
+    let to_ndc = |p: Pos2| GVec2::new((p.x - rect.center().x) / (rect.width() * 0.5), -(p.y - rect.center().y) / (rect.height() * 0.5));
+    let view = doc.camera.view();
+    let vp = doc.camera.proj(aspect) * view;
+    let project = |p: Vec3| -> Option<Pos2> {
+        let c = vp * p.extend(1.0);
+        (c.w > 1e-9).then(|| {
+            let n = c.truncate() / c.w;
+            egui::pos2(rect.center().x + n.x * rect.width() * 0.5, rect.center().y - n.y * rect.height() * 0.5)
+        })
+    };
+    let geom = gizmo_geom(doc, view, &project, doc.gizmo_rotate);
+    if doc.drag.is_none() {
+        *hover = geom.as_ref().zip(pointer).and_then(|(g, p)| gizmo_hit(g, p));
+    }
+    let primary = resp.dragged_by(egui::PointerButton::Primary);
+    if resp.drag_started_by(egui::PointerButton::Primary) {
+        let press = ui.input(|i| i.pointer.press_origin()).or(pointer);
+        if let Some(p) = press {
+            let (ro, rd) = doc.camera.ray(to_ndc(p), aspect);
+            let fwd = view.inverse().z_axis.truncate().normalize_or_zero();
+            let start = match (geom.as_ref().and_then(|g| gizmo_hit(g, p)), doc.selected, &geom) {
+                (Some(h), Some(sel), Some(g)) => Some((sel, h, g.c)),
+                _ => doc.pick(ro, rd).map(|hit| {
+                    // keep moving the selected sub-assembly when one of its parts is grabbed
+                    let comp = match doc.selected {
+                        Some(sel) if doc.subtree(sel).contains(&hit.comp) => sel,
+                        _ => hit.comp,
+                    };
+                    if doc.selected != Some(comp) {
+                        doc.face_sel = None;
+                        doc.highlight_dirty = true;
+                        doc.select(Some(comp));
+                    }
+                    (comp, Handle::Free, hit.point)
+                }),
+            };
+            if let Some((comp, handle, at)) = start {
+                let origin = match handle {
+                    Handle::Free => at,
+                    _ => doc.component_center(comp).unwrap_or(at),
+                };
+                let (normal, last) = match handle {
+                    Handle::Axis(k) => {
+                        let a = Vec3::AXES[k];
+                        (a, Vec3::splat(line_param(origin, a, ro, rd).unwrap_or(0.0)))
+                    }
+                    Handle::Ring(k) => {
+                        let a = Vec3::AXES[k];
+                        (a, Vec3::splat(plane_hit(origin, a, ro, rd).map(|q| ring_angle(origin, a, q)).unwrap_or(0.0)))
+                    }
+                    Handle::Free => (fwd, plane_hit(origin, fwd, ro, rd).unwrap_or(origin)),
+                };
+                doc.drag = Some(GizmoDrag { comp, handle, origin, normal, last });
+            }
+        }
+    }
+    let Some(mut dr) = doc.drag else { return false };
+    if !primary {
+        doc.drag = None;
+        return false;
+    }
+    *hover = Some(dr.handle);
+    if let Some(p) = pointer {
+        let (ro, rd) = doc.camera.ray(to_ndc(p), aspect);
+        let w = match dr.handle {
+            Handle::Axis(k) => line_param(dr.origin, dr.normal, ro, rd).map(|t| {
+                // ignore absurd jumps when the axis points at the viewer
+                let dt = (t - dr.last.x).clamp(-1e6, 1e6);
+                dr.last = Vec3::splat(t);
+                let _ = k;
+                Mat4::from_translation(dr.normal * dt)
+            }),
+            Handle::Ring(_) => plane_hit(dr.origin, dr.normal, ro, rd).map(|q| {
+                let ang = ring_angle(dr.origin, dr.normal, q);
+                let mut da = ang - dr.last.x;
+                if da > std::f32::consts::PI {
+                    da -= std::f32::consts::TAU;
+                } else if da < -std::f32::consts::PI {
+                    da += std::f32::consts::TAU;
+                }
+                dr.last = Vec3::splat(ang);
+                Mat4::from_translation(dr.origin) * Mat4::from_axis_angle(dr.normal, da) * Mat4::from_translation(-dr.origin)
+            }),
+            Handle::Free => plane_hit(dr.origin, dr.normal, ro, rd).map(|q| {
+                let d = q - dr.last;
+                dr.last = q;
+                Mat4::from_translation(d)
+            }),
+        };
+        if let Some(w) = w {
+            if w != Mat4::IDENTITY && w.is_finite() {
+                doc.move_component(dr.comp, w);
+            }
+        }
+        doc.drag = Some(dr);
+    }
+    true
+}
+
+fn draw_gizmo(p: &egui::Painter, doc: &Document, view: Mat4, project: &dyn Fn(Vec3) -> Option<Pos2>, hover: Option<Handle>, t: &Tokens) {
+    let Some(g) = gizmo_geom(doc, view, project, doc.gizmo_rotate) else { return };
+    let hot = Color32::from_rgb(255, 214, 64);
+    for k in 0..3 {
+        if g.rings[k].len() > 1 {
+            let col = if hover == Some(Handle::Ring(k)) { hot } else { AXIS_COLORS[k].gamma_multiply(0.85) };
+            p.add(egui::Shape::line(g.rings[k].clone(), Stroke::new(if hover == Some(Handle::Ring(k)) { 3.0 } else { 2.0 }, col)));
+        }
+    }
+    // draw the arrows back to front so the nearest one is on top
+    let fwd = view.inverse().z_axis.truncate();
+    let mut order = [0usize, 1, 2];
+    order.sort_by(|a, b| Vec3::AXES[*a].dot(fwd).partial_cmp(&Vec3::AXES[*b].dot(fwd)).unwrap_or(std::cmp::Ordering::Equal));
+    for k in order {
+        let Some(tip) = g.tips[k] else { continue };
+        let on = hover == Some(Handle::Axis(k));
+        let col = if on { hot } else { AXIS_COLORS[k] };
+        let dir = (tip - g.c2).normalized();
+        if !(dir.x.is_finite() && dir.y.is_finite()) || (tip - g.c2).length() < 6.0 {
+            continue;
+        }
+        let base = tip - dir * 13.0;
+        p.line_segment([g.c2, base], Stroke::new(if on { 4.0 } else { 3.0 }, col));
+        let n = vec2(-dir.y, dir.x) * 6.5;
+        p.add(egui::Shape::convex_polygon(vec![tip, base + n, base - n], col, Stroke::NONE));
+        p.text(tip + dir * 9.0, Align2::CENTER_CENTER, ["X", "Y", "Z"][k], theme::semibold(11.5), col);
+    }
+    let free_on = hover == Some(Handle::Free);
+    p.circle(g.c2, if free_on { 7.0 } else { 5.5 }, if free_on { hot } else { t.card }, Stroke::new(1.5, if free_on { hot } else { t.text }));
+    let _ = (g.c, g.len);
 }
 
 fn background(st: &Settings, t: &Tokens) -> ([f32; 3], [f32; 3]) {
@@ -883,7 +1173,49 @@ fn viewport_menu(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, cmds: &mu
             }
         }
         ui.separator();
+        if widgets::menu_check(ui, doc.gizmo, tr("Déplacer des composants"), &sc("asm.move")).clicked() {
+            cmds.push("asm.move");
+            ui.close();
+        }
+        let moved = doc.subtree(i).iter().any(|&k| doc.asm.is_moved(k));
+        if ui.add_enabled_ui(moved, |ui| widgets::menu_icon_item(ui, "rotate-ccw", tr("Réinitialiser la position"), "")).inner.clicked() {
+            cmds.push("asm.reset_sel");
+            ui.close();
+        }
+        opacity_row(ui, doc, Some(i));
+        if widgets::menu_check(ui, doc.asm.others_transparent, tr("Transparence des autres"), &sc("asm.others")).clicked() {
+            cmds.push("asm.others");
+            ui.close();
+        }
+        ui.separator();
     }
+    ui.menu_button(tr("Assemblage"), |ui| {
+        ui.set_min_width(250.0);
+        for id in ["asm.move", "asm.rotate"] {
+            let c = crate::commands::get(id);
+            if widgets::menu_check(ui, crate_checked(doc, id), tr(c.label), &sc(id)).clicked() {
+                cmds.push(id);
+                ui.close();
+            }
+        }
+        ui.separator();
+        if widgets::menu_check(ui, doc.asm.explode_goal > 0.0, tr("Vue éclatée"), &sc("asm.explode")).clicked() {
+            cmds.push("asm.explode");
+            ui.close();
+        }
+        explode_row(ui, doc);
+        if widgets::menu_check(ui, doc.asm.explode_lines, tr("Lignes d'éclatement"), "").clicked() {
+            cmds.push("asm.explode_lines");
+            ui.close();
+        }
+        ui.separator();
+        opacity_row(ui, doc, None);
+        ui.separator();
+        if widgets::menu_icon_item(ui, "rotate-ccw", tr("Réinitialiser toutes les positions"), &sc("asm.reset_all")).clicked() {
+            cmds.push("asm.reset_all");
+            ui.close();
+        }
+    });
     item(ui, cmds, "edit.show_all");
     item(ui, cmds, "view.fit");
     ui.menu_button(tr("Vues standard"), |ui| {
@@ -917,6 +1249,54 @@ fn viewport_menu(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, cmds: &mu
     item(ui, cmds, "file.screenshot");
 }
 
+fn crate_checked(doc: &Document, id: &str) -> bool {
+    match id {
+        "asm.move" => doc.gizmo,
+        "asm.rotate" => doc.gizmo_rotate,
+        _ => false,
+    }
+}
+
+/// "Opacité" slider for a component (or the global one).
+fn opacity_row(ui: &mut egui::Ui, doc: &mut Document, i: Option<usize>) {
+    let t = Tokens::get(ui.ctx());
+    let mut v = match i {
+        Some(i) => doc.asm.opacity.get(i).copied().unwrap_or(1.0),
+        None => doc.asm.global_opacity,
+    };
+    ui.horizontal(|ui| {
+        ui.add_space(6.0);
+        ui.add(icons::image("layers", 15.0, t.text_muted));
+        ui.label(egui::RichText::new(if i.is_some() { tr("Opacité") } else { tr("Opacité globale") }).font(theme::regular(12.5)).color(t.text));
+        ui.spacing_mut().slider_width = 110.0;
+        if ui.add(egui::Slider::new(&mut v, 0.05..=1.0).custom_formatter(|x, _| format!("{:.0} %", x * 100.0))).changed() {
+            doc.set_opacity(i, v);
+        }
+    });
+}
+
+/// Explosion amount slider (0–100 %).
+fn explode_row(ui: &mut egui::Ui, doc: &mut Document) {
+    let t = Tokens::get(ui.ctx());
+    let mut v = doc.asm.explode_goal;
+    ui.horizontal(|ui| {
+        ui.add_space(6.0);
+        ui.add(icons::image("boxes", 15.0, t.text_muted));
+        ui.label(egui::RichText::new(tr("Éclatement")).font(theme::regular(12.5)).color(t.text));
+        ui.spacing_mut().slider_width = 110.0;
+        let r = ui.add(egui::Slider::new(&mut v, 0.0..=1.0).custom_formatter(|x, _| format!("{:.0} %", x * 100.0)));
+        if r.changed() {
+            doc.asm.explode_goal = v;
+            // follow the slider directly while it is dragged, animate otherwise
+            if r.dragged() {
+                doc.asm.explode = v;
+                doc.apply_transforms();
+            }
+            ui.ctx().request_repaint();
+        }
+    });
+}
+
 fn empty_or_preview(ui: &mut egui::Ui, doc: &Document, rect: Rect) {
     let t = Tokens::get(ui.ctx());
     let p = ui.painter_at(rect);
@@ -937,14 +1317,14 @@ fn empty_or_preview(ui: &mut egui::Ui, doc: &Document, rect: Rect) {
     }
 }
 
-fn loading_overlay(ui: &mut egui::Ui, doc: &Document, rect: Rect) {
-    let Some((f, stage, secs)) = doc.progress() else { return };
+fn loading_overlay(ui: &mut egui::Ui, doc: &Document, rect: Rect, cmds: &mut Cmds) {
+    let Some(lp) = doc.progress() else { return };
     let t = Tokens::get(ui.ctx());
     let p = ui.painter_at(rect);
     if doc.scene.is_none() {
         p.rect_filled(rect, CornerRadius::ZERO, t.pasteboard);
     }
-    let card = Rect::from_center_size(rect.center(), vec2(360.0, 112.0));
+    let card = Rect::from_center_size(rect.center(), vec2(420.0, 150.0));
     p.rect(card, CornerRadius::same(12), t.card, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
     let time = ui.input(|i| i.time) as f32;
     // spinner
@@ -954,11 +1334,20 @@ fn loading_overlay(ui: &mut egui::Ui, doc: &Document, rect: Rect) {
         let alpha = ((k as f32) / 12.0).powf(1.5);
         p.line_segment([sc + vec2(a.cos(), a.sin()) * 6.0, sc + vec2(a.cos(), a.sin()) * 11.0], Stroke::new(2.0, t.accent.gamma_multiply(alpha)));
     }
-    widgets::row_text(ui, card.left_top() + vec2(58.0, 30.0), trf("Ouverture de {name}", &[("name", &doc.title)]), theme::semibold(13.5), t.text, 290.0);
-    widgets::row_text(ui, card.left_top() + vec2(58.0, 50.0), format!("{}  ·  {:.1} s", tr_stage(&stage), secs), theme::regular(12.0), t.text_muted, 290.0);
-    let track = Rect::from_min_size(card.left_top() + vec2(20.0, 76.0), vec2(320.0, 6.0));
+    widgets::row_text(ui, card.left_top() + vec2(58.0, 26.0), trf("Ouverture de {name}", &[("name", &doc.title)]), theme::semibold(13.5), t.text, 340.0);
+    // file size · elapsed
+    let mut sub = widgets::human_size(doc.size);
+    sub.push_str(&format!("  ·  {}", fmt_elapsed(lp.secs)));
+    widgets::row_text(ui, card.left_top() + vec2(58.0, 46.0), sub, theme::regular(12.0), t.text_muted, 340.0);
+    // stage (+ bytes of the current stage)
+    let mut stage = tr_stage(&lp.stage);
+    if let Some((done, total)) = lp.bytes.filter(|b| b.1 > 0) {
+        stage.push_str(&format!("  ·  {} / {}", widgets::human_size(done), widgets::human_size(total)));
+    }
+    widgets::row_text(ui, card.left_top() + vec2(58.0, 66.0), stage, theme::regular(12.0), t.text_muted, 340.0);
+    let track = Rect::from_min_size(card.left_top() + vec2(20.0, 92.0), vec2(380.0, 6.0));
     p.rect_filled(track, CornerRadius::same(3), t.hover);
-    let shown = ui.ctx().animate_value_with_time(egui::Id::new(("load-bar", doc.id)), f.clamp(0.0, 1.0), 0.25);
+    let shown = ui.ctx().animate_value_with_time(egui::Id::new(("load-bar", doc.id)), lp.fraction.clamp(0.0, 1.0), 0.25);
     if shown > 0.001 {
         p.rect_filled(Rect::from_min_size(track.min, vec2(track.width() * shown, 6.0)), CornerRadius::same(3), t.accent);
     } else {
@@ -967,8 +1356,20 @@ fn loading_overlay(ui: &mut egui::Ui, doc: &Document, rect: Rect) {
         let r = Rect::from_min_size(track.min + vec2(track.width() * x * 0.75, 0.0), vec2(track.width() * 0.25, 6.0));
         p.rect_filled(r, CornerRadius::same(3), t.accent);
     }
-    p.text(track.right_bottom() + vec2(0.0, 6.0), Align2::RIGHT_TOP, format!("{:.0} %", shown * 100.0), theme::mono(10.5), t.text_faint);
+    p.text(track.left_bottom() + vec2(0.0, 12.0), Align2::LEFT_TOP, format!("{:.0} %", shown * 100.0), theme::mono(10.5), t.text_faint);
+    let br = Rect::from_min_size(card.right_bottom() + vec2(-112.0, -40.0), vec2(92.0, 26.0));
+    if ui.put(br, egui::Button::new(tr("Annuler"))).clicked() {
+        cmds.push("file.cancel_load");
+    }
     ui.ctx().request_repaint();
+}
+
+fn fmt_elapsed(secs: f32) -> String {
+    if secs < 60.0 {
+        format!("{secs:.1} s")
+    } else {
+        format!("{} min {:02} s", (secs / 60.0) as u32, (secs % 60.0) as u32)
+    }
 }
 
 /// Stage labels come from the loaders in French.
@@ -980,6 +1381,15 @@ pub const STAGES: &[&str] = &[
     "Conversion de la géométrie…",
     "Maillage des surfaces…",
     "Construction de la scène…",
+    "Ouverture du conteneur…",
+    "Décompression…",
+    "Analyse du maillage…",
+    "Construction du maillage…",
+    "Composants externes…",
+    "Analyse du maillage (1/2)…",
+    "Construction du maillage (2/2)…",
+    "Lecture des informations…",
+    "Vignette…",
 ];
 
 pub fn tr_stage(s: &str) -> String {
@@ -1030,6 +1440,15 @@ pub fn info_panel(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, cmds: &m
         });
         let Some(s) = &doc.scene else { return };
         let stt = doc.stats;
+        if !s.properties.is_empty() {
+            card(ui, tr("Propriétés"), &mut |ui| {
+                for (k, v) in &s.properties {
+                    ui.label(egui::RichText::new(prop_label(k)).font(theme::regular(11.5)).color(t.text_muted));
+                    ui.add(egui::Label::new(egui::RichText::new(v).font(theme::medium(12.5)).color(t.text)).wrap());
+                    ui.add_space(3.0);
+                }
+            });
+        }
         card(ui, tr("Dimensions"), &mut |ui| {
             if let Some((lo, hi)) = stt.bbox {
                 let d = hi - lo;
@@ -1102,6 +1521,84 @@ pub fn info_panel(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, cmds: &m
                 }
             });
         }
+        let n_parts = s.components.iter().filter(|c| c.mesh.is_some()).count();
+        let mut asm_cmd: Option<&'static str> = None;
+        let mut new_goal = None;
+        let mut new_global = None;
+        let mut new_sel = None;
+        let mut lines = doc.asm.explode_lines;
+        let mut others = doc.asm.others_transparent;
+        let (goal, global) = (doc.asm.explode_goal, doc.asm.global_opacity);
+        let sel_op = doc.selected.map(|i| doc.asm.opacity.get(i).copied().unwrap_or(1.0));
+        let sel_moved = doc.selected.is_some_and(|i| doc.subtree(i).iter().any(|&k| doc.asm.is_moved(k)));
+        let modified = doc.asm.is_modified() || global < 0.999 || doc.asm.opacity.iter().any(|o| *o < 0.999);
+        let gizmo = doc.gizmo;
+        card(ui, tr("Assemblage"), &mut |ui| {
+            let pct = |x: f64, _: std::ops::RangeInclusive<usize>| format!("{:.0} %", x * 100.0);
+            ui.spacing_mut().slider_width = (ui.available_width() - 60.0).max(80.0);
+            if n_parts > 1 {
+                ui.label(egui::RichText::new(tr("Vue éclatée")).font(theme::regular(12.5)).color(t.text_muted));
+                let mut g = goal;
+                let r = ui.add(egui::Slider::new(&mut g, 0.0..=1.0).custom_formatter(pct));
+                if r.changed() {
+                    new_goal = Some((g, r.dragged()));
+                }
+                if ui.checkbox(&mut lines, tr("Lignes d'éclatement")).changed() {}
+                ui.add_space(6.0);
+            }
+            ui.label(egui::RichText::new(tr("Opacité globale")).font(theme::regular(12.5)).color(t.text_muted));
+            let mut go = global;
+            if ui.add(egui::Slider::new(&mut go, 0.05..=1.0).custom_formatter(pct)).changed() {
+                new_global = Some(go);
+            }
+            if let Some(o) = sel_op {
+                ui.add_space(6.0);
+                ui.label(egui::RichText::new(tr("Opacité de la sélection")).font(theme::regular(12.5)).color(t.text_muted));
+                let mut so = o;
+                if ui.add(egui::Slider::new(&mut so, 0.05..=1.0).custom_formatter(pct)).changed() {
+                    new_sel = Some(so);
+                }
+                ui.checkbox(&mut others, tr("Transparence des autres"));
+            }
+            ui.add_space(8.0);
+            ui.horizontal_wrapped(|ui| {
+                if widgets::icon_pill(ui, "move-3d", if gizmo { tr("Terminer") } else { tr("Déplacer") }, gizmo).clicked() {
+                    asm_cmd = Some("asm.move");
+                }
+                if sel_moved && widgets::icon_pill(ui, "rotate-ccw", tr("Réinitialiser la position"), false).clicked() {
+                    asm_cmd = Some("asm.reset_sel");
+                }
+                if modified && widgets::icon_pill(ui, "rotate-ccw", tr("Réinitialiser tout"), false).clicked() {
+                    asm_cmd = Some("asm.reset_all");
+                }
+            });
+            ui.label(egui::RichText::new(tr("Affichage seulement : le fichier n'est jamais modifié.")).font(theme::regular(11.0)).color(t.text_faint));
+        });
+        if let Some(c) = asm_cmd {
+            cmds.push(c);
+        }
+        if let Some((g, dragging)) = new_goal {
+            doc.asm.explode_goal = g;
+            if dragging {
+                doc.asm.explode = g;
+                doc.apply_transforms();
+            }
+            ui.ctx().request_repaint();
+        }
+        if lines != doc.asm.explode_lines {
+            doc.asm.explode_lines = lines;
+        }
+        if others != doc.asm.others_transparent {
+            doc.asm.others_transparent = others;
+            doc.instances_dirty = true;
+        }
+        if let Some(v) = new_global {
+            doc.set_opacity(None, v);
+        }
+        if let (Some(v), Some(i)) = (new_sel, doc.selected) {
+            doc.set_opacity(Some(i), v);
+        }
+        let Some(s) = &doc.scene else { return };
         if !doc.measure.results.is_empty() || doc.measure.tool != Tool::Select {
             let mut remove = None;
             card(ui, tr("Mesures"), &mut |ui| {
@@ -1165,6 +1662,28 @@ pub fn info_panel(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, cmds: &m
             });
         }
     });
+}
+
+/// Labels of file metadata (see craft_formats::rvt) in the interface language.
+fn prop_label(k: &str) -> String {
+    match k {
+        "Revit" => "Revit".into(),
+        "Version de Revit" => tr("Version de Revit").into(),
+        "Format" => tr("Format").into(),
+        "Travail partagé" => tr("Travail partagé").into(),
+        "Utilisateur" => tr("Utilisateur").into(),
+        "Modèle central" => tr("Modèle central").into(),
+        "Dernier enregistrement" => tr("Dernier enregistrement").into(),
+        "Langue d'enregistrement" => tr("Langue d'enregistrement").into(),
+        "GUID du document" => tr("GUID du document").into(),
+        "Révisions" => tr("Révisions").into(),
+        "Titre" => tr("Titre").into(),
+        "Mis à jour" => tr("Mis à jour").into(),
+        "Version du produit" => tr("Version du produit").into(),
+        "Catégorie" => tr("Catégorie").into(),
+        "Données du modèle" => tr("Données du modèle").into(),
+        _ => k.to_string(),
+    }
 }
 
 fn scene_format(s: &sw_format::Scene, doc: &Document) -> String {

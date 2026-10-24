@@ -1,11 +1,13 @@
 # ModelCraft — mentions et attributions
 
 ModelCraft est un projet **indépendant**. Il n'est ni un produit officiel de la suite ArtCraft
-ni affilié à l'ArtCraft Team, à Dassault Systèmes (SolidWorks, eDrawings, 3DXML) ou à Autodesk (3DS).
+ni affilié à l'ArtCraft Team, à Dassault Systèmes (SolidWorks, eDrawings, 3DXML) ou à Autodesk (3DS, Revit).
 Les noms ArtCraft, SolidWorks, eDrawings, Parasolid, 3ds Max… appartiennent à leurs propriétaires.
 Aucun logo ArtCraft n'est utilisé : le logo ModelCraft (`assets/logo/`) est une création originale.
 
-**Aucun code d'eDrawings ni de SolidWorks** n'a été utilisé, désassemblé ou recopié.
+**Aucun code d'eDrawings, de SolidWorks ni de Revit** n'a été utilisé, désassemblé ou recopié.
+Le lecteur Revit (`crates/craft-formats/src/rvt.rs`) est une implémentation indépendante qui lit
+le conteneur OLE avec la bibliothèque `cfb` (MIT).
 
 ## Code repris
 
@@ -31,5 +33,5 @@ code source de ModelCraft est fourni ici et la procédure de compilation (sectio
 reconstruire l'exécutable avec votre propre build d'OCCT. Source OCCT :
 https://github.com/Open-Cascade-SAS/OCCT/releases/tag/V7_8_1
 
-Les autres dépendances Rust (egui, eframe, wgpu, glam, zip, roxmltree, image, rfd, winreg…)
+Les autres dépendances Rust (egui, eframe, wgpu, glam, zip, roxmltree, image, rfd, winreg, cfb, memmap2…)
 sont sous licences MIT / Apache-2.0 / zlib ; la liste complète est dans `Cargo.lock`.

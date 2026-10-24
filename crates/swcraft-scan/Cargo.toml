@@ -9,6 +9,9 @@ license.workspace = true
 sw-format = { path = "../sw-format" }
 craft-formats = { path = "../craft-formats" }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Console", "Win32_System_Diagnostics_Debug", "Win32_System_JobObjects", "Win32_System_SystemInformation", "Win32_System_Threading"] }
+
 [features]
 default = []
 occt = ["craft-formats/occt"]

@@ -400,6 +400,7 @@ name = "craft-formats"
 version = "0.2.0"
 dependencies = [
  "cc",
+ "cfb",
  "flate2",
  "image",
  "roxmltree",
@@ -2544,6 +2545,7 @@ dependencies = [
  "miniz_oxide 0.8.9",
  "roxmltree",
  "thiserror 2.0.21",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2565,6 +2567,7 @@ dependencies = [
  "serde_json",
  "sw-format",
  "sys-locale",
+ "windows-sys 0.59.0",
  "winreg",
 ]
 
@@ -2574,6 +2577,7 @@ version = "0.2.0"
 dependencies = [
  "craft-formats",
  "sw-format",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

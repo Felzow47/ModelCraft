@@ -34,6 +34,8 @@ struct VsIn {
     @location(5) m3: vec4<f32>,
     @location(6) tint: vec4<f32>,
     @location(7) color: vec4<f32>,
+    // x: opacity
+    @location(8) extra: vec4<f32>,
 };
 
 struct VsOut {
@@ -43,6 +45,7 @@ struct VsOut {
     @location(2) tint: vec4<f32>,
     @location(3) color: vec4<f32>,
     @location(4) p_world: vec3<f32>,
+    @location(5) opacity: f32,
 };
 
 @vertex
@@ -57,6 +60,7 @@ fn vs_mesh(v: VsIn) -> VsOut {
     o.tint = v.tint;
     o.color = v.color;
     o.p_world = world.xyz;
+    o.opacity = v.extra.x;
     return o;
 }
 
@@ -81,7 +85,7 @@ fn fs_mesh(i: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32> 
     let base_srgb = mix(mix(g.base_color.rgb, i.color.rgb, i.color.a), i.tint.rgb, i.tint.a);
     // inside of a sectioned solid: flat cap colour
     if (g.params.y > 0.5 && dot(n, v) < 0.0) {
-        return vec4<f32>(srgb_to_linear(g.cap.rgb), 1.0);
+        return vec4<f32>(srgb_to_linear(g.cap.rgb), i.opacity);
     }
     if (dot(n, v) < 0.0) {
         n = -n;
@@ -89,7 +93,7 @@ fn fs_mesh(i: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32> 
     let base = srgb_to_linear(base_srgb);
     if (g.light2.y > 0.5) {
         let k = 0.78 + 0.22 * max(dot(n, v), 0.0);
-        return vec4<f32>(base * k, 1.0);
+        return vec4<f32>(base * k, i.opacity);
     }
     let l1 = normalize(vec3<f32>(-0.45, 0.65, 0.62));
     let l2 = normalize(vec3<f32>(0.6, -0.25, 0.75));
@@ -100,13 +104,22 @@ fn fs_mesh(i: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32> 
     let h = normalize(l1 + v);
     let spec = pow(max(dot(n, h), 0.0), g.light2.w) * g.light.w;
     let rim = pow(1.0 - max(dot(n, v), 0.0), 3.0) * g.light2.x;
-    let col = base * (amb + g.light.x * d1 + g.light.y * d2) + vec3<f32>(spec + rim);
-    return vec4<f32>(col, 1.0);
+    var col = base * (amb + g.light.x * d1 + g.light.y * d2) + vec3<f32>(spec + rim);
+    var a = i.opacity;
+    if (a < 0.999) {
+        // see-through parts: brighter, glass-like silhouettes so the shape stays readable
+        let f = pow(1.0 - max(dot(n, v), 0.0), 2.0);
+        let t = 1.0 - a;
+        col = col * (1.0 + 0.35 * t) + vec3<f32>(0.06 * t + 0.22 * f * t);
+        a = mix(a, min(1.0, a + 0.4), f);
+    }
+    return vec4<f32>(col, a);
 }
 
 struct EdgeOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) p_world: vec3<f32>,
+    @location(1) opacity: f32,
 };
 
 @vertex
@@ -119,6 +132,7 @@ fn vs_edge(v: VsIn) -> EdgeOut {
     c = vec4<f32>(c.xy + pass_.offset.xy * px * c.w, c.z, c.w);
     o.clip = c;
     o.p_world = world.xyz;
+    o.opacity = v.extra.x;
     return o;
 }
 
@@ -127,7 +141,7 @@ fn fs_edge(i: EdgeOut) -> @location(0) vec4<f32> {
     if (cut(i.p_world)) {
         discard;
     }
-    return vec4<f32>(srgb_to_linear(g.edge_color.rgb), g.edge_color.a);
+    return vec4<f32>(srgb_to_linear(g.edge_color.rgb), g.edge_color.a * i.opacity);
 }
 
 // Coloured world-space lines (grid, bounding box, section outline).

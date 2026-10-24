@@ -2,10 +2,16 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod assembly;
 mod branding;
 mod camera;
 mod chrome;
 mod commands;
+mod crash;
+
+#[global_allocator]
+static ALLOC: crash::LoggingAlloc = crash::LoggingAlloc;
+mod diag;
 mod dialogs;
 mod document;
 mod home;
@@ -27,7 +33,7 @@ use std::path::PathBuf;
 
 fn usage() -> ! {
     eprintln!(
-        "{} {} — visionneuse 3D\n\nUsage: modelcraft [fichiers…] [--lang fr|en] [--theme dark|light] [--screenshot out.png] [--view iso|front|top|right|back|bottom|left]\n       [--size LxH] [--no-edges] [--show settings|settings-display|about|shortcuts|formats|palette|measure|section|bbox|tree] [--ephemeral]\n       modelcraft --associate   (associe les extensions 3D pour l'utilisateur courant, Windows)",
+        "{} {} — visionneuse 3D\n\nUsage: modelcraft [fichiers…] [--lang fr|en] [--theme dark|light] [--screenshot out.png] [--view iso|front|top|right|back|bottom|left]\n       [--size LxH] [--no-edges] [--show settings|settings-display|about|shortcuts|formats|palette|measure|section|bbox|tree] [--ephemeral]\n       modelcraft --diag <fichier> [--diag-out rapport.txt]   (chargement sans fenêtre, journal détaillé)\n       modelcraft --associate   (associe les extensions 3D pour l'utilisateur courant, Windows)",
         branding::NAME,
         branding::VERSION
     );
@@ -36,6 +42,19 @@ fn usage() -> ! {
 
 fn main() -> eframe::Result {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    crash::install();
+    // Headless diagnostic: modelcraft --diag <file> [--diag-out report.txt]
+    {
+        let a: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+        if let Some(i) = a.iter().position(|x| x == "--diag") {
+            let Some(file) = a.get(i + 1).map(PathBuf::from) else {
+                eprintln!("--diag : fichier manquant");
+                std::process::exit(2)
+            };
+            let out = a.iter().position(|x| x == "--diag-out").and_then(|j| a.get(j + 1)).map(PathBuf::from);
+            std::process::exit(diag::run(&file, out));
+        }
+    }
     let mut opts = app::StartupOptions::default();
     let mut size = [1440.0f32, 900.0];
     let mut args = std::env::args_os().skip(1);

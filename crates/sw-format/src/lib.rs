@@ -12,11 +12,13 @@
 
 pub mod assembly;
 pub mod container;
+pub mod ctl;
 pub mod dl;
 pub mod mesh;
 pub mod preview;
 
 pub use container::{Container, ContainerKind, StreamInfo};
+pub use ctl::{Ctl, Progress};
 pub use mesh::TriMesh;
 pub use preview::Rgba;
 
@@ -32,6 +34,12 @@ pub enum Error {
     NotSolidWorks(String),
     #[error("corrupt data: {0}")]
     Corrupt(String),
+    #[error("chargement annulé")]
+    Cancelled,
+    #[error("fichier trop volumineux — {0}")]
+    TooLarge(String),
+    #[error("mémoire insuffisante — {0}")]
+    OutOfMemory(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -86,6 +94,32 @@ pub struct Timings {
     /// Loading external component files.
     pub external: Duration,
     pub total: Duration,
+    /// How the DisplayLists stream was turned into meshes (diagnostics).
+    pub dl: Option<DlStats>,
+}
+
+/// Statistics of the display-list → mesh conversion.
+#[derive(Debug, Clone, Default)]
+pub struct DlStats {
+    /// Decompressed size of the DisplayLists stream.
+    pub raw_bytes: u64,
+    /// Stored (compressed) size.
+    pub stored_bytes: u64,
+    /// Decompressed piece by piece (two passes) instead of being held in memory.
+    pub streamed: bool,
+    pub faces: usize,
+    /// Vertices in the file's tessellation.
+    pub src_vertices: usize,
+    pub src_triangles: usize,
+    /// Vertices actually kept for display (lower if simplified).
+    pub out_vertices: usize,
+    pub out_triangles: usize,
+    pub simplified: bool,
+    pub blocks: usize,
+    /// Vertex budget used to decide on simplification.
+    pub budget: usize,
+    pub pass1: Duration,
+    pub pass2: Duration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,6 +165,8 @@ pub struct Scene {
     pub components: Vec<SceneComponent>,
     pub preview: Option<Rgba>,
     pub warnings: Vec<String>,
+    /// Descriptive metadata shown in the info panel (label, value), e.g. Revit project data.
+    pub properties: Vec<(String, String)>,
     pub timings: Timings,
     /// The model's vertical axis is +Z (most CAD exchange formats); SolidWorks is Y-up.
     pub up_z: bool,
@@ -191,11 +227,13 @@ pub struct LoadOptions {
     pub resolve_external: bool,
     /// Decode the thumbnail.
     pub preview: bool,
+    /// Progress reporting and cancellation.
+    pub ctl: Ctl,
 }
 
 impl Default for LoadOptions {
     fn default() -> Self {
-        LoadOptions { edges: true, resolve_external: true, preview: true }
+        LoadOptions { edges: true, resolve_external: true, preview: true, ctl: Ctl::default() }
     }
 }
 
@@ -245,38 +283,189 @@ fn load_faces(path: &Path) -> Result<Vec<dl::FacePatch>> {
     Ok(list.blocks.into_iter().flat_map(|b| b.faces).collect())
 }
 
+/// Above this decompressed size, the DisplayLists stream is decoded straight from the
+/// decompressor (two passes) instead of being held in memory.
+pub const STREAM_THRESHOLD: u64 = 128 << 20;
+
+/// Largest number of display vertices kept for one file before the mesh is simplified
+/// (vertex clustering). `MODELCRAFT_MAX_VERTICES` overrides it.
+pub fn vertex_budget() -> usize {
+    if let Some(v) = std::env::var("MODELCRAFT_MAX_VERTICES").ok().and_then(|v| v.trim().parse::<usize>().ok()) {
+        return v.max(10_000);
+    }
+    // ~60 bytes per kept vertex on the CPU side (positions, normals, indices, ...) and as much
+    // again transiently for the GPU upload: stay well inside the available memory.
+    let by_mem = ctl::mem_available().map(|a| (a / 200) as usize).unwrap_or(usize::MAX);
+    by_mem.clamp(2_000_000, 40_000_000)
+}
+
+/// Meshes decoded from a DisplayLists stream, one per document block (in order of first
+/// appearance) or a single merged one.
+struct DlMeshes {
+    blocks: Vec<(Option<String>, mesh::TriMesh)>,
+    stats: DlStats,
+}
+
+/// Decode a DisplayLists stream into meshes with bounded memory: a first pass only counts
+/// (faces are dropped as soon as they are measured), the second builds exactly sized meshes,
+/// freeing each face right after it is copied. Large streams are never held decompressed:
+/// both passes decode straight from the decompressor. If the tessellation is larger than the
+/// vertex budget (or the available memory), it is simplified by vertex clustering.
+fn build_dl_meshes(c: &Container, info: &container::StreamInfo, merge: bool, opts: &LoadOptions, warnings: &mut Vec<String>) -> Result<DlMeshes> {
+    let ctl = &opts.ctl;
+    let est = info.raw_size().unwrap_or(info.stored_size.saturating_mul(4));
+    let streamed = est > STREAM_THRESHOLD || std::env::var_os("MODELCRAFT_STREAM").is_some();
+    let mut stats = DlStats { stored_bytes: info.stored_size, streamed, budget: vertex_budget(), ..Default::default() };
+    let whole = if streamed { None } else { Some(c.read_info_ctl(info, ctl, (0.03, 0.35))?) };
+    if let Some(d) = &whole {
+        stats.raw_bytes = d.len() as u64;
+    }
+    let (r1, r2) = if streamed { ((0.03, 0.45), (0.45, 0.9)) } else { ((0.35, 0.5), (0.5, 0.9)) };
+
+    // One decoding pass over the stream.
+    let run_pass = |range: (f32, f32), stage: &str, visit: &mut dyn FnMut(Option<&str>, dl::FacePatch) -> Result<()>| -> Result<u64> {
+        match &whole {
+            Some(d) => {
+                let len = d.len().max(1);
+                let mut prog = |pos: usize| -> Result<()> {
+                    ctl.report(range.0 + (range.1 - range.0) * (pos as f32 / len as f32), stage);
+                    ctl.check()
+                };
+                dl::Decoder::default().run(d, 0, true, visit, &mut prog)?;
+                Ok(d.len() as u64)
+            }
+            None => {
+                let mut sd = dl::StreamDecoder::new(ctl, visit);
+                let n = c.stream_info(info, ctl, range, stage, &mut |chunk| sd.feed(chunk))?;
+                sd.finish()?;
+                Ok(n)
+            }
+        }
+    };
+
+    // Pass 1: statistics per block.
+    let t = Instant::now();
+    let mut keys: Vec<Option<String>> = Vec::new();
+    let mut paths: Vec<Option<String>> = Vec::new();
+    let mut fstats: Vec<mesh::FaceStats> = Vec::new();
+    {
+        let mut visit = |path: Option<&str>, face: dl::FacePatch| -> Result<()> {
+            let key = if merge { None } else { path.map(dl::file_key) };
+            let k = match keys.iter().position(|x| *x == key) {
+                Some(k) => k,
+                None => {
+                    keys.push(key);
+                    paths.push(if merge { None } else { path.map(str::to_string) });
+                    fstats.push(mesh::FaceStats::default());
+                    keys.len() - 1
+                }
+            };
+            fstats[k].add(&face);
+            Ok(())
+        };
+        let n = run_pass(r1, "Analyse du maillage (1/2)…", &mut visit)?;
+        stats.raw_bytes = n;
+    }
+    stats.pass1 = t.elapsed();
+    stats.blocks = keys.len();
+    stats.faces = fstats.iter().map(|s| s.faces).sum();
+    stats.src_vertices = fstats.iter().map(|s| s.vertices).sum();
+    stats.src_triangles = fstats.iter().map(|s| s.triangles).sum();
+    if stats.faces == 0 {
+        return Ok(DlMeshes { blocks: Vec::new(), stats });
+    }
+
+    // Decide: exact meshes, or simplified to fit the budget / the memory.
+    let mut budget = stats.budget;
+    let bytes_per_vertex = 24.0 + 12.0 * stats.src_triangles as f64 / stats.src_vertices.max(1) as f64 + 4.0;
+    if let Some(avail) = ctl::mem_available() {
+        // keep the meshes under ~45 % of the available memory (GPU upload copies come on top)
+        let fit = (avail as f64 * 0.45 / bytes_per_vertex) as usize;
+        budget = budget.min(fit.max(500_000));
+    }
+    let simplify = stats.src_vertices > budget;
+    stats.simplified = simplify;
+    let edge_limit_hit = opts.edges && !simplify && fstats.iter().any(|s| s.vertices > mesh::EDGE_VERTEX_LIMIT);
+    if edge_limit_hit {
+        warnings.push(format!("Maillage très dense ({} M sommets) : arêtes non calculées", stats.src_vertices / 1_000_000));
+    }
+
+    // Pass 2: build.
+    let t = Instant::now();
+    let mut builders: Vec<mesh::MeshBuilder> = Vec::with_capacity(keys.len());
+    for s in &fstats {
+        let cluster = simplify.then(|| {
+            let target = ((budget as f64) * s.vertices as f64 / stats.src_vertices as f64).max(1000.0) as usize;
+            (s.bbox_min, mesh::cluster_cell(s.area, target))
+        });
+        builders.push(mesh::MeshBuilder::new(s.vertices, s.faces, opts.edges, cluster)?);
+    }
+    {
+        let mut visit = |path: Option<&str>, face: dl::FacePatch| -> Result<()> {
+            let key = if merge { None } else { path.map(dl::file_key) };
+            if let Some(k) = keys.iter().position(|x| *x == key) {
+                builders[k].add_face(&face)?;
+            }
+            Ok(())
+        };
+        run_pass(r2, "Construction du maillage (2/2)…", &mut visit)?;
+    }
+    drop(whole);
+    let blocks: Vec<(Option<String>, mesh::TriMesh)> = paths.into_iter().zip(builders.into_iter().map(|b| b.finish())).collect();
+    stats.pass2 = t.elapsed();
+    stats.out_vertices = blocks.iter().map(|(_, m)| m.positions.len()).sum();
+    stats.out_triangles = blocks.iter().map(|(_, m)| m.triangle_count()).sum();
+    if simplify {
+        warnings.push(format!(
+            "Maillage simplifié pour l'affichage : {:.1} M → {:.1} M sommets (le fichier n'est pas modifié)",
+            stats.src_vertices as f64 / 1e6,
+            stats.out_vertices as f64 / 1e6
+        ));
+    }
+    Ok(DlMeshes { blocks, stats })
+}
+
 /// Open a file and build a renderable scene.
 pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
+    let ctl = &opts.ctl;
     let t0 = Instant::now();
     let mut timings = Timings::default();
-    let c = Container::open(path)?;
+    ctl.report(0.02, "Ouverture du conteneur…");
+    let c = Container::open_ctl(path, ctl)?;
     timings.open = t0.elapsed();
+    ctl.check()?;
 
     let ext_asm = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("sldasm"));
     let t1 = Instant::now();
     let mut warnings = Vec::new();
-    let dl_bytes = match read_display_lists(&c) {
-        Ok(d) => d,
-        Err(e) => {
-            warnings.push(format!("Maillage illisible ({e}) : seule la vignette est affichée"));
-            None
-        }
-    };
     let tree_xml = c.read(COMP_TREE).ok().flatten();
-    timings.read = t1.elapsed();
     let kind = if ext_asm || (tree_xml.is_some() && !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("sldprt"))) {
         DocKind::Assembly
     } else {
         DocKind::Part
     };
-
-    let t2 = Instant::now();
-    let list = dl_bytes.as_deref().map(dl::decode).unwrap_or_default();
-    timings.decode = t2.elapsed();
-
-    if dl_bytes.is_none() && warnings.is_empty() {
+    let dl_info = c.find(DISPLAY_LISTS);
+    let had_dl = dl_info.is_some();
+    let built = match dl_info {
+        None => None,
+        Some(info) => match build_dl_meshes(&c, info, kind == DocKind::Part, opts, &mut warnings) {
+            Ok(b) => Some(b),
+            Err(Error::Cancelled) => return Err(Error::Cancelled),
+            Err(e) => {
+                warnings.push(format!("Maillage illisible ({e}) : seule la vignette est affichée"));
+                None
+            }
+        },
+    };
+    if let Some(b) = &built {
+        timings.read = t1.elapsed().saturating_sub(b.stats.pass1 + b.stats.pass2);
+        timings.decode = b.stats.pass1;
+        timings.dl = Some(b.stats.clone());
+    }
+    let blocks = built.map(|b| b.blocks).unwrap_or_default();
+    if !had_dl && warnings.is_empty() {
         warnings.push("Pas de flux DisplayLists (fichier enregistré sans données graphiques)".into());
-    } else if list.is_empty() {
+    } else if had_dl && blocks.is_empty() && warnings.is_empty() {
         warnings.push("DisplayLists présent mais aucun maillage décodé".into());
     }
 
@@ -289,9 +478,8 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
     match kind {
         DocKind::Model => {}
         DocKind::Part => {
-            let faces: Vec<dl::FacePatch> = list.blocks.into_iter().flat_map(|b| b.faces).collect();
-            if !faces.is_empty() {
-                meshes.push(SceneMesh { name: file_stem.clone(), mesh: mesh::build(&faces, opts.edges), source: MeshSource::Embedded, color: None });
+            if let Some((_, m)) = blocks.into_iter().next() {
+                meshes.push(SceneMesh { name: file_stem.clone(), mesh: m, source: MeshSource::Embedded, color: None });
             }
             components.push(SceneComponent {
                 name: file_stem.clone(),
@@ -310,10 +498,10 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
             // Index cached meshes by component file name.
             let mut by_key: HashMap<String, usize> = HashMap::new();
             let mut unkeyed: Vec<usize> = Vec::new();
-            for b in &list.blocks {
-                let name = b.path.as_deref().map(stem_of).unwrap_or_else(|| file_stem.clone());
-                meshes.push(SceneMesh { name, mesh: mesh::build(&b.faces, opts.edges), source: MeshSource::Embedded, color: None });
-                match b.key() {
+            for (bpath, m) in blocks {
+                let name = bpath.as_deref().map(stem_of).unwrap_or_else(|| file_stem.clone());
+                meshes.push(SceneMesh { name, mesh: m, source: MeshSource::Embedded, color: None });
+                match bpath.as_deref().map(dl::file_key) {
                     Some(k) => {
                         by_key.insert(k, meshes.len() - 1);
                     }
@@ -333,7 +521,11 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
             let asm_dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
             let mut dir_cache = HashMap::new();
             let mut ext_cache: HashMap<String, Option<usize>> = HashMap::new();
+            if opts.resolve_external {
+                ctl.report(0.9, "Composants externes…");
+            }
             for comp in &flat {
+                ctl.check()?;
                 let mut mesh_idx = None;
                 if !comp.is_assembly {
                     let key = dl::file_key(&comp.path);
@@ -346,9 +538,10 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
                                 if faces.is_empty() {
                                     return None;
                                 }
+                                let m = mesh::try_build(&faces, opts.edges, ctl).ok()?;
                                 meshes.push(SceneMesh {
                                     name: stem_of(&comp.path),
-                                    mesh: mesh::build(&faces, opts.edges),
+                                    mesh: m,
                                     source: MeshSource::External(p),
                                     color: None,
                                 });
@@ -405,6 +598,8 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
     timings.external = ext_time;
     timings.mesh = t3.elapsed().saturating_sub(ext_time);
 
+    ctl.check()?;
+    ctl.report(0.95, "Vignette…");
     let preview = if opts.preview { read_preview(&c) } else { None };
     timings.total = t0.elapsed();
     Ok(Scene {
@@ -416,6 +611,7 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
         components,
         preview,
         warnings,
+        properties: Vec::new(),
         timings,
         up_z: false,
     })

@@ -85,3 +85,47 @@ fn a2_nested_assembly_transforms() {
     assert!(xs.iter().any(|&x| (x + 0.249).abs() < 0.01), "{xs:?}");
     assert!(s.drawn_triangles() >= 70_000);
 }
+
+/// The streaming decoder (stream fed in small pieces) must find exactly the faces of the
+/// in-memory decoder, with the same document attribution.
+#[test]
+fn streaming_decoder_matches_in_memory() {
+    use sw_format::container::Container;
+    use sw_format::dl;
+    for name in ["p1.SLDPRT", "p2.SLDPRT", "p3.SLDPRT", "p4.SLDPRT", "a1.SLDASM", "a2.SLDASM"] {
+        let Some(p) = sample(name) else { continue };
+        let c = Container::open(&p).unwrap();
+        let Some(d) = c.read("Contents/DisplayLists").unwrap() else { continue };
+        let reference = dl::decode(&d);
+        let want: Vec<(Option<String>, usize, usize)> = reference
+            .blocks
+            .iter()
+            .flat_map(|b| b.faces.iter().map(move |f| (b.key(), f.offset, f.positions.len())))
+            .collect();
+        for piece in [4099usize, 65_536, 1 << 20] {
+            let mut got: Vec<(Option<String>, usize, usize)> = Vec::new();
+            let ctl = sw_format::Ctl::default();
+            let mut visit = |path: Option<&str>, f: dl::FacePatch| -> sw_format::Result<()> {
+                got.push((path.map(dl::file_key), f.offset, f.positions.len()));
+                Ok(())
+            };
+            let mut sd = dl::StreamDecoder::new(&ctl, &mut visit);
+            for ch in d.chunks(piece) {
+                sd.feed(ch).unwrap();
+            }
+            sd.finish().unwrap();
+            // in-memory blocks are grouped by document: compare as sorted sets
+            let mut a = want.clone();
+            a.sort();
+            got.sort();
+            assert_eq!(a, got, "{name} piece {piece}");
+        }
+        // full pipeline, forced streaming, gives the same geometry
+        let normal = load_scene(&p, &LoadOptions::default()).unwrap();
+        std::env::set_var("MODELCRAFT_STREAM", "1");
+        let streamed = load_scene(&p, &LoadOptions::default()).unwrap();
+        std::env::remove_var("MODELCRAFT_STREAM");
+        assert_eq!(normal.drawn_triangles(), streamed.drawn_triangles(), "{name}");
+        assert!(streamed.timings.dl.as_ref().is_some_and(|s| s.streamed));
+    }
+}

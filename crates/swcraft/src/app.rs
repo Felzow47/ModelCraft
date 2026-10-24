@@ -7,6 +7,7 @@ use crate::render::Renderer;
 use crate::settings::Settings;
 use crate::theme::{self, ThemeKind, Tokens};
 use crate::viewer;
+use glam::Vec3;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -72,6 +73,8 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, startup: StartupOptions) -> App {
         let rs = cc.wgpu_render_state.clone().expect("wgpu backend required");
+        // never let a GPU validation / out-of-memory error abort the app: log it and carry on
+        rs.device.on_uncaptured_error(std::sync::Arc::new(|e: eframe::wgpu::Error| crate::crash::gpu_error(e.to_string())));
         egui_extras::install_image_loaders(&cc.egui_ctx);
         cc.egui_ctx.set_fonts(theme::font_definitions());
         let mut settings = if startup.ephemeral { Settings::default() } else { Settings::load() };
@@ -222,6 +225,15 @@ impl App {
                     self.close(i)
                 }
             }
+            "file.cancel_load" => {
+                if let Some(i) = self.active {
+                    if self.docs[i].is_loading() {
+                        self.docs[i].cancel_load();
+                        self.close(i);
+                        self.toast(tr("Chargement annulé"));
+                    }
+                }
+            }
             "file.reload" => {
                 if let Some(i) = self.active {
                     let p = self.docs[i].path.clone();
@@ -265,6 +277,81 @@ impl App {
                     if let Some(i) = d.selected {
                         d.isolate(i)
                     }
+                }
+            }
+            "asm.move" => {
+                if let Some(d) = self.doc_mut() {
+                    d.gizmo = !d.gizmo;
+                    d.drag = None;
+                    if d.gizmo {
+                        d.measure.tool = crate::measure::Tool::Select;
+                        d.measure.pending = None;
+                    }
+                    let on = d.gizmo;
+                    let none = d.selected.is_none();
+                    self.toast(if !on {
+                        tr("Déplacement terminé (le fichier n'est jamais modifié)")
+                    } else if none {
+                        tr("Déplacer : glissez une pièce, ou sélectionnez-la puis tirez une flèche")
+                    } else {
+                        tr("Déplacer : tirez une flèche, l'anneau ou le centre ; glissez une pièce pour la bouger librement")
+                    });
+                }
+            }
+            "asm.rotate" => {
+                if let Some(d) = self.doc_mut() {
+                    d.gizmo_rotate = !d.gizmo_rotate;
+                    if d.gizmo_rotate {
+                        d.gizmo = true;
+                        d.measure.tool = crate::measure::Tool::Select;
+                    }
+                }
+            }
+            "asm.reset_sel" => {
+                if let Some(d) = self.doc_mut() {
+                    if let Some(i) = d.selected {
+                        d.reset_position(Some(i));
+                    }
+                }
+            }
+            "asm.reset_all" => {
+                if let Some(d) = self.doc_mut() {
+                    d.reset_position(None);
+                    d.asm.opacity.iter_mut().for_each(|o| *o = 1.0);
+                    d.asm.global_opacity = 1.0;
+                    d.asm.others_transparent = false;
+                    d.instances_dirty = true;
+                }
+            }
+            "asm.explode" => {
+                if let Some(d) = self.doc_mut() {
+                    d.asm.explode_goal = if d.asm.explode_goal > 0.0 { 0.0 } else { 1.0 };
+                    ctx.request_repaint();
+                }
+            }
+            "asm.explode_lines" => {
+                if let Some(d) = self.doc_mut() {
+                    d.asm.explode_lines = !d.asm.explode_lines;
+                }
+            }
+            "asm.transparent" => {
+                if let Some(d) = self.doc_mut() {
+                    if let Some(i) = d.selected {
+                        let o = d.asm.opacity.get(i).copied().unwrap_or(1.0);
+                        d.set_opacity(Some(i), if o < 0.999 { 1.0 } else { 0.3 });
+                    }
+                }
+            }
+            "asm.others" => {
+                if let Some(d) = self.doc_mut() {
+                    d.asm.others_transparent = !d.asm.others_transparent;
+                    d.instances_dirty = true;
+                }
+            }
+            "asm.xray" => {
+                if let Some(d) = self.doc_mut() {
+                    let g = d.asm.global_opacity;
+                    d.set_opacity(None, if g < 0.999 { 1.0 } else { 0.4 });
                 }
             }
             "edit.show_all" => {
@@ -537,6 +624,49 @@ impl App {
                 viewer::toggle_section(d);
             }
             "bbox" => d.show_bbox = true,
+            "explode" => {
+                d.asm.explode_goal = 1.0;
+                d.asm.explode = 1.0;
+                d.apply_transforms();
+                d.needs_fit = true;
+            }
+            "transparent" | "others" => {
+                // the biggest part becomes see-through (or everything but it is faded)
+                if let Some(s) = &d.scene {
+                    let big = (0..s.components.len())
+                        .filter(|&i| s.components[i].mesh.is_some())
+                        .max_by(|&a, &b| {
+                            let sz = |i: usize| {
+                                let m = &s.meshes[s.components[i].mesh.unwrap()].mesh;
+                                (Vec3::from(m.bbox_max) - Vec3::from(m.bbox_min)).length()
+                            };
+                            sz(a).partial_cmp(&sz(b)).unwrap_or(std::cmp::Ordering::Equal)
+                        });
+                    if let Some(i) = big {
+                        if show == "others" {
+                            let small = (0..s.components.len()).filter(|&k| s.components[k].mesh.is_some() && k != i).last().unwrap_or(i);
+                            d.select(Some(small));
+                            d.asm.others_transparent = true;
+                            d.instances_dirty = true;
+                        } else {
+                            d.set_opacity(Some(i), 0.28);
+                        }
+                    }
+                }
+            }
+            "move" => {
+                if let Some(s) = &d.scene {
+                    let i = (1..s.components.len()).filter(|&i| s.components[i].mesh.is_some()).last().unwrap_or(0);
+                    d.select(Some(i));
+                    d.gizmo = true;
+                    d.gizmo_rotate = true;
+                    if let Some(c) = d.component_center(i) {
+                        let r = d.stats.bbox.map(|(lo, hi)| (hi - lo).length()).unwrap_or(1.0);
+                        d.move_component(i, glam::Mat4::from_translation(Vec3::new(0.0, r * 0.25, r * 0.1)));
+                        let _ = c;
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -590,6 +720,15 @@ impl eframe::App for App {
         }
         if arrived {
             ctx.request_repaint();
+        }
+        // explosion animation of the visible document
+        let dt = ctx.input(|i| i.stable_dt).clamp(0.0, 0.1);
+        if let Some(i) = self.active {
+            if let Some(d) = self.docs.get_mut(i) {
+                if d.tick(dt) {
+                    ctx.request_repaint();
+                }
+            }
         }
         self.handle_drops(&ctx);
         self.shortcuts(&ctx);

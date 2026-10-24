@@ -16,6 +16,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 roxmltree = "0.20"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 flate2 = "1"
+cfb = "0.15"
 
 [build-dependencies]
 cc = { version = "1", optional = true }

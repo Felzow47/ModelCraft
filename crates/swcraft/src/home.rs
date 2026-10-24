@@ -19,7 +19,7 @@ pub(crate) const CARDS: [Card; 4] = [
     Card { icon: "file-box", title: "SolidWorks", blurb: "Pièces et assemblages .sldprt · .sldasm", hue: Color32::from_rgb(0xE5, 0x48, 0x4D) },
     Card { icon: "cuboid", title: "STEP · IGES", blurb: "Échange CAO .step · .stp · .iges", hue: Color32::from_rgb(0x3E, 0x8E, 0xDE) },
     Card { icon: "box", title: "Maillages", blurb: "Impression et rendu .stl · .obj · .3ds", hue: Color32::from_rgb(0x30, 0xA4, 0x6C) },
-    Card { icon: "boxes", title: "3DXML · eDrawings", blurb: "Visualisation .3dxml · .easm · .eprt", hue: Color32::from_rgb(0x8E, 0x4E, 0xC6) },
+    Card { icon: "boxes", title: "3DXML · eDrawings · Revit", blurb: "Visualisation .3dxml · .easm · .rvt", hue: Color32::from_rgb(0x8E, 0x4E, 0xC6) },
 ];
 
 fn card_lift(ui: &egui::Ui, t: &Tokens, rect: Rect, press: Press) {

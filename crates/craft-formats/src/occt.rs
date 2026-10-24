@@ -95,6 +95,11 @@ pub fn load(path: &Path, opts: &Options) -> Result<Scene, String> {
     let cpath = CString::new(path.to_string_lossy().as_bytes()).map_err(|_| "chemin invalide".to_string())?;
     let mut st = State { nodes: Vec::new(), parts: HashMap::new(), edges: opts.edges, opts };
     let mut err = vec![0 as c_char; 512];
+    // OCCT's IGES reader (IGESFile/analiges.c, structiges.c) keeps its parse state in C globals
+    // (curp, curpage…): two concurrent reads corrupt each other and crash (seen in iges_Dsect with a
+    // 16-thread scan). Serialise every OCCT read.
+    static OCCT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = OCCT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let rc = unsafe { oc_load(cpath.as_ptr(), iges as c_int, opts.quality as f64, &mut st as *mut State as *mut c_void, on_node, on_face, on_progress, err.as_mut_ptr(), err.len() as c_int) };
     if rc != 0 {
         let msg = unsafe { CStr::from_ptr(err.as_ptr()) }.to_string_lossy().into_owned();
