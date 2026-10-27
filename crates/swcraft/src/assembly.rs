@@ -278,6 +278,7 @@ mod explode_tests {
             face_start: vec![0],
             bbox_min: [c[0] - 0.1, c[1] - 0.1, c[2]],
             bbox_max: [c[0] + 0.1, c[1] + 0.1, c[2]],
+            ..Default::default()
         }
     }
 

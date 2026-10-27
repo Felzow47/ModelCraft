@@ -22,6 +22,8 @@ const PASS_STRIDE: u64 = 256;
 pub struct Vertex {
     pub pos: [f32; 3],
     pub nrm: [f32; 3],
+    /// Texture coordinate (0,0 for untextured meshes, which sample a white texel).
+    pub uv: [f32; 2],
 }
 
 #[repr(C)]
@@ -95,8 +97,115 @@ pub struct InstanceDesc {
     pub center: [f32; 3],
 }
 
+/// Layout of the per-mesh texture bind group (group 1). wgpu deduplicates identical layouts, so
+/// the pipelines and the scene's bind groups can each create it.
+fn tex_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("texture bgl"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+        ],
+    })
+}
+
+/// Texture pixels waiting to be copied to the GPU (done in the next frame, which has a queue).
+struct PendingTex {
+    buf: wgpu::Buffer,
+    tex: wgpu::Texture,
+    level: u32,
+    size: [u32; 2],
+    bytes_per_row: u32,
+}
+
+/// Mip chain of an RGBA8 image (2×2 box filter), largest first.
+fn mip_chain(t: &sw_format::Rgba) -> Vec<(u32, u32, Vec<u8>)> {
+    let mut out = vec![(t.width, t.height, t.pixels.clone())];
+    while let Some((w, h, px)) = out.last() {
+        if *w <= 1 && *h <= 1 {
+            break;
+        }
+        let (w, h) = (*w as usize, *h as usize);
+        let (nw, nh) = ((w / 2).max(1), (h / 2).max(1));
+        let mut n = vec![0u8; nw * nh * 4];
+        for y in 0..nh {
+            for x in 0..nw {
+                for c in 0..4 {
+                    let mut sum = 0u32;
+                    for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                        let sx = (x * 2 + dx).min(w - 1);
+                        let sy = (y * 2 + dy).min(h - 1);
+                        sum += px[(sy * w + sx) * 4 + c] as u32;
+                    }
+                    n[(y * nw + x) * 4 + c] = ((sum + 2) / 4) as u8;
+                }
+            }
+        }
+        out.push((nw as u32, nh as u32, n));
+    }
+    out
+}
+
+/// GPU texture + bind group for an image, with its pixels queued for upload.
+fn make_texture(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, sampler: &wgpu::Sampler, img: &sw_format::Rgba, pending: &mut Vec<PendingTex>) -> (wgpu::BindGroup, u64) {
+    let mips = mip_chain(img);
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("mesh texture"),
+        size: wgpu::Extent3d { width: img.width.max(1), height: img.height.max(1), depth_or_array_layers: 1 },
+        mip_level_count: mips.len() as u32,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        // values stay sRGB-encoded: the shader mixes colours in sRGB and converts once
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let mut bytes = 0u64;
+    for (level, (w, h, px)) in mips.into_iter().enumerate() {
+        let row = w as usize * 4;
+        let bpr = row.div_ceil(256) * 256;
+        let mut data = vec![0u8; bpr * h as usize];
+        for y in 0..h as usize {
+            data[y * bpr..y * bpr + row].copy_from_slice(&px[y * row..(y + 1) * row]);
+        }
+        bytes += (row * h as usize) as u64;
+        let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("texture staging"), contents: &data, usage: wgpu::BufferUsages::COPY_SRC });
+        pending.push(PendingTex { buf, tex: tex.clone(), level: level as u32, size: [w, h], bytes_per_row: bpr as u32 });
+    }
+    let view = tex.create_view(&Default::default());
+    let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("texture bg"),
+        layout,
+        entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) }],
+    });
+    (bind, bytes)
+}
+
+fn make_sampler(device: &wgpu::Device) -> wgpu::Sampler {
+    device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("texture sampler"),
+        address_mode_u: wgpu::AddressMode::Repeat,
+        address_mode_v: wgpu::AddressMode::Repeat,
+        address_mode_w: wgpu::AddressMode::Repeat,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        mipmap_filter: wgpu::MipmapFilterMode::Linear,
+        anisotropy_clamp: 8,
+        ..Default::default()
+    })
+}
+
 /// GPU copy of a loaded scene.
 pub struct GpuScene {
+    /// Texture bind group of each mesh (index into `tex_binds`), if it has one.
+    mesh_tex: Vec<Option<usize>>,
+    tex_binds: Vec<wgpu::BindGroup>,
+    pending: std::sync::Mutex<Vec<PendingTex>>,
     chunks: Vec<Chunk>,
     /// Pieces of each mesh (usually one).
     pieces: Vec<Vec<Piece>>,
@@ -125,8 +234,28 @@ impl GpuScene {
         let max = device.limits().max_buffer_size.min(chunk).max(4096);
         let vmax = (max / std::mem::size_of::<Vertex>() as u64) as usize;
         let imax = (max / 4) as usize;
-        let mut gs = GpuScene { chunks: Vec::new(), pieces: Vec::with_capacity(scene.meshes.len()), inst_buf: None, batches: Vec::new(), transparent: Vec::new(), hl: None, gpu_bytes: 0 };
+        let mut gs = GpuScene { mesh_tex: Vec::with_capacity(scene.meshes.len()), tex_binds: Vec::new(), pending: Default::default(), chunks: Vec::new(), pieces: Vec::with_capacity(scene.meshes.len()), inst_buf: None, batches: Vec::new(), transparent: Vec::new(), hl: None, gpu_bytes: 0 };
         let mut cur = ChunkBuild::default();
+        // textures (shared by meshes that use the same image, e.g. bodies split from one mesh)
+        let tlayout = tex_layout(device);
+        let sampler = make_sampler(device);
+        let mut by_image: Vec<(*const sw_format::Rgba, usize)> = Vec::new();
+        let mut pending = Vec::new();
+        for m in &scene.meshes {
+            let t = m.mesh.texture.as_ref().filter(|t| t.width > 0 && t.height > 0 && t.pixels.len() >= (t.width * t.height * 4) as usize && !m.mesh.uvs.is_empty());
+            gs.mesh_tex.push(t.map(|t| {
+                let key = std::sync::Arc::as_ptr(t);
+                if let Some(&(_, k)) = by_image.iter().find(|(p, _)| *p == key) {
+                    return k;
+                }
+                let (b, bytes) = make_texture(device, &tlayout, &sampler, t, &mut pending);
+                gs.gpu_bytes += bytes;
+                gs.tex_binds.push(b);
+                by_image.push((key, gs.tex_binds.len() - 1));
+                gs.tex_binds.len() - 1
+            }));
+        }
+        gs.pending = std::sync::Mutex::new(pending);
         for m in &scene.meshes {
             let m = &m.mesh;
             let mut pieces = Vec::new();
@@ -148,7 +277,7 @@ impl GpuScene {
                     edge_start: cur.edges.len() as u32,
                     edge_count: m.edges.len() as u32,
                 });
-                cur.verts.extend(m.positions[..nv].iter().zip(&m.normals[..nv]).map(|(p, n)| Vertex { pos: *p, nrm: *n }));
+                cur.verts.extend(m.positions[..nv].iter().zip(&m.normals[..nv]).enumerate().map(|(i, (p, n))| Vertex { pos: *p, nrm: *n, uv: m.uv(i) }));
                 cur.tris.extend(m.indices.iter().map(|&i| i.min(nv as u32 - 1)));
                 cur.edges.extend(m.edges.iter().map(|&i| i.min(nv as u32 - 1)));
             } else {
@@ -197,7 +326,7 @@ impl GpuScene {
                     if remap[v] == u32::MAX {
                         remap[v] = c.verts.len() as u32;
                         touched.push(v as u32);
-                        c.verts.push(Vertex { pos: m.positions[v], nrm: m.normals[v] });
+                        c.verts.push(Vertex { pos: m.positions[v], nrm: m.normals[v], uv: m.uv(v) });
                     }
                     let local = remap[v];
                     if k == 3 { c.tris.push(local) } else { c.edges.push(local) }
@@ -220,6 +349,10 @@ impl GpuScene {
         }
     }
 
+    fn tex_bind(&self, mesh: usize) -> Option<&wgpu::BindGroup> {
+        self.mesh_tex.get(mesh).copied().flatten().and_then(|k| self.tex_binds.get(k))
+    }
+
     pub fn set_instances(&mut self, device: &wgpu::Device, mut items: Vec<InstanceDesc>) {
         // opaque first (batched by mesh), then transparent ones (drawn one by one, sorted per frame)
         items.sort_by_key(|i| (i.opacity < 0.999, i.mesh));
@@ -237,7 +370,11 @@ impl GpuScene {
         }
         let inst: Vec<Instance> = items
             .into_iter()
-            .map(|i| Instance { model: i.model, tint: i.tint, color: i.color, extra: [i.opacity.clamp(0.0, 1.0), 0.0, 0.0, 0.0] })
+            .map(|i| {
+                // y: the mesh has a texture to sample
+                let textured = if self.mesh_tex.get(i.mesh).copied().flatten().is_some() { 1.0 } else { 0.0 };
+                Instance { model: i.model, tint: i.tint, color: i.color, extra: [i.opacity.clamp(0.0, 1.0), textured, 0.0, 0.0] }
+            })
             .collect();
         self.inst_buf = (!inst.is_empty()).then(|| {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -330,6 +467,9 @@ pub struct Renderer {
     globals: wgpu::Buffer,
     passes: wgpu::Buffer,
     bind: wgpu::BindGroup,
+    /// 1×1 white texture bound for untextured meshes, edges and lines.
+    white: wgpu::BindGroup,
+    white_pending: std::sync::Mutex<Vec<PendingTex>>,
     target: Option<Target>,
 }
 
@@ -396,12 +536,15 @@ impl Renderer {
                 },
             ],
         });
+        let tlayout = tex_layout(device);
+        let mut white_pending = Vec::new();
+        let (white, _) = make_texture(device, &tlayout, &make_sampler(device), &sw_format::Rgba { width: 1, height: 1, pixels: vec![255; 4] }, &mut white_pending);
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("layout"),
-            bind_group_layouts: &[Some(&bgl)],
+            bind_group_layouts: &[Some(&bgl), Some(&tlayout)],
             immediate_size: 0,
         });
-        let vattrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
+        let vattrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 9 => Float32x2];
         let iattrs = wgpu::vertex_attr_array![2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4];
         let lattrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4];
         let buffers = [
@@ -499,7 +642,7 @@ impl Renderer {
         let pipe_edge = pipe("edges", "vs_edge", "fs_edge", &buffers, T::LineList, depth(false, C::LessEqual, Default::default()), true);
         let pipe_line = pipe("lines", "vs_line", "fs_line", &line_buffers, T::LineList, depth(false, C::LessEqual, Default::default()), true);
         let pipe_bg = pipe("background", "vs_bg", "fs_bg", &[], T::TriangleList, depth(false, C::Always, Default::default()), true);
-        Renderer { samples, pipe_mesh, pipe_tr_depth, pipe_tr, pipe_hl, pipe_edge, pipe_line, pipe_bg, globals, passes, bind, target: None }
+        Renderer { samples, pipe_mesh, pipe_tr_depth, pipe_tr, pipe_hl, pipe_edge, pipe_line, pipe_bg, globals, passes, bind, white, white_pending: std::sync::Mutex::new(white_pending), target: None }
     }
 
     /// Ensure the offscreen target has the given size. Returns true if (re)created.
@@ -593,6 +736,20 @@ impl Renderer {
             })
         });
         let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
+        // texture pixels created with the scene (or the white texel) are copied once
+        let mut uploads: Vec<PendingTex> = self.white_pending.lock().map(|mut p| std::mem::take(&mut *p)).unwrap_or_default();
+        if let Some(gs) = gs {
+            if let Ok(mut p) = gs.pending.lock() {
+                uploads.append(&mut p);
+            }
+        }
+        for u in &uploads {
+            enc.copy_buffer_to_texture(
+                wgpu::TexelCopyBufferInfo { buffer: &u.buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(u.bytes_per_row), rows_per_image: Some(u.size[1]) } },
+                wgpu::TexelCopyTextureInfo { texture: &u.tex, mip_level: u.level, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                wgpu::Extent3d { width: u.size[0], height: u.size[1], depth_or_array_layers: 1 },
+            );
+        }
         {
             let (view, resolve_target) = match &t.msaa {
                 Some(m) => (m, Some(&t.resolve_view)),
@@ -619,6 +776,7 @@ impl Renderer {
                 multiview_mask: None,
             });
             rp.set_bind_group(0, &self.bind, &[0]);
+            rp.set_bind_group(1, &self.white, &[]);
             rp.set_pipeline(&self.pipe_bg);
             rp.draw(0..3, 0..1);
             if let Some(gs) = gs {
@@ -631,11 +789,13 @@ impl Renderer {
                         rp.set_vertex_buffer(0, ch.vbuf.slice(..));
                         rp.set_index_buffer(tb.slice(..), wgpu::IndexFormat::Uint32);
                         for &(m, first, count) in &gs.batches {
+                            rp.set_bind_group(1, gs.tex_bind(m).unwrap_or(&self.white), &[]);
                             for p in gs.pieces[m].iter().filter(|p| p.chunk as usize == ci && p.tri_count > 0) {
                                 rp.draw_indexed(p.tri_start..p.tri_start + p.tri_count, p.base_vertex, first..first + count);
                             }
                         }
                     }
+                    rp.set_bind_group(1, &self.white, &[]);
                     if vs.edges {
                         rp.set_pipeline(&self.pipe_edge);
                         for k in 0..offsets.len() {
@@ -662,6 +822,7 @@ impl Renderer {
                             .collect();
                         order.sort_by(|a, b| a.0.total_cmp(&b.0));
                         for &(_, m, inst) in &order {
+                            rp.set_bind_group(1, gs.tex_bind(m).unwrap_or(&self.white), &[]);
                             for pass in 0..3 {
                                 match pass {
                                     0 => rp.set_pipeline(&self.pipe_tr_depth),
@@ -689,6 +850,7 @@ impl Renderer {
                     }
                 }
                 if let Some((vb, ib, n)) = &gs.hl {
+                    rp.set_bind_group(1, &self.white, &[]);
                     rp.set_pipeline(&self.pipe_hl);
                     rp.set_vertex_buffer(0, vb.slice(..));
                     rp.set_vertex_buffer(1, ib.slice(..));

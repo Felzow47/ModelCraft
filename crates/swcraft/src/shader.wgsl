@@ -30,6 +30,9 @@ struct Pass {
 
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(0) @binding(1) var<uniform> pass_: Pass;
+// diffuse texture of the mesh (a white texel when it has none), sRGB-encoded values
+@group(1) @binding(0) var tex: texture_2d<f32>;
+@group(1) @binding(1) var tex_s: sampler;
 
 struct VsIn {
     @location(0) pos: vec3<f32>,
@@ -42,6 +45,7 @@ struct VsIn {
     @location(7) color: vec4<f32>,
     // x: opacity
     @location(8) extra: vec4<f32>,
+    @location(9) uv: vec2<f32>,
 };
 
 struct VsOut {
@@ -52,6 +56,8 @@ struct VsOut {
     @location(3) color: vec4<f32>,
     @location(4) p_world: vec3<f32>,
     @location(5) opacity: f32,
+    @location(6) uv: vec2<f32>,
+    @location(7) textured: f32,
 };
 
 @vertex
@@ -65,6 +71,8 @@ fn vs_mesh(v: VsIn) -> VsOut {
     o.p_view = (g.view * world).xyz;
     o.tint = v.tint;
     o.color = v.color;
+    o.uv = v.uv;
+    o.textured = v.extra.y;
     o.p_world = world.xyz;
     o.opacity = v.extra.x;
     return o;
@@ -80,6 +88,8 @@ fn cut(p: vec3<f32>) -> bool {
 
 @fragment
 fn fs_mesh(i: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32> {
+    // sampled first: implicit derivatives need uniform control flow
+    let texel = select(vec4<f32>(1.0), textureSample(tex, tex_s, i.uv), i.textured > 0.5);
     if (cut(i.p_world)) {
         discard;
     }
@@ -88,7 +98,12 @@ fn fs_mesh(i: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32> 
     if (g.params.x > 0.5) {
         v = vec3<f32>(0.0, 0.0, 1.0);
     }
-    let base_srgb = mix(mix(g.base_color.rgb, i.color.rgb, i.color.a), i.tint.rgb, i.tint.a);
+    // cut-out textures (lettering or leaves on a transparent image)
+    if (texel.a < 0.5) {
+        discard;
+    }
+    let own = mix(g.base_color.rgb, i.color.rgb * texel.rgb, i.color.a);
+    let base_srgb = mix(own, i.tint.rgb, i.tint.a);
     // inside of a sectioned solid: flat cap colour
     if (g.params.y > 0.5 && dot(n, v) < 0.0) {
         return vec4<f32>(srgb_to_linear(g.cap.rgb), i.opacity);

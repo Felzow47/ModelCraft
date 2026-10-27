@@ -81,7 +81,7 @@ pub fn split_mesh(m: &TriMesh) -> Option<Vec<TriMesh>> {
     if !(2..=MAX_BODIES).contains(&count) {
         return None;
     }
-    let mut out: Vec<TriMesh> = (0..count).map(|_| TriMesh::default()).collect();
+    let mut out: Vec<TriMesh> = (0..count).map(|_| TriMesh { texture: m.texture.clone(), ..TriMesh::default() }).collect();
     let mut remap = vec![u32::MAX; m.positions.len()];
     let tri_body = |t: usize| label[m.indices[t * 3] as usize] as usize;
     let push_vertex = |out: &mut Vec<TriMesh>, remap: &mut Vec<u32>, v: u32| -> u32 {
@@ -90,6 +90,9 @@ pub fn split_mesh(m: &TriMesh) -> Option<Vec<TriMesh>> {
             remap[v as usize] = out[b].positions.len() as u32;
             out[b].positions.push(m.positions[v as usize]);
             out[b].normals.push(m.normals.get(v as usize).copied().unwrap_or([0.0, 0.0, 1.0]));
+            if !m.uvs.is_empty() {
+                out[b].uvs.push(m.uv(v as usize));
+            }
         }
         remap[v as usize]
     };
@@ -146,7 +149,7 @@ pub fn split_faces(m: &TriMesh) -> Option<Vec<TriMesh>> {
     let mut owner = vec![u32::MAX; nv];
     for f in 0..m.face_start.len() {
         let r = m.face_triangles(f);
-        let mut o = TriMesh::default();
+        let mut o = TriMesh { texture: m.texture.clone(), ..TriMesh::default() };
         for t in r {
             for k in 0..3 {
                 let Some(&v) = m.indices.get(t as usize * 3 + k) else { continue };
@@ -156,6 +159,9 @@ pub fn split_faces(m: &TriMesh) -> Option<Vec<TriMesh>> {
                     remap[v] = o.positions.len() as u32;
                     o.positions.push(m.positions[v]);
                     o.normals.push(m.normals.get(v).copied().unwrap_or([0.0, 0.0, 1.0]));
+                    if !m.uvs.is_empty() {
+                        o.uvs.push(m.uv(v));
+                    }
                 }
                 o.indices.push(remap[v]);
             }
@@ -403,6 +409,7 @@ mod face_tests {
             face_start: vec![0, 1],
             bbox_min: [0.0; 3],
             bbox_max: [1.0, 1.0, 0.0],
+            ..Default::default()
         };
         let f = split_faces(&m).unwrap();
         assert_eq!(f.len(), 2);

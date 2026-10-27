@@ -107,10 +107,12 @@ impl Quality {
 /// How a mouse drag rotates the view.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum OrbitMode {
-    /// Trackball around the screen axes: unlimited in every direction (default).
-    #[default]
+    /// Trackball around the screen axes: unlimited in every direction, but a circular drag
+    /// rolls the view (the horizon tilts).
     Free,
-    /// Turntable around the vertical axis, stops at the poles.
+    /// Turntable around the vertical axis, stops at the poles: the up axis always stays up, as in
+    /// Blender (default).
+    #[default]
     Turntable,
 }
 
@@ -170,8 +172,9 @@ fn version_zero() -> u32 {
     0
 }
 
-/// Current settings version (4 = ModelCraft V4: brighter viewport, Blender-style navigation).
-pub const SETTINGS_VERSION: u32 = 4;
+/// Current settings version (4 = ModelCraft V4: brighter viewport, Blender-style navigation;
+/// 5 = V4.1: turntable orbit by default).
+pub const SETTINGS_VERSION: u32 = 5;
 
 impl Default for Settings {
     fn default() -> Self {
@@ -186,7 +189,7 @@ impl Default for Settings {
             nav: NavStyle::Blender,
             invert_zoom: false,
             blender_keys: true,
-            orbit: OrbitMode::Free,
+            orbit: OrbitMode::Turntable,
             ortho: false,
             fov_deg: 30.0,
             background: Background::Gradient,
@@ -275,6 +278,11 @@ impl Settings {
             if self.edge_color == [0x14, 0x16, 0x1C] {
                 self.edge_color = d.edge_color;
             }
+        }
+        if self.version < 5 {
+            // V4.1: the trackball was the default and tilted the view on circular drags; the
+            // turntable (up axis locked, like Blender) replaces it. Trackball stays an option.
+            self.orbit = OrbitMode::Turntable;
         }
         self.version = SETTINGS_VERSION;
     }
@@ -434,6 +442,14 @@ mod tests {
         s.migrate();
         assert_eq!(s.version, SETTINGS_VERSION);
         assert_eq!(s.nav, NavStyle::Blender);
+        assert_eq!(s.orbit, OrbitMode::Turntable);
+        // V4 files with the old trackball default move to the turntable once
+        let mut v4: Settings = serde_json::from_str(r#"{"version":4,"orbit":"Free"}"#).unwrap();
+        v4.migrate();
+        assert_eq!(v4.orbit, OrbitMode::Turntable);
+        let mut v5: Settings = serde_json::from_str(r#"{"version":5,"orbit":"Free"}"#).unwrap();
+        v5.migrate();
+        assert_eq!(v5.orbit, OrbitMode::Free, "a trackball chosen after V4.1 is kept");
         assert_eq!(s.bg_top, Settings::default().bg_top);
         assert!(!s.show_tree, "user choices are kept");
         let mut custom: Settings = serde_json::from_str(r#"{"bg_top":[1,2,3]}"#).unwrap();

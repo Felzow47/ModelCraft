@@ -245,8 +245,8 @@ fn page(app: &mut App, ui: &mut egui::Ui, cat: SettingsCat) {
             row(ui, tr("Raccourcis Blender"), tr("Pavé numérique 1/3/7 : face, droite, dessus (Ctrl = vue opposée), 5 : ortho, 2/4/6/8 : tourner de 15°, 9 : vue opposée, « . » : cadrer la sélection, Origine : tout cadrer, G : déplacer, R : tourner. Désactivé : anciens raccourcis (0-6 = vues, G = grille, R = diamètre)."), |ui| {
                 widgets::switch(ui, &mut s.blender_keys);
             });
-            row(ui, tr("Rotation"), tr("Libre : rotation illimitée dans toutes les directions (trackball). Plateau tournant : l'axe Y reste vertical, arrêt aux pôles."), |ui| {
-                widgets::segmented(ui, &mut s.orbit, &[(OrbitMode::Free, tr("Libre")), (OrbitMode::Turntable, tr("Plateau tournant"))]);
+            row(ui, tr("Rotation"), tr("Plateau tournant (défaut, comme Blender) : l'axe vertical reste vertical, la vue ne penche jamais, arrêt aux pôles. Libre : rotation illimitée dans toutes les directions (trackball) ; un glissement circulaire fait pencher la vue."), |ui| {
+                widgets::segmented(ui, &mut s.orbit, &[(OrbitMode::Turntable, tr("Plateau tournant")), (OrbitMode::Free, tr("Libre"))]);
             });
             row(ui, tr("Inverser le zoom"), tr("Inverse le sens de la molette."), |ui| {
                 widgets::switch(ui, &mut s.invert_zoom);

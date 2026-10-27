@@ -659,6 +659,7 @@ impl Document {
                             tris.push(crate::render::Vertex {
                                 pos: w.transform_point3(Vec3::from(m.positions[vi])).to_array(),
                                 nrm: nm.transform_vector3(Vec3::from(m.normals[vi])).normalize_or_zero().to_array(),
+                                uv: [0.0, 0.0],
                             });
                         }
                     }

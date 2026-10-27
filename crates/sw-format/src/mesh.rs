@@ -17,9 +17,17 @@ pub struct TriMesh {
     pub face_start: Vec<u32>,
     pub bbox_min: [f32; 3],
     pub bbox_max: [f32; 3],
+    /// Texture coordinates, one per vertex (empty when the mesh has no texture).
+    pub uvs: Vec<[f32; 2]>,
+    /// Diffuse texture (RGBA8, sRGB) sampled with `uvs`, multiplied by the mesh colour.
+    pub texture: Option<std::sync::Arc<crate::preview::Rgba>>,
 }
 
 impl TriMesh {
+    /// Texture coordinate of vertex `v` (0,0 when untextured).
+    pub fn uv(&self, v: usize) -> [f32; 2] {
+        self.uvs.get(v).copied().unwrap_or([0.0, 0.0])
+    }
     pub fn triangle_count(&self) -> usize {
         self.indices.len() / 3
     }

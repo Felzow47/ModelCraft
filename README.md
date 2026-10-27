@@ -27,7 +27,7 @@ MIT/Apache — voir `NOTICE.md`). ModelCraft est un projet **indépendant**, non
 | STEP | `.step` `.stp` | ✅ complet | via OpenCascade 7.8 : maillage des surfaces, arbre d'assemblage, couleurs |
 | IGES | `.iges` `.igs` | ✅ complet | via OpenCascade |
 | STL | `.stl` | ✅ | binaire et ASCII (unités : mm) |
-| OBJ | `.obj` (+ `.mtl`) | ✅ | groupes/objets → composants, couleurs `Kd` |
+| OBJ | `.obj` (+ `.mtl`) | ✅ | groupes/objets → composants, couleurs `Kd`, textures `map_Kd` plaquées (UV), normales `vn`, n-gones concaves |
 | 3DS | `.3ds` | ✅ | objets et matériaux (couleur diffuse) |
 | 3DXML | `.3dxml` | ✅ | représentations tessellées, assemblages |
 | eDrawings | `.easm` `.eprt` | ⚠️ partiel | vignette intégrée seulement (géométrie HSF non décodée) |
@@ -91,9 +91,9 @@ MIT/Apache — voir `NOTICE.md`). ModelCraft est un projet **indépendant**, non
 **Formats et installation**
 - **Installateur Windows** (Inno Setup) : menu Démarrer, icône Bureau en option, liste
   d'extensions à cocher (une case par extension), désinstallation propre.
-- OBJ + `.mtl` : opacité, textures (couleur moyenne), exports Blender.
+- OBJ + `.mtl` : opacité, **textures plaquées avec leurs UV** (`map_Kd`, découpe par l'alpha), normales et arêtes vives de Blender, n-gones concaves triangulés sans déformation (ear clipping), couleurs `Kd` de Blender converties linéaire → sRGB. Une texture citée par un chemin absolu d'un autre PC (`F:/…/texture.png`) est retrouvée à côté du `.obj`/`.mtl`.
 
-- **Rotation libre** (trackball, sans blocage aux pôles) par défaut ; *Paramètres › Rotation* : Libre ou Plateau tournant. Boutons « pivoter de 90° » sur le cube de vue.
+- **Plateau tournant** par défaut (comme Blender : l'axe vertical reste vertical, la vue ne penche jamais) ; *Paramètres › Navigation › Rotation* : Plateau tournant ou Libre (trackball, sans blocage aux pôles). Les anciens réglages « Libre » passent une fois au plateau tournant (V4.1). Boutons « pivoter de 90° » sur le cube de vue.
 - **Vue éclatée** : bouton de la barre d'outils, menu Affichage, menu contextuel et Ctrl+K ; panneau flottant (curseur 0–100 %, valeur, animer, réinitialiser). Fonctionne aussi sur une pièce à plusieurs corps (séparation automatique des corps) et sur chaque pièce d'un assemblage ; message si rien n'est éclatable.
 - **Opacité de la sélection** appliquée uniquement aux composants / corps sélectionnés.
 - **Nombres lisibles** : séparateurs de milliers et unités automatiques (`6 115 613,46 mm²` → `6,12 m²`), désactivables (*Paramètres › Unités automatiques*), respectent le nombre de décimales.

@@ -1,5 +1,5 @@
-//! Orbit camera. The orientation is a quaternion, so the free (trackball) mode rotates without
-//! any limit or gimbal lock; the turntable mode keeps +Y vertical (optional setting).
+//! Orbit camera. The orientation is a quaternion. The turntable mode (default) keeps +Y vertical,
+//! like Blender; the optional free (trackball) mode rotates without any limit or gimbal lock.
 
 use glam::{Mat3, Mat4, Quat, Vec2, Vec3};
 
@@ -89,9 +89,9 @@ impl Camera {
         self.distance = r / half.sin() * 1.08;
     }
 
-    /// Rotate by a mouse delta in pixels. Free mode (default): trackball around the screen axes,
-    /// unlimited in every direction. Turntable: around world +Y and the screen horizontal axis,
-    /// stopping at the poles so +Y stays up.
+    /// Rotate by a mouse delta in pixels. Turntable (default): around world +Y and the screen
+    /// horizontal axis, stopping at the poles so +Y stays up and the view never tilts. Free:
+    /// trackball around the screen axes, unlimited in every direction (circular drags roll).
     pub fn orbit(&mut self, delta: Vec2, turntable: bool) {
         const K: f32 = 0.008;
         if turntable {
@@ -220,5 +220,24 @@ mod tests {
         }
         assert!(c.forward_dir().y < 1.0 && c.up().y >= -1e-3);
         assert!(c.right().y.abs() < 1e-4);
+    }
+
+    #[test]
+    fn turntable_circular_drag_never_tilts() {
+        // a circular mouse drag (the user's "the view tilts by itself"): the horizon stays level
+        let mut c = Camera::default();
+        for k in 0..2000 {
+            let a = k as f32 * 0.05;
+            c.orbit(Vec2::new(a.cos() * 9.0, a.sin() * 9.0), true);
+            assert!(c.right().y.abs() < 1e-4, "rolled at step {k}: {:?}", c.right());
+            assert!(c.up().y > 0.0);
+        }
+        // the trackball does roll on the same drag (kept as the optional free mode)
+        let mut f = Camera::default();
+        for k in 0..2000 {
+            let a = k as f32 * 0.05;
+            f.orbit(Vec2::new(a.cos() * 9.0, a.sin() * 9.0), false);
+        }
+        assert!(f.right().y.abs() > 1e-3);
     }
 }
