@@ -58,6 +58,9 @@ MIT/Apache — voir `NOTICE.md`). ModelCraft est un projet **indépendant**, non
 - **Déplacer** (`G`) et **Tourner** (`R`) une pièce avec un manipulateur : flèches X/Y/Z, anneaux
   X/Y/Z (`Ctrl` = pas de 15°, angle affiché), ou glisser la pièce pour la faire pivoter librement
   « comme en vrai ». **Réinitialiser** remet la sélection (sinon tout) à sa place.
+- **Pivot** du manipulateur (barre en bas de la vue) : centre de la boîte englobante (défaut),
+  centre de l'objet, **curseur 3D** (`Alt+clic` / `Alt+glisser` pour le poser sur la surface,
+  bouton « Curseur 3D sur la sélection ») ou origine du monde.
 - **Annuler / rétablir** (`Ctrl+Z`, `Ctrl+Y` / `Ctrl+Maj+Z`) : déplacements, rotations, éclaté,
   opacités, masquage / isolement.
 - **Panneaux latéraux repliables** (boutons en haut des panneaux, `T` / `N`), état mémorisé.

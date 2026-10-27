@@ -1,7 +1,7 @@
 //! The document view: model tree, 3D viewport (navigation, picking, measurements, view cube,
 //! overlays) and the information panel.
 
-use crate::document::{DocState, Document, FaceSel, GizmoDrag, Handle, Section};
+use crate::document::{DocState, Document, FaceSel, GizmoDrag, Handle, PivotMode, Section};
 use crate::i18n::{tr, trf};
 use crate::measure::{self, Measure, Tool};
 use crate::render::{Light, LineVertex, Renderer, ViewSettings};
@@ -468,7 +468,11 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
         if let Some(p) = resp.interact_pointer_pos() {
             let (o, d) = doc.camera.ray(to_ndc(p), aspect);
             let hit = doc.pick(o, d);
-            if clicked {
+            if clicked && doc.gizmo && mods.alt {
+                // Alt+click with Move / Rotate: put the 3D cursor (pivot) there, keep the selection
+                doc.set_pivot(PivotMode::Cursor);
+                doc.cursor3d = hit.map(|h| h.point).or(doc.cursor3d);
+            } else if clicked {
                 on_click(doc, hit, st, rect, to_ndc(p));
             } else if let Some(h) = hit {
                 if doc.selected != Some(h.comp) {
@@ -556,6 +560,9 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
         viewcube(ui, rect, doc);
     }
     toolbar(ui, rect, doc, st, cmds);
+    if doc.gizmo {
+        pivot_bar(ui, rect, doc, cmds);
+    }
     if doc.explode_panel {
         explode_panel(ui, rect, doc);
     }
@@ -596,7 +603,7 @@ fn ortho_basis(a: Vec3) -> (Vec3, Vec3) {
 
 fn gizmo_geom(doc: &Document, view: Mat4, project: &dyn Fn(Vec3) -> Option<Pos2>, with_rings: bool) -> Option<GizmoGeom> {
     let i = doc.selected?;
-    let c = doc.component_center(i)?;
+    let c = doc.gizmo_pivot(i)?;
     let c2 = project(c)?;
     let right = view.inverse().x_axis.truncate().normalize_or_zero();
     let ppu = (project(c + right)? - c2).length();
@@ -695,7 +702,16 @@ fn gizmo_input(ui: &egui::Ui, doc: &mut Document, resp: &egui::Response, rect: R
             let (ro, rd) = doc.camera.ray(to_ndc(p), aspect);
             let fwd = view.inverse().z_axis.truncate().normalize_or_zero();
             let rotate = doc.gizmo_rotate;
+            let alt = ui.input(|i| i.modifiers.alt);
             let start = match (geom.as_ref().and_then(|g| gizmo_hit(g, p)), doc.selected, &geom) {
+                // Alt+drag: move the 3D cursor (custom pivot) over the surface
+                _ if alt => {
+                    doc.set_pivot(PivotMode::Cursor);
+                    let base = doc.cursor3d.unwrap_or(doc.camera.target);
+                    let at = doc.pick(ro, rd).map(|h| h.point).or_else(|| plane_hit(base, fwd, ro, rd)).unwrap_or(base);
+                    doc.cursor3d = Some(at);
+                    Some((doc.selected.unwrap_or(0), Handle::Pivot, at))
+                }
                 (Some(Handle::Free), Some(sel), Some(g)) if rotate => Some((sel, Handle::Spin, g.c)),
                 (Some(h), Some(sel), Some(g)) => Some((sel, h, g.c)),
                 _ => doc.pick(ro, rd).map(|hit| {
@@ -713,10 +729,12 @@ fn gizmo_input(ui: &egui::Ui, doc: &mut Document, resp: &egui::Response, rect: R
                 }),
             };
             if let Some((comp, handle, at)) = start {
-                doc.checkpoint();
+                if handle != Handle::Pivot {
+                    doc.checkpoint();
+                }
                 let origin = match handle {
-                    Handle::Free => at,
-                    _ => doc.component_center(comp).unwrap_or(at),
+                    Handle::Free | Handle::Pivot => at,
+                    _ => doc.gizmo_pivot(comp).unwrap_or(at),
                 };
                 let (normal, last) = match handle {
                     Handle::Axis(k) => {
@@ -729,6 +747,7 @@ fn gizmo_input(ui: &egui::Ui, doc: &mut Document, resp: &egui::Response, rect: R
                     }
                     Handle::Free => (fwd, plane_hit(origin, fwd, ro, rd).unwrap_or(origin)),
                     Handle::Spin => (fwd, Vec3::ZERO),
+                    Handle::Pivot => (fwd, at),
                 };
                 doc.drag = Some(GizmoDrag { comp, handle, origin, normal, last });
             }
@@ -784,6 +803,16 @@ fn gizmo_input(ui: &egui::Ui, doc: &mut Document, resp: &egui::Response, rect: R
                 dr.last = q;
                 Mat4::from_translation(d)
             }),
+            Handle::Pivot => {
+                // snap to the surface under the pointer, else slide in the view plane
+                if let Some(q) = doc.pick(ro, rd).map(|h| h.point).or_else(|| plane_hit(dr.origin, dr.normal, ro, rd)) {
+                    if q.is_finite() {
+                        dr.origin = q;
+                        doc.cursor3d = Some(q);
+                    }
+                }
+                None
+            }
         };
         if let Some(w) = w {
             if w != Mat4::IDENTITY && w.is_finite() {
@@ -795,7 +824,28 @@ fn gizmo_input(ui: &egui::Ui, doc: &mut Document, resp: &egui::Response, rect: R
     true
 }
 
+fn draw_cursor3d(p: &egui::Painter, doc: &Document, project: &dyn Fn(Vec3) -> Option<Pos2>) {
+    if doc.pivot != PivotMode::Cursor {
+        return;
+    }
+    let Some(c) = doc.cursor3d.and_then(|c| project(c)) else { return };
+    // red / white dashed ring with a cross, like a 3D cursor in a DCC app
+    let (red, white) = (Color32::from_rgb(230, 60, 60), Color32::WHITE);
+    for k in 0..16 {
+        let a0 = k as f32 / 16.0 * std::f32::consts::TAU;
+        let a1 = (k as f32 + 1.0) / 16.0 * std::f32::consts::TAU;
+        let pt = |a: f32| c + vec2(a.cos(), a.sin()) * 11.0;
+        p.line_segment([pt(a0), pt(a1)], Stroke::new(2.0, if k % 2 == 0 { red } else { white }));
+    }
+    let blk = Color32::from_black_alpha(160);
+    for d in [vec2(1.0, 0.0), vec2(0.0, 1.0)] {
+        p.line_segment([c - d * 18.0, c - d * 5.0], Stroke::new(1.5, blk));
+        p.line_segment([c + d * 5.0, c + d * 18.0], Stroke::new(1.5, blk));
+    }
+}
+
 fn draw_gizmo(p: &egui::Painter, doc: &Document, view: Mat4, project: &dyn Fn(Vec3) -> Option<Pos2>, hover: Option<Handle>, t: &Tokens) {
+    draw_cursor3d(p, doc, project);
     let Some(g) = gizmo_geom(doc, view, project, doc.gizmo_rotate) else { return };
     let hot = Color32::from_rgb(255, 214, 64);
     for k in 0..3 {
@@ -1211,6 +1261,49 @@ fn inside(p: Pos2, poly: &[Pos2; 4]) -> bool {
         }
     }
     true
+}
+
+/// Pivot choice for Move / Rotate (bottom of the viewport while the gizmo is on).
+fn pivot_bar(ui: &mut egui::Ui, rect: Rect, doc: &mut Document, cmds: &mut Cmds) {
+    let t = Tokens::get(ui.ctx());
+    let modes: [(PivotMode, &str, &str, &'static str); 4] = [
+        (PivotMode::BBox, "scan", tr("Centre de la boîte englobante de la sélection"), "pivot.bbox"),
+        (PivotMode::Object, "box", tr("Centre de l'objet (sa propre géométrie)"), "pivot.object"),
+        (PivotMode::Cursor, "crosshair", tr("Curseur 3D : Alt+clic ou Alt+glisser pour le placer sur la surface"), "pivot.cursor"),
+        (PivotMode::World, "globe", tr("Origine du monde (0, 0, 0)"), "pivot.world"),
+    ];
+    let b = 26.0;
+    let w = 300.0;
+    let pos = egui::pos2(rect.center().x - w * 0.5, rect.bottom() - b - 30.0);
+    egui::Area::new(ui.id().with(("pivot-bar", doc.id))).fixed_pos(pos).order(egui::Order::Middle).show(ui.ctx(), |ui| {
+        egui::Frame::new()
+            .fill(t.card.gamma_multiply(0.96))
+            .stroke(Stroke::new(1.0, t.border))
+            .corner_radius(CornerRadius::same(10))
+            .inner_margin(egui::Margin::symmetric(8, 4))
+            .shadow(egui::Shadow { offset: [0, 3], blur: 10, spread: 0, color: t.shadow })
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(tr("Pivot")).font(theme::semibold(12.0)).color(t.text_muted));
+                    for (m, icon, tip, cmd) in modes {
+                        if icons::button(ui, icon, b, doc.pivot == m, tip).clicked() {
+                            cmds.push(cmd);
+                        }
+                    }
+                    if doc.pivot == PivotMode::Cursor && icons::button(ui, "locate-fixed", b, false, tr("Curseur 3D sur la sélection")).clicked() {
+                        cmds.push("pivot.cursor_to_sel");
+                    }
+                    let name = match doc.pivot {
+                        PivotMode::BBox => tr("Boîte"),
+                        PivotMode::Object => tr("Objet"),
+                        PivotMode::Cursor => tr("Curseur 3D"),
+                        PivotMode::World => tr("Origine"),
+                    };
+                    ui.label(egui::RichText::new(name).font(theme::regular(12.0)).color(t.text));
+                });
+            });
+    });
 }
 
 /// Floating tool strip at the top of the viewport.

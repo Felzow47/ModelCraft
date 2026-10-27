@@ -363,6 +363,28 @@ impl App {
                     }
                 }
             }
+            "pivot.bbox" | "pivot.object" | "pivot.cursor" | "pivot.world" => {
+                use crate::document::PivotMode as P;
+                let m = match id {
+                    "pivot.bbox" => P::BBox,
+                    "pivot.object" => P::Object,
+                    "pivot.cursor" => P::Cursor,
+                    _ => P::World,
+                };
+                if let Some(d) = self.doc_mut() {
+                    d.set_pivot(m);
+                    d.drag = None;
+                }
+                if m == P::Cursor {
+                    self.toast(tr("Curseur 3D : Alt+clic ou Alt+glisser sur le modèle pour déplacer le pivot"));
+                }
+            }
+            "pivot.cursor_to_sel" => {
+                if let Some(d) = self.doc_mut() {
+                    d.pivot = crate::document::PivotMode::Cursor;
+                    d.cursor_to_selection();
+                }
+            }
             "asm.reset_all" => {
                 if let Some(d) = self.doc_mut() {
                     d.reset_position(None);
@@ -686,7 +708,7 @@ impl App {
             self.settings.show_tree = false;
             self.settings.show_info = false;
         }
-        if matches!(show.as_str(), "move" | "rotate" | "framesel") {
+        if matches!(show.as_str(), "move" | "rotate" | "pivot" | "framesel") {
             // the selection card shows the author's original file path: keep it out of shots
             self.settings.show_info = false;
         }
@@ -707,6 +729,17 @@ impl App {
                 d.needs_fit = true;
             }
             "pan" => d.pan_tool = true,
+            "pivot" => {
+                // Rotate tool with the pivot on a 3D cursor at the foot of the model
+                d.select(Some(0));
+                d.gizmo = true;
+                d.gizmo_rotate = true;
+                if let Some((lo, hi)) = d.bbox() {
+                    let c = (lo + hi) * 0.5;
+                    d.cursor3d = Some(glam::Vec3::new(c.x, lo.y, c.z));
+                }
+                d.pivot = crate::document::PivotMode::Cursor;
+            }
             "rotate" => {
                 if let Some(s) = &d.scene {
                     let i = (1..s.components.len()).filter(|&i| s.components[i].mesh.is_some()).last().unwrap_or(0);

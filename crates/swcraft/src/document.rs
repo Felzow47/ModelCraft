@@ -70,6 +70,22 @@ pub enum Handle {
     Free,
     /// Rotate mode, part grabbed away from the rings: turn it like a ball held in the hand.
     Spin,
+    /// Alt+drag: place / drag the 3D cursor (custom pivot), snapped to the surface under it.
+    Pivot,
+}
+
+/// Point the Move / Rotate gizmo turns around (viewer-only, never written to the file).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PivotMode {
+    /// Centre of the bounding box of the selection (with its sub-components).
+    #[default]
+    BBox,
+    /// Centre of the selected component's own geometry.
+    Object,
+    /// A point the user places with Alt+click / Alt+drag (snaps to the surface).
+    Cursor,
+    /// World origin (0, 0, 0).
+    World,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -127,6 +143,10 @@ pub struct Document {
     pub gizmo: bool,
     /// Also show the rotation rings of the gizmo.
     pub gizmo_rotate: bool,
+    /// Rotation / move pivot of the gizmo.
+    pub pivot: PivotMode,
+    /// 3D cursor (custom pivot), world space.
+    pub cursor3d: Option<Vec3>,
     /// Floating "Vue éclatée" panel open.
     pub explode_panel: bool,
     /// Gizmo / free drag in progress.
@@ -265,6 +285,8 @@ impl Document {
             reveal_in_tree: false,
             gizmo: false,
             gizmo_rotate: false,
+            pivot: PivotMode::BBox,
+            cursor3d: None,
             explode_panel: false,
             drag: None,
             pan_tool: false,
@@ -700,6 +722,40 @@ impl Document {
     /// Current world-space centre of the subtree of `i` (gizmo pivot).
     pub fn component_center(&self, i: usize) -> Option<Vec3> {
         Some(self.acc.get(i)?.transform_point3(*self.asm.center0.get(i)?))
+    }
+
+    /// World-space centre of the own geometry of `i` (subtree centre when it has none).
+    pub fn object_center(&self, i: usize) -> Option<Vec3> {
+        Some(self.acc.get(i)?.transform_point3(*self.asm.own_center.get(i)?))
+    }
+
+    /// Point the gizmo of component `i` turns around, following [`PivotMode`].
+    pub fn gizmo_pivot(&self, i: usize) -> Option<Vec3> {
+        match self.pivot {
+            PivotMode::BBox => self.component_center(i),
+            PivotMode::Object => self.object_center(i).or_else(|| self.component_center(i)),
+            PivotMode::Cursor => self.cursor3d.or_else(|| self.component_center(i)),
+            PivotMode::World => Some(Vec3::ZERO),
+        }
+    }
+
+    /// Switch the pivot mode; the 3D cursor starts on the selection (or the model centre).
+    pub fn set_pivot(&mut self, m: PivotMode) {
+        self.pivot = m;
+        if m == PivotMode::Cursor && self.cursor3d.is_none() {
+            self.cursor_to_selection();
+        }
+    }
+
+    /// Put the 3D cursor on the bounding-box centre of the selection (whole model if none).
+    pub fn cursor_to_selection(&mut self) {
+        let c = match self.selected {
+            Some(i) => self.component_center(i),
+            None => self.bbox().map(|(lo, hi)| (lo + hi) * 0.5),
+        };
+        if let Some(c) = c {
+            self.cursor3d = Some(c);
+        }
     }
 
     pub fn reset_position(&mut self, i: Option<usize>) {
