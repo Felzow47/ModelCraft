@@ -188,16 +188,27 @@ pub fn load(path: &Path, bytes: &[u8]) -> Result<Loaded, String> {
         for g in parts {
             let mat = mats.get(&g.material);
             let tex = mat.and_then(|m| m.texture.as_ref()).and_then(|t| textures.get(t).cloned().flatten());
-            let mesh = build_group(g, &v, &vt, &vn, scale, tex.clone());
+            // texture coordinates that are not a real unwrap (Blender text converted to mesh:
+            // every cap triangle squashed onto one line of the image) would paint random texels
+            // and holes from the alpha: such a group is drawn in its plain material colour
+            let has_vt = g.corners.iter().any(|c| c[1] != NONE);
+            let tex = tex.filter(|t| !has_vt || uv_usable(g, &v, &vt, t));
+            let mut mesh = build_group(g, &v, &vt, &vn, scale, tex.clone());
             // a texture without texture coordinates can only tint the part with its average colour
-            let avg = if mesh.texture.is_none() { tex.as_deref().map(average) } else { None };
-            let tex = if avg.is_some() { None } else { tex };
+            let avg = if mesh.texture.is_none() && !has_vt { tex.as_deref().map(average) } else { None };
+            let tex = if mesh.texture.is_none() { None } else { tex };
+            // no drawn edges on textured materials: the image carries the detail, and CAD edges
+            // on lettering or decals turn into a lace over it (the global switch still applies
+            // to everything else)
+            if mat.is_some_and(|m| m.texture.is_some()) {
+                mesh.edges.clear();
+            }
             let color = mat.map(|m| {
                 let kd = match (m.kd, &tex) {
                     // a texture carries the colour (Blender writes the unused base colour 0.8)
                     (Some(k), Some(_)) if k == [0.8; 3] => [1.0; 3],
                     (Some(k), _) => k,
-                    (None, _) => [if tex.is_some() { 1.0 } else { 0.8 }; 3],
+                    (None, _) => [if m.texture.is_some() { 1.0 } else { 0.8 }; 3],
                 };
                 let a = avg.unwrap_or([1.0; 3]);
                 let kd = if avg.is_some() && m.kd.map_or(true, |k| k == [0.8; 3]) { a } else { [kd[0] * a[0], kd[1] * a[1], kd[2] * a[2]] };
@@ -216,11 +227,9 @@ pub fn load(path: &Path, bytes: &[u8]) -> Result<Loaded, String> {
 
 // ---------------------------------------------------------------- geometry
 
-#[cfg(test)]
 fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
-#[cfg(test)]
 fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
 }
@@ -476,16 +485,43 @@ fn load_texture(path: &Path) -> Option<Rgba> {
     Some(Rgba { width: rgba.width(), height: rgba.height(), pixels: rgba.into_raw() })
 }
 
-/// Average colour of a texture (sRGB, 0..1).
+/// Whether a group's texture coordinates map its surface onto the image: false when most of
+/// the area (≥ 30 %) has triangles flattened to less than a quarter of a texel.
+fn uv_usable(g: &Group, v: &[[f32; 3]], vt: &[[f32; 2]], t: &Rgba) -> bool {
+    let min_uv = 0.25 / (t.width.max(1) as f64 * t.height.max(1) as f64);
+    let (mut total, mut flat) = (0f64, 0f64);
+    for k in 0..g.polys.len() {
+        let poly = g.poly(k);
+        for i in 1..poly.len() - 1 {
+            let c = [poly[0], poly[i], poly[i + 1]];
+            let p = c.map(|c| v[c[0] as usize]);
+            let n = cross(sub(p[1], p[0]), sub(p[2], p[0]));
+            let a3 = (n[0] as f64).hypot(n[1] as f64).hypot(n[2] as f64) * 0.5;
+            total += a3;
+            let uv = c.map(|c| vt.get(c[1] as usize).copied());
+            let auv = match uv {
+                [Some(a), Some(b), Some(c)] => (((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])) as f64).abs() * 0.5,
+                _ => 0.0,
+            };
+            if auv < min_uv {
+                flat += a3;
+            }
+        }
+    }
+    total <= 0.0 || flat < 0.3 * total
+}
+
+/// Average colour of a texture (sRGB, 0..1), weighted by alpha (transparent texels do not count).
 fn average(t: &Rgba) -> [f32; 3] {
     let mut sum = [0f64; 3];
     let mut n = 0f64;
     let step = ((t.pixels.len() / 4) / 65536).max(1);
     for px in t.pixels.chunks_exact(4).step_by(step) {
+        let a = px[3] as f64 / 255.0;
         for k in 0..3 {
-            sum[k] += px[k] as f64;
+            sum[k] += px[k] as f64 * a;
         }
-        n += 1.0;
+        n += a;
     }
     if n == 0.0 {
         return [1.0; 3];
@@ -662,9 +698,43 @@ mod tests {
         let tex: Vec<_> = s.meshes.iter().filter(|m| m.name.contains("Material.002")).collect();
         assert!(!tex.is_empty());
         if std::path::Path::new(&dir).join("texture.png").exists() {
-            assert!(tex.iter().all(|m| m.mesh.texture.is_some() && m.mesh.uvs.len() == m.mesh.positions.len()));
+            // boards and logo are mapped; the lettering (flattened UVs) is plain white
+            for m in &tex {
+                let text = m.name.contains("Text");
+                assert_eq!(m.mesh.texture.is_none(), text, "{}", m.name);
+                assert!(m.mesh.edges.is_empty(), "{}", m.name);
+                if text {
+                    assert_eq!(m.color, Some([1.0, 1.0, 1.0, 1.0]));
+                } else if !m.name.starts_with("Poteau") {
+                    assert_eq!(m.mesh.uvs.len(), m.mesh.positions.len());
+                }
+            }
         }
         let red = s.meshes.iter().find(|m| m.name.contains("Material.001")).and_then(|m| m.color).unwrap();
         assert!(red[0] > 0.7 && red[1] < 0.05, "linear 0.52 red shown as sRGB {red:?}");
+    }
+
+    #[test]
+    fn flattened_uvs_fall_back_to_plain_colour_without_edges() {
+        let dir = std::env::temp_dir().join(format!("mc_obj_flat_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut img = image::RgbaImage::new(4, 4);
+        img.put_pixel(3, 0, image::Rgba([255, 255, 255, 255]));
+        img.save(dir.join("atlas.png")).unwrap();
+        std::fs::write(dir.join("t.mtl"), "# Blender MTL File\nnewmtl Atlas\nmap_Kd atlas.png\nmap_d atlas.png\n").unwrap();
+        // "lettering": the cap's UVs all lie on the line v = 1 (zero area)
+        let obj = "# Blender 4.2\nmtllib t.mtl\no Text\nv 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nvt 0 1\nvt 0.5 1\nvt 1 1\nvn 0 0 1\nusemtl Atlas\nf 1/1/1 2/2/1 3/3/1 4/1/1\n\
+                   o Board\nv 0 0 1\nv 1 0 1\nv 1 1 1\nv 0 1 1\nvt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\nf 5/4/1 6/5/1 7/6/1 8/7/1\n";
+        let p = dir.join("t.obj");
+        std::fs::write(&p, obj).unwrap();
+        let s = load(&p, obj.as_bytes()).unwrap();
+        let t = s.meshes.iter().find(|m| m.name.starts_with("Text")).unwrap();
+        assert!(t.mesh.texture.is_none(), "flattened UVs are not mapped");
+        assert_eq!(t.color, Some([1.0, 1.0, 1.0, 1.0]), "plain (white) material colour");
+        assert!(t.mesh.edges.is_empty());
+        let b = s.meshes.iter().find(|m| m.name.starts_with("Board")).unwrap();
+        assert!(b.mesh.texture.is_some());
+        assert!(b.mesh.edges.is_empty(), "no CAD edges over a textured material");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
