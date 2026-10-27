@@ -72,9 +72,10 @@ impl Camera {
         let far = self.distance + 2.0 * r;
         if self.ortho {
             let h = self.distance * (self.fov_y * 0.5).tan();
-            Mat4::orthographic_rh(-h * aspect, h * aspect, -h, h, near.min(self.distance * 0.01), far)
+            // reversed-Z: near and far swapped so depth runs 1 → 0 (see render.rs DEPTH_FORMAT)
+            Mat4::orthographic_rh(-h * aspect, h * aspect, -h, h, far, near.min(self.distance * 0.01))
         } else {
-            Mat4::perspective_rh(self.fov_y, aspect, near, far)
+            Mat4::perspective_rh(self.fov_y, aspect, far, near)
         }
     }
 
@@ -171,6 +172,19 @@ impl Camera {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn projection_is_reversed_z() {
+        // depth 1 at the near plane, 0 at the far plane: required by the Greater depth test
+        let mut c = Camera::default();
+        c.fit(glam::Vec3::splat(-5.0), glam::Vec3::splat(5.0), 1.5);
+        let vp = c.proj(1.5) * c.view();
+        let depth = |p: glam::Vec3| { let q = vp * p.extend(1.0); q.z / q.w };
+        let near = c.target + (c.eye() - c.target).normalize() * 8.0;
+        let far = c.target;
+        assert!(depth(near) > depth(far), "{} {}", depth(near), depth(far));
+        assert!((0.0..=1.0).contains(&depth(far)) && (0.0..=1.0).contains(&depth(near)));
+    }
+
     use super::*;
 
     #[test]

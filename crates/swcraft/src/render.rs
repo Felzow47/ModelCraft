@@ -12,6 +12,8 @@ use wgpu::util::DeviceExt;
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 /// Texture shown by egui (raw sRGB bytes copied from the render target).
 const DISPLAY_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+/// Reversed-Z (near = 1, far = 0) on a float buffer: near-uniform depth precision, so decals a
+/// millimetre off a large face (price panels, extruded text on a 10 m totem) never z-fight.
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Uniform slots for the edge passes (thick edges are drawn several times, offset by pixels).
 const PASS_SLOTS: usize = 9;
@@ -607,7 +609,7 @@ impl Renderer {
             "fs_mesh",
             &buffers,
             T::TriangleList,
-            depth(true, C::Less, wgpu::DepthBiasState { constant: 2, slope_scale: 1.5, clamp: 0.0 }),
+            depth(true, C::Greater, wgpu::DepthBiasState { constant: -2, slope_scale: -1.5, clamp: 0.0 }),
             true,
         );
         // transparent instances: depth-only prepass per instance, then colour where depth is equal
@@ -618,7 +620,7 @@ impl Renderer {
             "fs_mesh",
             &buffers,
             T::TriangleList,
-            depth(true, C::Less, wgpu::DepthBiasState { constant: 2, slope_scale: 1.5, clamp: 0.0 }),
+            depth(true, C::Greater, wgpu::DepthBiasState { constant: -2, slope_scale: -1.5, clamp: 0.0 }),
             false,
         );
         let pipe_tr = pipe(
@@ -627,7 +629,7 @@ impl Renderer {
             "fs_mesh",
             &buffers,
             T::TriangleList,
-            depth(false, C::LessEqual, wgpu::DepthBiasState { constant: 2, slope_scale: 1.5, clamp: 0.0 }),
+            depth(false, C::GreaterEqual, wgpu::DepthBiasState { constant: -2, slope_scale: -1.5, clamp: 0.0 }),
             true,
         );
         let pipe_hl = pipe(
@@ -636,11 +638,11 @@ impl Renderer {
             "fs_mesh",
             &buffers,
             T::TriangleList,
-            depth(false, C::LessEqual, wgpu::DepthBiasState { constant: -1, slope_scale: -1.0, clamp: 0.0 }),
+            depth(false, C::GreaterEqual, wgpu::DepthBiasState { constant: 1, slope_scale: 1.0, clamp: 0.0 }),
             true,
         );
-        let pipe_edge = pipe("edges", "vs_edge", "fs_edge", &buffers, T::LineList, depth(false, C::LessEqual, Default::default()), true);
-        let pipe_line = pipe("lines", "vs_line", "fs_line", &line_buffers, T::LineList, depth(false, C::LessEqual, Default::default()), true);
+        let pipe_edge = pipe("edges", "vs_edge", "fs_edge", &buffers, T::LineList, depth(false, C::GreaterEqual, Default::default()), true);
+        let pipe_line = pipe("lines", "vs_line", "fs_line", &line_buffers, T::LineList, depth(false, C::GreaterEqual, Default::default()), true);
         let pipe_bg = pipe("background", "vs_bg", "fs_bg", &[], T::TriangleList, depth(false, C::Always, Default::default()), true);
         Renderer { samples, pipe_mesh, pipe_tr_depth, pipe_tr, pipe_hl, pipe_edge, pipe_line, pipe_bg, globals, passes, bind, white, white_pending: std::sync::Mutex::new(white_pending), target: None }
     }
@@ -768,7 +770,7 @@ impl Renderer {
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &t.depth,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }),
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Discard }),
                     stencil_ops: None,
                 }),
                 timestamp_writes: None,
