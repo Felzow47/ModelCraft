@@ -35,7 +35,8 @@ pub fn open_folder(path: &Path) -> std::io::Result<()> {
 }
 
 /// Extensions offered for association.
-pub const ASSOC_EXTS: &[&str] = &["sldprt", "sldasm", "step", "stp", "iges", "igs", "stl", "obj", "3ds", "3dxml", "easm", "rvt", "rfa"];
+pub const ASSOC_EXTS: &[&str] = &["sldprt", "sldasm", "step", "stp", "iges", "igs", "stl", "obj", "3ds", "3dxml", "easm", "rvt", "rfa",
+    "ifc", "ifczip", "fbx", "gltf", "glb", "dae", "3mf", "ply", "off", "amf", "wrl", "x3d", "usdz", "dxf"];
 
 /// Register ModelCraft for the extensions under HKCU\Software\Classes (per user, reversible).
 /// Returns the number of extensions registered.

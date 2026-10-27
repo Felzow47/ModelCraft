@@ -11,12 +11,13 @@ pub struct Assembly {
     pub user: Vec<Mat4>,
     /// World-space offset of each component (relative to its parent) at 100 % explosion.
     explode_dir: Vec<Vec3>,
-    /// Hierarchy level used to stage the explosion (sub-assemblies separate first).
-    level: Vec<u32>,
-    levels: u32,
+    /// World-space offset of each piece at 100 % explosion (lines start from where it was).
+    world_off: Vec<Vec3>,
     parent: Vec<Option<usize>>,
     /// Bounding-box centre of each component subtree (as loaded).
     pub center0: Vec<Vec3>,
+    /// Centre of each component's own mesh (as loaded; subtree centre when it has none).
+    pub own_center: Vec<Vec3>,
     /// Opacity per component (multiplied down the hierarchy).
     pub opacity: Vec<f32>,
     pub global_opacity: f32,
@@ -30,6 +31,10 @@ pub struct Assembly {
 
 /// Faded opacity of the other components when "transparency of the others" is on.
 pub const OTHERS_OPACITY: f32 = 0.18;
+/// At 100 %, a piece's distance from the model centre grows by this factor (1 = doubled)…
+pub const EXPLODE_SPREAD: f32 = 1.0;
+/// …plus this fraction of the model's half-diagonal, so pieces near the centre still move out.
+pub const EXPLODE_PUSH: f32 = 0.6;
 
 impl Assembly {
     pub fn empty() -> Assembly {
@@ -37,10 +42,10 @@ impl Assembly {
             base: vec![],
             user: vec![],
             explode_dir: vec![],
-            level: vec![],
-            levels: 1,
+            world_off: vec![],
             parent: vec![],
             center0: vec![],
+            own_center: vec![],
             opacity: vec![],
             global_opacity: 1.0,
             others_transparent: false,
@@ -70,6 +75,7 @@ impl Assembly {
                 hi[i] = hi[i].max(q);
             }
         }
+        let (own_lo, own_hi) = (lo.clone(), hi.clone());
         for i in (0..n).rev() {
             if let Some(p) = parent[i] {
                 if lo[i].x <= hi[i].x {
@@ -80,6 +86,8 @@ impl Assembly {
         }
         let valid = |i: usize| lo[i].x <= hi[i].x && lo[i].is_finite() && hi[i].is_finite();
         let center0: Vec<Vec3> = (0..n).map(|i| if valid(i) { (lo[i] + hi[i]) * 0.5 } else { base[i].w_axis.truncate() }).collect();
+        let own_valid = |i: usize| own_lo[i].x <= own_hi[i].x && own_lo[i].is_finite() && own_hi[i].is_finite();
+        let own_center: Vec<Vec3> = (0..n).map(|i| if own_valid(i) { (own_lo[i] + own_hi[i]) * 0.5 } else { center0[i] }).collect();
         // whole-scene box (virtual root for several top-level components)
         let (mut slo, mut shi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
         for i in (0..n).filter(|&i| parent[i].is_none() && valid(i)) {
@@ -87,65 +95,66 @@ impl Assembly {
             shi = shi.max(hi[i]);
         }
         let scene_ok = slo.x <= shi.x;
-        // siblings (with geometry) of each group
-        let mut kids: Vec<Vec<usize>> = vec![vec![]; n + 1];
-        for i in 0..n {
-            if valid(i) {
-                kids[parent[i].unwrap_or(n)].push(i);
-            }
-        }
-        let mut explode_dir = vec![Vec3::ZERO; n];
-        let mut level = vec![0u32; n];
-        for i in 0..n {
-            level[i] = parent[i].map(|p| level[p] + 1).unwrap_or(0);
-        }
-        for (g, ks) in kids.iter().enumerate() {
-            if ks.len() < 2 {
-                continue;
-            }
-            let (pc, pr) = if g == n {
-                if !scene_ok {
-                    continue;
-                }
-                ((slo + shi) * 0.5, (shi - slo).length() * 0.5)
-            } else {
-                (center0[g], (hi[g] - lo[g]).length() * 0.5)
-            };
-            for (k, &i) in ks.iter().enumerate() {
-                let d = center0[i] - pc;
+        // Exploded view: every piece that carries geometry moves straight away from the centre
+        // of the whole model, along the line from that centre to its own centre, by an amount
+        // proportional to the slider. One direction per piece, linear in t: pieces never turn
+        // round or come back as the slider goes up, and parents never add their offset twice.
+        let sr = if scene_ok { ((shi - slo).length() * 0.5).max(1e-9) } else { 1.0 };
+        let pieces: Vec<usize> = (0..n)
+            .filter(|&i| scene.components[i].mesh.and_then(|m| scene.meshes.get(m)).is_some_and(|m| !m.mesh.is_empty()) && !scene.components[i].suppressed && own_valid(i))
+            .collect();
+        let mut world_off = vec![Vec3::ZERO; n];
+        if scene_ok && pieces.len() >= 2 {
+            let np = pieces.len();
+            // Reference point: the mean of the piece centres, not the box centre. With two
+            // pieces that share almost the same box centre (a U-bolt in its bracket) the box
+            // centre can sit to one side of both and send them the same way; around the mean
+            // they always go opposite ways.
+            let sc = pieces.iter().map(|&i| own_center[i]).sum::<Vec3>() / np as f32;
+            for (k, &i) in pieces.iter().enumerate() {
+                let c = own_center[i];
+                let d = c - sc;
                 let len = d.length();
-                let dir = if len > pr * 1e-3 {
+                let dir = if len > sr * 0.02 {
                     d / len
                 } else {
-                    // part sitting at the group centre: spread on a golden-angle spiral
-                    let t = (k as f32 + 0.5) / ks.len() as f32;
+                    // piece sitting at the model centre: spread on a golden-angle spiral
+                    let t = (k as f32 + 0.5) / np as f32;
                     let phi = k as f32 * 2.399_963;
                     let z = 1.0 - 2.0 * t;
                     let r = (1.0 - z * z).max(0.0).sqrt();
                     Vec3::new(r * phi.cos(), z, r * phi.sin())
                 };
-                explode_dir[i] = dir * (len * 1.1 + pr * 0.45);
+                // plus the piece's own half-size along its direction, so that at 100 % two
+                // interlocked pieces (a bolt through a bracket) come fully out of each other
+                let h = (own_hi[i] - own_lo[i]) * 0.5;
+                let support = dir.x.abs() * h.x + dir.y.abs() * h.y + dir.z.abs() * h.z;
+                world_off[i] = d * EXPLODE_SPREAD + dir * (sr * EXPLODE_PUSH + support.min(sr));
             }
         }
-        let levels = level.iter().copied().max().unwrap_or(0) + 1;
+        // local offset = own world offset minus the nearest ancestor's (rigid translations add up)
+        let mut explode_dir = vec![Vec3::ZERO; n];
+        let mut acc_off = vec![Vec3::ZERO; n];
+        for i in 0..n {
+            let pa = parent[i].map(|p| acc_off[p]).unwrap_or(Vec3::ZERO);
+            if pieces.binary_search(&i).is_ok() {
+                explode_dir[i] = world_off[i] - pa;
+                acc_off[i] = world_off[i];
+            } else {
+                acc_off[i] = pa;
+            }
+        }
         Assembly {
             user: vec![Mat4::IDENTITY; n],
             explode_dir,
-            level,
-            levels,
+            world_off,
             parent,
             center0,
+            own_center,
             opacity: vec![1.0; n],
             base,
             ..Assembly::empty()
         }
-    }
-
-    /// Explosion factor of a hierarchy level for the overall factor `t` (outer levels move first).
-    fn level_factor(&self, lvl: u32, t: f32) -> f32 {
-        let l = self.levels.max(1) as f32;
-        let x = (t * l - lvl as f32).clamp(0.0, 1.0);
-        x * x * (3.0 - 2.0 * x)
     }
 
     /// Display matrices with the user transforms and the current explosion applied, and the
@@ -154,13 +163,30 @@ impl Assembly {
         let n = self.base.len();
         let mut acc = vec![Mat4::IDENTITY; n];
         let mut out = Vec::with_capacity(n);
+        let t = self.explode.clamp(0.0, 1.0);
         for i in 0..n {
             let pa = self.parent[i].map(|p| acc[p]).unwrap_or(Mat4::IDENTITY);
-            let e = self.explode_dir[i] * self.level_factor(self.level[i], self.explode);
-            acc[i] = pa * self.user[i] * Mat4::from_translation(e);
+            let pu = pa * self.user[i];
+            acc[i] = pu * Mat4::from_translation(self.local_offset(i, &pu, t));
             out.push(acc[i] * self.base[i]);
         }
         (out, acc)
+    }
+
+    /// Explosion translation of `i` in the frame of `pa` (parent's accumulated transform and the
+    /// component's own user move), so the piece moves along its fixed world-space direction.
+    fn local_offset(&self, i: usize, pa: &Mat4, t: f32) -> Vec3 {
+        let e = self.explode_dir[i] * t;
+        if e == Vec3::ZERO {
+            return e;
+        }
+        let inv = pa.inverse();
+        inv.transform_vector3(e)
+    }
+
+    /// At least two pieces (components or bodies) move apart in the exploded view.
+    pub fn can_explode(&self) -> bool {
+        self.explode_dir.iter().filter(|d| d.length_squared() > 0.0).count() >= 2
     }
 
     pub fn is_modified(&self) -> bool {
@@ -226,12 +252,105 @@ impl Assembly {
             if !with_mesh.get(i).copied().unwrap_or(false) {
                 continue;
             }
-            let a = self.center0[i];
-            let b = acc[i].transform_point3(a);
+            let b = acc[i].transform_point3(self.own_center[i]);
+            let a = b - self.world_off.get(i).copied().unwrap_or(Vec3::ZERO) * self.explode.clamp(0.0, 1.0);
             if (b - a).length_squared() > 1e-12 {
                 v.push((a, b));
             }
         }
         v
+    }
+}
+
+#[cfg(test)]
+mod explode_tests {
+    use super::*;
+    use sw_format::{SceneComponent, SceneMesh, TriMesh};
+
+    fn tri_at(c: [f32; 3]) -> TriMesh {
+        let p = |dx: f32, dy: f32| [c[0] + dx, c[1] + dy, c[2]];
+        TriMesh {
+            positions: vec![p(-0.1, -0.1), p(0.1, -0.1), p(0.0, 0.1)],
+            normals: vec![[0.0, 0.0, 1.0]; 3],
+            indices: vec![0, 1, 2],
+            edges: vec![],
+            face_count: 1,
+            face_start: vec![0],
+            bbox_min: [c[0] - 0.1, c[1] - 0.1, c[2]],
+            bbox_max: [c[0] + 0.1, c[1] + 0.1, c[2]],
+        }
+    }
+
+    /// Two pieces with (almost) the same centre, like a U-bolt in its bracket, go opposite ways.
+    #[test]
+    fn concentric_pieces_separate() {
+        let meshes: Vec<SceneMesh> = [[0.0, -0.0085, 0.0], [0.0, -0.0081, 0.0]].iter().map(|c| SceneMesh { name: "m".into(), mesh: tri_at(*c), source: sw_format::MeshSource::Embedded, color: None }).collect();
+        let id = [1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.];
+        let comp = |name: &str, mesh: usize| SceneComponent { name: name.into(), path: String::new(), depth: 0, parent: None, is_assembly: false, world: id, mesh: Some(mesh), suppressed: false, hidden: false, color: None };
+        let scene = sw_format::Scene { meshes, components: vec![comp("a", 0), comp("b", 1)], path: Default::default(), kind: sw_format::DocKind::Assembly, container: sw_format::ContainerKind::Other("t"), stream_count: 0, preview: None, warnings: vec![], properties: vec![], timings: Default::default(), up_z: false };
+        let asm = Assembly::new(&scene, vec![Mat4::IDENTITY; 2]);
+        assert!(asm.world_off[0].dot(asm.world_off[1]) < 0.0, "they must not move the same way");
+        assert!((asm.world_off[0] - asm.world_off[1]).length() > 0.05);
+    }
+
+    /// root ─ sub ─ {a, b}, c, d: every piece's distance from the model centre grows with the
+    /// slider and nothing ever comes back (the V3 bug).
+    #[test]
+    fn explode_is_monotonic_and_radial() {
+        let centres = [[1.0, 0.2, 0.0], [1.4, -0.3, 0.5], [-1.0, 0.0, 0.0], [0.05, 0.02, 0.0]];
+        let meshes: Vec<SceneMesh> = centres.iter().map(|c| SceneMesh { name: "m".into(), mesh: tri_at(*c), source: sw_format::MeshSource::Embedded, color: None }).collect();
+        let id = [1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.];
+        let comp = |name: &str, depth: usize, parent: Option<usize>, mesh: Option<usize>| SceneComponent { name: name.into(), path: String::new(), depth, parent, is_assembly: mesh.is_none(), world: id, mesh, suppressed: false, hidden: false, color: None };
+        let scene = sw_format::Scene {
+            meshes,
+            components: vec![comp("root", 0, None, None), comp("sub", 1, Some(0), None), comp("a", 2, Some(1), Some(0)), comp("b", 2, Some(1), Some(1)), comp("c", 1, Some(0), Some(2)), comp("d", 1, Some(0), Some(3))],
+            path: Default::default(),
+            kind: sw_format::DocKind::Assembly,
+            container: sw_format::ContainerKind::Other("t"),
+            stream_count: 0,
+            preview: None,
+            warnings: vec![],
+            properties: vec![],
+            timings: Default::default(),
+            up_z: false,
+        };
+        let mut asm = Assembly::new(&scene, vec![Mat4::IDENTITY; 6]);
+        assert!(asm.can_explode());
+        let pieces = [2usize, 3, 4, 5];
+        // explosion centre: mean of the piece centres
+        let sc = centres.iter().map(|c| Vec3::from(*c)).sum::<Vec3>() / centres.len() as f32;
+        let pos = |asm: &Assembly| {
+            let (_, acc) = asm.compute();
+            pieces.map(|i| acc[i].transform_point3(asm.own_center[i]))
+        };
+        let mut last = pos(&asm).map(|p| (p - sc).length());
+        let start = pos(&asm);
+        for k in 1..=40 {
+            asm.explode = k as f32 / 40.0;
+            let now = pos(&asm);
+            for (j, p) in now.iter().enumerate() {
+                let d = (*p - sc).length();
+                assert!(d > last[j] - 1e-6, "piece {j} came back at {}%", k * 100 / 40);
+                last[j] = d;
+                // straight line out: the displacement keeps the same direction
+                let disp = (*p - start[j]).normalize();
+                let dir = asm.world_off[pieces[j]].normalize();
+                assert!(disp.dot(dir) > 0.999, "piece {j} left its ray");
+            }
+        }
+        // every piece moves out, even one sitting near the middle
+        for j in 0..4 {
+            assert!((pos(&asm)[j] - start[j]).length() > 0.1, "piece {j} barely moved");
+        }
+        // a moved (rotated) sub-assembly keeps exploding along fixed world directions
+        asm.user[1] = Mat4::from_rotation_z(0.7);
+        asm.explode = 0.0;
+        let s0 = pos(&asm);
+        asm.explode = 1.0;
+        let s1 = pos(&asm);
+        for j in 0..2 {
+            let disp = (s1[j] - s0[j]).normalize();
+            assert!(disp.dot(asm.world_off[pieces[j]].normalize()) > 0.999);
+        }
     }
 }

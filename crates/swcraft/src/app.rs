@@ -124,6 +124,8 @@ impl App {
         match startup.show.as_deref() {
             Some("settings") => app.dialog = Some(Dialog::Settings(SettingsCat::General)),
             Some("settings-display") => app.dialog = Some(Dialog::Settings(SettingsCat::Display)),
+            Some("settings-navigation") => app.dialog = Some(Dialog::Settings(SettingsCat::Navigation)),
+            Some("settings-measure") => app.dialog = Some(Dialog::Settings(SettingsCat::Measure)),
             Some("about") => app.dialog = Some(Dialog::About),
             Some("shortcuts") => app.dialog = Some(Dialog::Shortcuts),
             Some("formats") => app.dialog = Some(Dialog::Formats),
@@ -279,9 +281,13 @@ impl App {
                     }
                 }
             }
-            "asm.move" => {
+            "asm.move" | "asm.rotate" => {
+                let rotate = id == "asm.rotate";
                 if let Some(d) = self.doc_mut() {
-                    d.gizmo = !d.gizmo;
+                    // Move and Rotate are two tools: picking the active one again leaves it
+                    d.gizmo = !(d.gizmo && d.gizmo_rotate == rotate);
+                    d.gizmo_rotate = rotate;
+                    d.pan_tool = false;
                     d.drag = None;
                     if d.gizmo {
                         d.measure.tool = crate::measure::Tool::Select;
@@ -291,6 +297,8 @@ impl App {
                     let none = d.selected.is_none();
                     self.toast(if !on {
                         tr("Déplacement terminé (le fichier n'est jamais modifié)")
+                    } else if rotate {
+                        tr("Tourner : tirez un anneau X/Y/Z (Ctrl = pas de 15°) ou glissez la pièce pour la faire pivoter")
                     } else if none {
                         tr("Déplacer : glissez une pièce, ou sélectionnez-la puis tirez une flèche")
                     } else {
@@ -298,13 +306,54 @@ impl App {
                     });
                 }
             }
-            "asm.rotate" => {
+            "tool.pan" => {
                 if let Some(d) = self.doc_mut() {
-                    d.gizmo_rotate = !d.gizmo_rotate;
-                    if d.gizmo_rotate {
-                        d.gizmo = true;
-                        d.measure.tool = crate::measure::Tool::Select;
+                    d.pan_tool = !d.pan_tool;
+                    if d.pan_tool {
+                        d.gizmo = false;
+                        d.drag = None;
+                        d.measure.tool = Tool::Select;
+                        d.measure.pending = None;
+                        d.measure.message = None;
                     }
+                }
+            }
+            "edit.undo" | "edit.redo" => {
+                let undo = id == "edit.undo";
+                if let Some(ok) = self.doc_mut().map(|d| if undo { d.undo() } else { d.redo() }) {
+                    if !ok {
+                        self.toast(if undo { tr("Rien à annuler") } else { tr("Rien à rétablir") });
+                    }
+                }
+            }
+            "view.frame_selected" => {
+                if let Some(d) = self.doc_mut() {
+                    match d.selected {
+                        Some(i) => viewer::frame_component(d, i),
+                        None => d.needs_fit = true,
+                    }
+                }
+            }
+            "view.flip" => {
+                if let Some(d) = self.doc_mut() {
+                    d.cam_goal = None;
+                    let up = d.camera.up();
+                    d.camera.rot = (glam::Quat::from_axis_angle(up, std::f32::consts::PI) * d.camera.rot).normalize();
+                }
+            }
+            "view.orbit_left" | "view.orbit_right" | "view.orbit_up" | "view.orbit_down" => {
+                // 15° steps like Blender's numpad 4/6/8/2 (orbit() turns 0.008 rad per pixel)
+                let px = 15f32.to_radians() / 0.008;
+                let d = match id {
+                    "view.orbit_left" => glam::Vec2::new(-px, 0.0),
+                    "view.orbit_right" => glam::Vec2::new(px, 0.0),
+                    "view.orbit_up" => glam::Vec2::new(0.0, -px),
+                    _ => glam::Vec2::new(0.0, px),
+                };
+                let turntable = st.orbit == crate::settings::OrbitMode::Turntable;
+                if let Some(doc) = self.doc_mut() {
+                    doc.cam_goal = None;
+                    doc.camera.orbit(d, turntable);
                 }
             }
             "asm.reset_sel" => {
@@ -317,6 +366,7 @@ impl App {
             "asm.reset_all" => {
                 if let Some(d) = self.doc_mut() {
                     d.reset_position(None);
+                    d.asm.explode_goal = 0.0;
                     d.asm.opacity.iter_mut().for_each(|o| *o = 1.0);
                     d.asm.global_opacity = 1.0;
                     d.asm.others_transparent = false;
@@ -325,8 +375,28 @@ impl App {
             }
             "asm.explode" => {
                 if let Some(d) = self.doc_mut() {
-                    d.asm.explode_goal = if d.asm.explode_goal > 0.0 { 0.0 } else { 1.0 };
+                    d.checkpoint();
+                }
+                let dev = self.rs.device.clone();
+                let faces = self.doc_mut().is_some_and(|d| !d.asm.can_explode() && d.split_into_faces(&dev, ctx));
+                if faces {
+                    self.toast(tr("Pièce d'un seul corps : éclatement par faces"));
+                }
+                if let Some(d) = self.doc_mut() {
+                    d.explode_panel = true;
+                    if d.asm.can_explode() {
+                        d.asm.explode_goal = if d.asm.explode_goal > 0.0 { 0.0 } else { 1.0 };
+                    }
                     ctx.request_repaint();
+                }
+            }
+            "view.explode" => {
+                let dev = self.rs.device.clone();
+                if let Some(d) = self.doc_mut() {
+                    d.explode_panel = !d.explode_panel;
+                    if d.explode_panel && !d.asm.can_explode() {
+                        d.split_into_faces(&dev, ctx);
+                    }
                 }
             }
             "asm.explode_lines" => {
@@ -344,6 +414,7 @@ impl App {
             }
             "asm.others" => {
                 if let Some(d) = self.doc_mut() {
+                    d.checkpoint();
                     d.asm.others_transparent = !d.asm.others_transparent;
                     d.instances_dirty = true;
                 }
@@ -441,6 +512,13 @@ impl App {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fs));
             }
             "tool.select" | "tool.distance" | "tool.edge" | "tool.diameter" | "tool.angle" => {
+                if let Some(d) = self.doc_mut() {
+                    d.pan_tool = false;
+                    if id != "tool.select" || d.measure.tool == Tool::Select {
+                        d.gizmo = false;
+                        d.drag = None;
+                    }
+                }
                 let tool = match id {
                     "tool.distance" => Tool::Distance,
                     "tool.edge" => Tool::Edge,
@@ -507,17 +585,16 @@ impl App {
         if ctx.egui_wants_keyboard_input() && !self.palette_open {
             return;
         }
+        crate::commands::BLENDER_KEYS.store(self.settings.blender_keys, Ordering::Relaxed);
         let mut fire = Vec::new();
         ctx.input_mut(|i| {
-            for c in crate::commands::COMMANDS {
-                if let Some(s) = c.shortcut {
-                    // single keys only when no text field has focus (checked above) and the palette is closed
-                    if self.palette_open && c.id != "help.palette" && c.id != "edit.deselect" {
-                        continue;
-                    }
-                    if i.consume_shortcut(&s) {
-                        fire.push(c.id);
-                    }
+            for (s, id) in crate::commands::bindings() {
+                // single keys only when no text field has focus (checked above) and the palette is closed
+                if self.palette_open && id != "help.palette" && id != "edit.deselect" {
+                    continue;
+                }
+                if i.consume_shortcut(&s) {
+                    fire.push(id);
                 }
             }
         });
@@ -605,10 +682,63 @@ impl App {
     /// Scripted states for documentation screenshots (`--show`).
     fn scripted_scene(&mut self, ctx: &egui::Context) {
         let show = self.startup.show.clone().unwrap_or_default();
+        if show == "folded" {
+            self.settings.show_tree = false;
+            self.settings.show_info = false;
+        }
+        if matches!(show.as_str(), "move" | "rotate" | "framesel") {
+            // the selection card shows the author's original file path: keep it out of shots
+            self.settings.show_info = false;
+        }
+        let dev = self.rs.device.clone();
         let st = self.settings.clone();
         let Some(d) = self.doc_mut() else { return };
-        let _ = ctx;
         match show.as_str() {
+            "explode-part" => {
+                // a single-body part: split by faces, then explode like an assembly
+                if !d.asm.can_explode() {
+                    d.split_into_faces(&dev, ctx);
+                }
+                d.explode_panel = true;
+                d.asm.explode_lines = true;
+                d.asm.explode_goal = 0.7;
+                d.asm.explode = 0.7;
+                d.apply_transforms();
+                d.needs_fit = true;
+            }
+            "pan" => d.pan_tool = true,
+            "rotate" => {
+                if let Some(s) = &d.scene {
+                    let i = (1..s.components.len()).filter(|&i| s.components[i].mesh.is_some()).last().unwrap_or(0);
+                    d.select(Some(i));
+                    d.gizmo = true;
+                    d.gizmo_rotate = true;
+                    if let Some(c) = d.component_center(i) {
+                        let r = glam::Mat4::from_translation(c) * glam::Mat4::from_rotation_y(35f32.to_radians()) * glam::Mat4::from_translation(-c);
+                        d.move_component(i, r);
+                    }
+                }
+            }
+            "framesel" => {
+                if let Some(s) = &d.scene {
+                    // a part about a sixth of the model's size (the smallest ones are often
+                    // screws hidden inside a housing)
+                    let sz = |i: usize| {
+                        let m = &s.meshes[s.components[i].mesh.unwrap()].mesh;
+                        (Vec3::from(m.bbox_max) - Vec3::from(m.bbox_min)).length()
+                    };
+                    let cand: Vec<usize> = (0..s.components.len()).filter(|&i| s.components[i].mesh.is_some_and(|m| !s.meshes[m].mesh.is_empty())).collect();
+                    let big = cand.iter().map(|&i| sz(i)).fold(0f32, f32::max);
+                    let i = cand
+                        .iter()
+                        .copied()
+                        .min_by(|&a, &b| (sz(a) - big / 6.0).abs().partial_cmp(&(sz(b) - big / 6.0).abs()).unwrap_or(std::cmp::Ordering::Equal))
+                        .unwrap_or(0);
+                    d.select(Some(i));
+                    d.needs_fit = false;
+                    viewer::frame_component(d, i);
+                }
+            }
             "measure" => {
                 // pick a hole if there is one: probe the model with rays and keep a cylinder hit
                 crate::script::demo_measures(d, &st);
@@ -624,6 +754,27 @@ impl App {
                 viewer::toggle_section(d);
             }
             "bbox" => d.show_bbox = true,
+            "flip" => {
+                // free orbit: dragged 200° vertically, past the pole (upside-down view)
+                d.camera.orbit(glam::Vec2::new(60.0, 200f32.to_radians() / 0.008), false);
+            }
+            "explode-panel" => {
+                d.explode_panel = true;
+                d.asm.explode_lines = true;
+                d.asm.explode_goal = 0.6;
+                d.asm.explode = 0.6;
+                d.apply_transforms();
+                d.needs_fit = true;
+            }
+            "selopacity" => {
+                // select the biggest part and lower the selection opacity, like the info panel slider
+                if let Some(s) = &d.scene {
+                    let i = (0..s.components.len()).filter(|&i| s.components[i].mesh.is_some()).max_by_key(|&i| s.meshes[s.components[i].mesh.unwrap()].mesh.triangle_count());
+                    d.select(i);
+                    let sel = d.selected;
+                    d.set_opacity(sel, 0.3);
+                }
+            }
             "explode" => {
                 d.asm.explode_goal = 1.0;
                 d.asm.explode = 1.0;
@@ -659,12 +810,10 @@ impl App {
                     let i = (1..s.components.len()).filter(|&i| s.components[i].mesh.is_some()).last().unwrap_or(0);
                     d.select(Some(i));
                     d.gizmo = true;
-                    d.gizmo_rotate = true;
-                    if let Some(c) = d.component_center(i) {
-                        let r = d.stats.bbox.map(|(lo, hi)| (hi - lo).length()).unwrap_or(1.0);
-                        d.move_component(i, glam::Mat4::from_translation(Vec3::new(0.0, r * 0.25, r * 0.1)));
-                        let _ = c;
-                    }
+                    d.gizmo_rotate = false;
+                    let r = d.stats.bbox.map(|(lo, hi)| (hi - lo).length()).unwrap_or(1.0);
+                    // pull the part out of its housing, towards the viewer
+                    d.move_component(i, glam::Mat4::from_translation(Vec3::new(r * 0.06, 0.0, r * 0.12)));
                 }
             }
             _ => {}

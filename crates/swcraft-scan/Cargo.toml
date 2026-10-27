@@ -15,3 +15,5 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Securit
 [features]
 default = []
 occt = ["craft-formats/occt"]
+assimp = ["craft-formats/assimp"]
+ifc = ["craft-formats/ifc"]

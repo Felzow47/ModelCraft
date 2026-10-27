@@ -397,11 +397,12 @@ dependencies = [
 
 [[package]]
 name = "craft-formats"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "cc",
  "cfb",
  "flate2",
+ "glam",
  "image",
  "roxmltree",
  "sw-format",
@@ -2535,7 +2536,7 @@ dependencies = [
 
 [[package]]
 name = "sw-format"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "cfb",
  "glam",
@@ -2550,7 +2551,7 @@ dependencies = [
 
 [[package]]
 name = "swcraft"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "bytemuck",
  "craft-formats",
@@ -2573,7 +2574,7 @@ dependencies = [
 
 [[package]]
 name = "swcraft-scan"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "craft-formats",
  "sw-format",

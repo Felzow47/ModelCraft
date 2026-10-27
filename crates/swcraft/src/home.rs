@@ -15,12 +15,22 @@ pub(crate) struct Card {
     hue: Color32,
 }
 
-pub(crate) const CARDS: [Card; 4] = [
+pub(crate) const CARDS: [Card; 5] = [
     Card { icon: "file-box", title: "SolidWorks", blurb: "Pièces et assemblages .sldprt · .sldasm", hue: Color32::from_rgb(0xE5, 0x48, 0x4D) },
     Card { icon: "cuboid", title: "STEP · IGES", blurb: "Échange CAO .step · .stp · .iges", hue: Color32::from_rgb(0x3E, 0x8E, 0xDE) },
-    Card { icon: "box", title: "Maillages", blurb: "Impression et rendu .stl · .obj · .3ds", hue: Color32::from_rgb(0x30, 0xA4, 0x6C) },
-    Card { icon: "boxes", title: "3DXML · eDrawings · Revit", blurb: "Visualisation .3dxml · .easm · .rvt", hue: Color32::from_rgb(0x8E, 0x4E, 0xC6) },
+    Card { icon: "box", title: "Maillages", blurb: "Impression et rendu .stl · .obj · .3mf · .ply · .off", hue: Color32::from_rgb(0x30, 0xA4, 0x6C) },
+    Card { icon: "layers", title: "Scènes 3D", blurb: "FBX · glTF · DAE · VRML · exports Blender", hue: Color32::from_rgb(0xE0, 0x8A, 0x2E) },
+    Card { icon: "boxes", title: "BIM · eDrawings", blurb: "Visualisation .ifc · .rvt · .3dxml · .easm", hue: Color32::from_rgb(0x8E, 0x4E, 0xC6) },
 ];
+
+/// One line of text cut with "…" so it never runs under the next card.
+fn elided(ui: &egui::Ui, text: &str, font: egui::FontId, color: Color32, width: f32) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple(text.to_string(), font, color, width.max(10.0));
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    job.wrap.overflow_character = Some('…');
+    ui.fonts_mut(|f| f.layout_job(job))
+}
 
 fn card_lift(ui: &egui::Ui, t: &Tokens, rect: Rect, press: Press) {
     let lift = press.hover * (1.0 - press.down);
@@ -63,7 +73,7 @@ fn header(_app: &mut App, ui: &mut egui::Ui, t: &Tokens) {
                     ui.label(egui::RichText::new(tr("Bienvenue dans ")).font(theme::semibold(24.0)));
                     widgets::wordmark(ui, 24.0);
                 });
-                ui.label(egui::RichText::new(tr("La visionneuse 3D ultime — SolidWorks, STEP, IGES, STL, OBJ, 3DS et 3DXML, sans licence ni installation.")).color(t.text_muted).font(theme::regular(14.0)));
+                ui.label(egui::RichText::new(tr("La visionneuse 3D ultime — SolidWorks, STEP, IGES, IFC, FBX, glTF, STL, OBJ, 3MF et plus, sans licence ni installation.")).color(t.text_muted).font(theme::regular(14.0)));
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 14.0;
@@ -81,36 +91,54 @@ fn formats(app: &mut App, ui: &mut egui::Ui, t: &Tokens) {
         ui.set_width(ui.available_width());
         ui.label(egui::RichText::new(tr("Formats pris en charge")).font(theme::semibold(15.0)));
         ui.add_space(10.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = vec2(14.0, 14.0);
-            for c in &CARDS {
-                let (rect, resp) = ui.allocate_exact_size(vec2(190.0, 104.0), Sense::click());
-                let press = Press::track(ui, &resp);
-                card_lift(ui, t, rect, press);
-                ui.painter().rect(rect, CornerRadius::same(10), press.fill(t.card, t.hover, t.pressed), Stroke::new(1.0, t.divider), egui::StrokeKind::Inside);
-                let body = rect.translate(press.offset());
-                icons::paint(ui, Rect::from_min_size(body.min + vec2(14.0, 14.0), vec2(22.0, 22.0)), c.icon, 21.0, c.hue);
-                ui.painter().text(body.min + vec2(44.0, 25.0), Align2::LEFT_CENTER, tr(c.title), theme::semibold(13.5), t.text);
-                let mut job = egui::text::LayoutJob::simple(tr(c.blurb).to_string(), theme::regular(11.5), t.text_muted, body.width() - 28.0);
-                job.wrap.max_rows = 2;
-                let g = ui.fonts_mut(|f| f.layout_job(job));
-                ui.painter().galley(body.min + vec2(14.0, 46.0), g, t.text_muted);
-                ui.painter().text(body.left_bottom() + vec2(14.0, -14.0), Align2::LEFT_CENTER, tr("Ouvrir…"), theme::medium(12.0), t.accent_text);
-                if theme::hand(resp).clicked() {
-                    app.cmds.push("file.open");
+        // a grid that fills the width: as many ≥ 200 px columns as fit, all the same width,
+        // with the "Ouvrir un fichier" tile as the last cell
+        let gap = 14.0;
+        let n = CARDS.len() + 1;
+        let avail = ui.available_width();
+        let cols = (((avail + gap) / (200.0 + gap)).floor() as usize).clamp(1, n);
+        let w = ((avail - gap * (cols as f32 - 1.0)) / cols as f32).floor();
+        let h = 104.0;
+        let mut cells: Vec<Option<&Card>> = CARDS.iter().map(Some).collect();
+        cells.push(None);
+        for row in cells.chunks(cols) {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing = vec2(gap, gap);
+                for cell in row {
+                    let (rect, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click());
+                    let press = Press::track(ui, &resp);
+                    card_lift(ui, t, rect, press);
+                    let body = rect.translate(press.offset());
+                    match cell {
+                        Some(c) => {
+                            ui.painter().rect(rect, CornerRadius::same(10), press.fill(t.card, t.hover, t.pressed), Stroke::new(1.0, t.divider), egui::StrokeKind::Inside);
+                            icons::paint(ui, Rect::from_min_size(body.min + vec2(14.0, 14.0), vec2(22.0, 22.0)), c.icon, 21.0, c.hue);
+                            let g = elided(ui, tr(c.title), theme::semibold(13.5), t.text, body.width() - 58.0);
+                            ui.painter().galley(body.min + vec2(44.0, 25.0 - g.size().y * 0.5), g, t.text);
+                            let mut job = egui::text::LayoutJob::simple(tr(c.blurb).to_string(), theme::regular(11.5), t.text_muted, body.width() - 28.0);
+                            job.wrap.max_rows = 2;
+                            job.wrap.overflow_character = Some('…');
+                            let g = ui.fonts_mut(|f| f.layout_job(job));
+                            ui.painter().galley(body.min + vec2(14.0, 44.0), g, t.text_muted);
+                            ui.painter().text(body.left_bottom() + vec2(14.0, -14.0), Align2::LEFT_CENTER, tr("Ouvrir…"), theme::medium(12.0), t.accent_text);
+                            if theme::hand(resp).on_hover_text(tr(c.blurb)).clicked() {
+                                app.cmds.push("file.open");
+                            }
+                        }
+                        None => {
+                            ui.painter().rect(rect, CornerRadius::same(10), press.fill(t.pasteboard, t.hover, t.pressed), Stroke::new(1.0, t.divider), egui::StrokeKind::Inside);
+                            icons::paint(ui, Rect::from_center_size(body.center() - vec2(0.0, 16.0), vec2(28.0, 28.0)), "folder-open", 26.0, t.icon);
+                            let g = elided(ui, tr("Ouvrir un fichier"), theme::semibold(13.0), t.text, body.width() - 20.0);
+                            ui.painter().galley(body.center() + vec2(-g.size().x * 0.5, 22.0 - g.size().y * 0.5), g, t.text);
+                            if theme::hand(resp).on_hover_text(crate::chrome::tip("file.open", ui.ctx())).clicked() {
+                                app.cmds.push("file.open");
+                            }
+                        }
+                    }
                 }
-            }
-            let (rect, resp) = ui.allocate_exact_size(vec2(170.0, 104.0), Sense::click());
-            let press = Press::track(ui, &resp);
-            card_lift(ui, t, rect, press);
-            ui.painter().rect(rect, CornerRadius::same(10), press.fill(t.pasteboard, t.hover, t.pressed), Stroke::new(1.0, t.divider), egui::StrokeKind::Inside);
-            let body = rect.translate(press.offset());
-            icons::paint(ui, Rect::from_center_size(body.center() - vec2(0.0, 16.0), vec2(28.0, 28.0)), "folder-open", 26.0, t.icon);
-            ui.painter().text(body.center() + vec2(0.0, 22.0), Align2::CENTER_CENTER, tr("Ouvrir un fichier"), theme::semibold(13.0), t.text);
-            if theme::hand(resp).on_hover_text(crate::chrome::tip("file.open", ui.ctx())).clicked() {
-                app.cmds.push("file.open");
-            }
-        });
+            });
+            ui.add_space(gap);
+        }
     });
 }
 
@@ -326,7 +354,8 @@ fn ext_hue(p: &Path) -> Color32 {
     match p.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
         Some("sldprt") | Some("sldasm") => CARDS[0].hue,
         Some("step") | Some("stp") | Some("iges") | Some("igs") => CARDS[1].hue,
-        Some("stl") | Some("obj") | Some("3ds") => CARDS[2].hue,
-        _ => CARDS[3].hue,
+        Some("stl") | Some("obj") | Some("3ds") | Some("3mf") | Some("ply") | Some("off") => CARDS[2].hue,
+        Some("fbx") | Some("gltf") | Some("glb") | Some("dae") | Some("wrl") | Some("vrml") | Some("x3d") | Some("blend") => CARDS[3].hue,
+        _ => CARDS[4].hue,
     }
 }

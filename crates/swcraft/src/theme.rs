@@ -123,7 +123,7 @@ impl Tokens {
                 accent: al,
                 accent_text: al.lerp_to_gamma(Color32::BLACK, 0.12),
                 accent_soft: Color32::WHITE.lerp_to_gamma(al, 0.12),
-                field: Color32::from_rgb(0xFF, 0xFF, 0xFF),
+                field: Color32::from_rgb(0xEC, 0xEC, 0xEF),
                 shadow: Color32::from_black_alpha(34),
                 danger: Color32::from_rgb(0xC8, 0x32, 0x2D),
                 warning: Color32::from_rgb(0xA8, 0x5F, 0x00),

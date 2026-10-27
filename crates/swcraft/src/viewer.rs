@@ -36,6 +36,12 @@ pub fn tree_panel(ui: &mut egui::Ui, doc: &mut Document, cmds: &mut Cmds) {
     ui.horizontal(|ui| {
         ui.add_space(4.0);
         ui.label(widgets::mono_caps(tr("Arbre de création"), 10.5, t.text_faint));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let sc = crate::commands::shortcut_text(ui.ctx(), "view.tree");
+            if icons::button(ui, "panel-left-close", 22.0, false, &format!("{}  ({sc})", tr("Replier le panneau"))).clicked() {
+                cmds.push("view.tree");
+            }
+        });
     });
     ui.add_space(4.0);
     ui.add(
@@ -77,6 +83,15 @@ pub fn tree_panel(ui: &mut egui::Ui, doc: &mut Document, cmds: &mut Cmds) {
     let mut action: Option<(usize, &'static str)> = None;
     let mut hovered_row = None;
     let reveal = std::mem::take(&mut doc.reveal_in_tree);
+    // part hovered in the viewport: its row (or its folded parent's row) lights up
+    let mut hover_chain: Vec<usize> = Vec::new();
+    if let (Some(h), false) = (doc.hover, doc.hover_from_tree) {
+        let mut p = Some(h);
+        while let Some(k) = p {
+            hover_chain.push(k);
+            p = scene.components.get(k).and_then(|c| c.parent);
+        }
+    }
     egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, row_h, rows.len(), |ui, range| {
         for &i in &rows[range] {
             let c = &scene.components[i];
@@ -85,8 +100,12 @@ pub fn tree_panel(ui: &mut egui::Ui, doc: &mut Document, cmds: &mut Cmds) {
             let vis = doc.visible.get(i).copied().unwrap_or(true);
             let selected = doc.selected == Some(i);
             let press = theme::Press::track(ui, &resp);
+            let hover_lit = hover_chain.first() == Some(&i) || (hover_chain.contains(&i) && !doc.expanded.contains(&i));
             if selected {
                 ui.painter().rect_filled(rect, CornerRadius::same(6), t.accent_soft);
+            } else if hover_lit {
+                ui.painter().rect_filled(rect, CornerRadius::same(6), t.accent_soft.gamma_multiply(0.55));
+                ui.painter().rect_stroke(rect.shrink(0.5), CornerRadius::same(6), Stroke::new(1.0, t.accent.gamma_multiply(0.6)), egui::StrokeKind::Inside);
             } else {
                 press.wash(ui, rect, 6, false);
             }
@@ -143,7 +162,7 @@ pub fn tree_panel(ui: &mut egui::Ui, doc: &mut Document, cmds: &mut Cmds) {
                     action = Some((i, "isolate"));
                     ui.close();
                 }
-                if widgets::menu_icon_item(ui, "eye", tr("Afficher tout"), &ui.ctx().format_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::H))).clicked() {
+                if widgets::menu_icon_item(ui, "eye", tr("Afficher tout"), &crate::commands::shortcut_text(ui.ctx(), "edit.show_all")).clicked() {
                     action = Some((i, "show_all"));
                     ui.close();
                 }
@@ -183,7 +202,13 @@ pub fn tree_panel(ui: &mut egui::Ui, doc: &mut Document, cmds: &mut Cmds) {
             });
         }
     });
-    doc.set_hover(hovered_row);
+    if hovered_row.is_some() {
+        doc.hover_from_tree = true;
+        doc.set_hover(hovered_row);
+    } else if doc.hover_from_tree {
+        doc.hover_from_tree = false;
+        doc.set_hover(None);
+    }
     if let Some((i, a)) = action {
         match a {
             "toggle_expand" => {
@@ -211,6 +236,7 @@ pub fn tree_panel(ui: &mut egui::Ui, doc: &mut Document, cmds: &mut Cmds) {
                 doc.set_opacity(Some(i), if o < 0.999 { 1.0 } else { 0.3 });
             }
             "others" => {
+                doc.checkpoint();
                 let on = !(doc.asm.others_transparent && doc.selected == Some(i));
                 doc.select(Some(i));
                 doc.reveal_in_tree = false;
@@ -259,9 +285,16 @@ pub fn zoom_to(doc: &mut Document, i: usize) {
     }
     if lo.x <= hi.x {
         let r = doc.camera.radius;
-        doc.camera.fit(lo, hi, 1.5);
+        let aspect = doc.aspect;
+        doc.camera.fit(lo, hi, aspect);
         doc.camera.radius = doc.camera.radius.max(r);
     }
+}
+
+/// Numpad . (Blender "View Selected"): frame the selected component.
+pub fn frame_component(doc: &mut Document, i: usize) {
+    doc.cam_goal = None;
+    zoom_to(doc, i);
 }
 
 // ---------------------------------------------------------------- viewport
@@ -281,7 +314,7 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
         return;
     }
     if gfx.renderer.ensure_target(&gfx.rs.device, px) {
-        let view = &gfx.renderer.target().unwrap().resolve_view;
+        let view = &gfx.renderer.target().unwrap().display_view;
         let mut r = gfx.rs.renderer.write();
         match *gfx.tex {
             Some(id) => r.update_egui_texture_from_wgpu_texture(&gfx.rs.device, view, wgpu::FilterMode::Linear, id),
@@ -293,10 +326,7 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
         doc.fit(aspect);
     }
     if let Some((yaw, pitch)) = doc.cam_goal {
-        doc.camera.lerp_towards(yaw, pitch, 0.25);
-        if (doc.camera.pitch - pitch).abs() < 1e-3 && ((doc.camera.yaw - yaw).rem_euclid(std::f32::consts::TAU)).min((yaw - doc.camera.yaw).rem_euclid(std::f32::consts::TAU)) < 1e-3 {
-            doc.camera.yaw = yaw;
-            doc.camera.pitch = pitch;
+        if doc.camera.lerp_towards(crate::camera::Camera::orientation(yaw, pitch), 0.25) {
             doc.cam_goal = None;
         }
         ui.ctx().request_repaint();
@@ -307,7 +337,7 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
     let to_ndc = |p: Pos2| GVec2::new((p.x - rect.center().x) / (rect.width() * 0.5), -(p.y - rect.center().y) / (rect.height() * 0.5));
     // move gizmo (viewer-only component moves) takes the left drag before navigation
     let mut gizmo_hover = None;
-    let gizmo_busy = if doc.gizmo && doc.measure.tool == Tool::Select {
+    let gizmo_busy = if doc.gizmo && !doc.pan_tool && doc.measure.tool == Tool::Select {
         gizmo_input(ui, doc, &resp, rect, aspect, pointer, &mut gizmo_hover)
     } else {
         doc.drag = None;
@@ -324,45 +354,50 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
             Zoom,
             None,
         }
-        let op = match st.nav {
-            NavStyle::SolidWorks => {
-                if r || (m && mods.command) || (l && mods.shift) {
-                    Op::Pan
-                } else if m && mods.shift {
-                    Op::Zoom
-                } else if l || m {
-                    Op::Orbit
-                } else {
-                    Op::None
+        let op = if doc.pan_tool && l {
+            // Pan tool: the left button translates the view (never rotates)
+            if mods.shift { Op::Orbit } else { Op::Pan }
+        } else {
+            match st.nav {
+                NavStyle::SolidWorks => {
+                    if r || (m && mods.command) || (l && mods.shift) {
+                        Op::Pan
+                    } else if m && mods.shift {
+                        Op::Zoom
+                    } else if l || m {
+                        Op::Orbit
+                    } else {
+                        Op::None
+                    }
                 }
-            }
-            NavStyle::Blender => {
-                if m && mods.shift {
-                    Op::Pan
-                } else if m && mods.command {
-                    Op::Zoom
-                } else if m || (l && mods.alt) {
-                    Op::Orbit
-                } else {
-                    Op::None
+                NavStyle::Blender => {
+                    if (m && mods.shift) || r || (l && mods.shift) {
+                        Op::Pan
+                    } else if m && mods.command {
+                        Op::Zoom
+                    } else if m || l {
+                        Op::Orbit
+                    } else {
+                        Op::None
+                    }
                 }
-            }
-            NavStyle::Cad => {
-                if m && mods.shift {
-                    Op::Orbit
-                } else if m || r {
-                    Op::Pan
-                } else if l {
-                    Op::Orbit
-                } else {
-                    Op::None
+                NavStyle::Cad => {
+                    if m && mods.shift {
+                        Op::Orbit
+                    } else if m || r {
+                        Op::Pan
+                    } else if l {
+                        Op::Orbit
+                    } else {
+                        Op::None
+                    }
                 }
             }
         };
         match op {
             Op::Orbit => {
                 doc.cam_goal = None;
-                doc.camera.orbit(gd)
+                doc.camera.orbit(gd, st.orbit == crate::settings::OrbitMode::Turntable)
             }
             Op::Pan => doc.camera.pan(gd, rect.height()),
             Op::Zoom => doc.camera.dolly((d.y * 0.005).exp()),
@@ -383,9 +418,10 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
             doc.camera.zoom(factor, ndc, aspect);
         }
     }
-    if resp.double_clicked() && doc.measure.tool == Tool::Select {
+    if (resp.double_clicked() && doc.measure.tool == Tool::Select && !doc.gizmo) || resp.double_clicked_by(egui::PointerButton::Middle) {
         doc.needs_fit = true;
     }
+    doc.aspect = aspect;
 
     // ---- picking
     let hover_hit = if doc.measure.tool != Tool::Select && resp.hovered() && !resp.dragged() {
@@ -396,6 +432,36 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
     } else {
         None
     };
+    // Select mode: the part under the cursor lights up here and in the tree.
+    if doc.measure.tool == Tool::Select {
+        if resp.hovered() && !resp.dragged() && doc.drag.is_none() {
+            let moved = ui.input(|i| i.pointer.delta() != egui::Vec2::ZERO || i.smooth_scroll_delta != egui::Vec2::ZERO);
+            let (now, key) = (ui.input(|i| i.time), egui::Id::new("swc_hover_pick"));
+            let last: f64 = ui.ctx().data(|d| d.get_temp(key).unwrap_or(-1.0));
+            let due = now - last > 0.035;
+            if moved && !due {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(40));
+            }
+            let stale = ui.ctx().data(|d| d.get_temp::<bool>(key.with("stale")).unwrap_or(true));
+            if due && (moved || stale || doc.hover_from_tree) {
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(key, now);
+                    d.insert_temp(key.with("stale"), false);
+                });
+                let comp = pointer.and_then(|p| {
+                    let (o, d) = doc.camera.ray(to_ndc(p), aspect);
+                    doc.pick(o, d)
+                }).map(|h| h.comp);
+                doc.hover_from_tree = false;
+                doc.set_hover(comp);
+            }
+        } else {
+            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("swc_hover_pick").with("stale"), true));
+            if !doc.hover_from_tree && !resp.dragged() {
+                doc.set_hover(None);
+            }
+        }
+    }
     let clicked = resp.clicked_by(egui::PointerButton::Primary);
     let right_clicked = resp.secondary_clicked();
     if clicked || right_clicked {
@@ -429,7 +495,8 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
         bbox_lines(doc, t.accent, &mut lines);
     }
     {
-        let col = if t.dark() { [1.0, 0.85, 0.35, 0.75] } else { [0.55, 0.38, 0.0, 0.8] };
+        // explode trails: thin, half transparent, the accent hue (not a harsh yellow)
+        let col = if t.dark() { [0.62, 0.78, 1.0, 0.55] } else { [0.18, 0.32, 0.62, 0.6] };
         for (a, b) in doc.explode_lines() {
             lines.push(LineVertex { pos: a.to_array(), col });
             lines.push(LineVertex { pos: b.to_array(), col });
@@ -441,13 +508,16 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
         ortho: doc.camera.ortho,
         edges: st.edges,
         edge_width: st.edge_width,
-        edge_color: { let c = c32(st.edge_color); [c[0], c[1], c[2], 0.9] },
+        edge_color: { let c = c32(st.edge_color); [c[0], c[1], c[2], 0.82] },
         base_color: c32(st.base_color),
         bg_top,
         bg_bottom,
         light: Light::preset(st.lighting),
         section: doc.section_plane(),
         cap_color: col_f(t.accent.lerp_to_gamma(Color32::BLACK, 0.25)),
+        // about two pixels' worth of depth at the focus distance: enough to beat rasterisation
+        // differences between lines and faces, small enough not to show hidden edges
+        edge_push: 2.0 * doc.camera.distance * (doc.camera.fov_y * 0.5).tan() / rect.height().max(1.0) * (1.5 + st.edge_width),
         lines,
     };
     gfx.renderer.render(&gfx.rs.device, &gfx.rs.queue, doc.gpu.as_ref(), &vs);
@@ -486,6 +556,9 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
         viewcube(ui, rect, doc);
     }
     toolbar(ui, rect, doc, st, cmds);
+    if doc.explode_panel {
+        explode_panel(ui, rect, doc);
+    }
     if let Some(msg) = &doc.measure.message {
         let pos = rect.center_bottom() - vec2(0.0, 26.0);
         let g = painter.layout_no_wrap(msg.clone(), theme::medium(12.5), t.text);
@@ -532,7 +605,8 @@ fn gizmo_geom(doc: &Document, view: Mat4, project: &dyn Fn(Vec3) -> Option<Pos2>
     }
     let len = 88.0 / ppu;
     let axes = [Vec3::X, Vec3::Y, Vec3::Z];
-    let tips = axes.map(|a| project(c + a * len));
+    // Rotate mode shows only the rings (no arrows to grab by mistake)
+    let tips = axes.map(|a| if with_rings { None } else { project(c + a * len) });
     let rings = axes.map(|a| {
         if !with_rings {
             return vec![];
@@ -620,7 +694,9 @@ fn gizmo_input(ui: &egui::Ui, doc: &mut Document, resp: &egui::Response, rect: R
         if let Some(p) = press {
             let (ro, rd) = doc.camera.ray(to_ndc(p), aspect);
             let fwd = view.inverse().z_axis.truncate().normalize_or_zero();
+            let rotate = doc.gizmo_rotate;
             let start = match (geom.as_ref().and_then(|g| gizmo_hit(g, p)), doc.selected, &geom) {
+                (Some(Handle::Free), Some(sel), Some(g)) if rotate => Some((sel, Handle::Spin, g.c)),
                 (Some(h), Some(sel), Some(g)) => Some((sel, h, g.c)),
                 _ => doc.pick(ro, rd).map(|hit| {
                     // keep moving the selected sub-assembly when one of its parts is grabbed
@@ -633,10 +709,11 @@ fn gizmo_input(ui: &egui::Ui, doc: &mut Document, resp: &egui::Response, rect: R
                         doc.highlight_dirty = true;
                         doc.select(Some(comp));
                     }
-                    (comp, Handle::Free, hit.point)
+                    (comp, if rotate { Handle::Spin } else { Handle::Free }, hit.point)
                 }),
             };
             if let Some((comp, handle, at)) = start {
+                doc.checkpoint();
                 let origin = match handle {
                     Handle::Free => at,
                     _ => doc.component_center(comp).unwrap_or(at),
@@ -648,9 +725,10 @@ fn gizmo_input(ui: &egui::Ui, doc: &mut Document, resp: &egui::Response, rect: R
                     }
                     Handle::Ring(k) => {
                         let a = Vec3::AXES[k];
-                        (a, Vec3::splat(plane_hit(origin, a, ro, rd).map(|q| ring_angle(origin, a, q)).unwrap_or(0.0)))
+                        (a, Vec3::new(plane_hit(origin, a, ro, rd).map(|q| ring_angle(origin, a, q)).unwrap_or(0.0), 0.0, 0.0))
                     }
                     Handle::Free => (fwd, plane_hit(origin, fwd, ro, rd).unwrap_or(origin)),
+                    Handle::Spin => (fwd, Vec3::ZERO),
                 };
                 doc.drag = Some(GizmoDrag { comp, handle, origin, normal, last });
             }
@@ -662,6 +740,8 @@ fn gizmo_input(ui: &egui::Ui, doc: &mut Document, resp: &egui::Response, rect: R
         return false;
     }
     *hover = Some(dr.handle);
+    const SNAP: f32 = 15.0 * std::f32::consts::PI / 180.0;
+    let snap = ui.input(|i| i.modifiers.command);
     if let Some(p) = pointer {
         let (ro, rd) = doc.camera.ray(to_ndc(p), aspect);
         let w = match dr.handle {
@@ -680,9 +760,25 @@ fn gizmo_input(ui: &egui::Ui, doc: &mut Document, resp: &egui::Response, rect: R
                 } else if da < -std::f32::consts::PI {
                     da += std::f32::consts::TAU;
                 }
-                dr.last = Vec3::splat(ang);
-                Mat4::from_translation(dr.origin) * Mat4::from_axis_angle(dr.normal, da) * Mat4::from_translation(-dr.origin)
+                dr.last.x = ang;
+                // y: raw accumulated angle, z: angle actually applied (Ctrl snaps to 15°)
+                dr.last.y += da;
+                let goal = if snap { (dr.last.y / SNAP).round() * SNAP } else { dr.last.y };
+                let step = goal - dr.last.z;
+                dr.last.z = goal;
+                Mat4::from_translation(dr.origin) * Mat4::from_axis_angle(dr.normal, step) * Mat4::from_translation(-dr.origin)
             }),
+            Handle::Spin => {
+                // turn the part like a ball in the hand: horizontal drag around the screen
+                // vertical axis, vertical drag around the screen horizontal axis
+                let d = resp.drag_delta();
+                let axis = doc.camera.up() * d.x + doc.camera.right() * d.y;
+                let ang = d.length() * 0.008;
+                (ang > 0.0 && axis.length_squared() > 0.0).then(|| {
+                    dr.last.z += ang;
+                    Mat4::from_translation(dr.origin) * Mat4::from_axis_angle(axis.normalize(), ang) * Mat4::from_translation(-dr.origin)
+                })
+            }
             Handle::Free => plane_hit(dr.origin, dr.normal, ro, rd).map(|q| {
                 let d = q - dr.last;
                 dr.last = q;
@@ -728,13 +824,27 @@ fn draw_gizmo(p: &egui::Painter, doc: &Document, view: Mat4, project: &dyn Fn(Ve
     }
     let free_on = hover == Some(Handle::Free);
     p.circle(g.c2, if free_on { 7.0 } else { 5.5 }, if free_on { hot } else { t.card }, Stroke::new(1.5, if free_on { hot } else { t.text }));
+    if let Some(dr) = doc.drag {
+        let label = match dr.handle {
+            Handle::Ring(k) => Some(format!("{} {:+.1}°", ["X", "Y", "Z"][k], dr.last.z.to_degrees())),
+            Handle::Spin => Some(format!("{:.0}°", dr.last.z.to_degrees())),
+            _ => None,
+        };
+        if let Some(label) = label {
+            let pos = g.c2 + vec2(16.0, -22.0);
+            let galley = p.layout_no_wrap(label, theme::semibold(12.0), t.text);
+            let r = Rect::from_min_size(pos, galley.size()).expand2(vec2(7.0, 4.0));
+            p.rect(r, CornerRadius::same(6), t.card.gamma_multiply(0.95), Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+            p.galley(pos, galley, t.text);
+        }
+    }
     let _ = (g.c, g.len);
 }
 
 fn background(st: &Settings, t: &Tokens) -> ([f32; 3], [f32; 3]) {
     let (top, bottom) = if st.bg_follow_theme {
         if t.dark() {
-            ([0x3A, 0x3E, 0x47], [0x17, 0x18, 0x1C])
+            ([0x5C, 0x63, 0x71], [0x2A, 0x2D, 0x35])
         } else {
             ([0xF4, 0xF5, 0xF7], [0xC9, 0xCE, 0xD6])
         }
@@ -1072,6 +1182,17 @@ fn viewcube(ui: &mut egui::Ui, rect: Rect, doc: &mut Document) {
     if hresp.on_hover_text(tr("Vue isométrique")).clicked() {
         doc.cam_goal = Some((45f32.to_radians(), 35.264f32.to_radians()));
     }
+    // roll the view by 90° in the screen plane (useful after a free rotation)
+    for (k, (icon, deg, tip)) in [("rotate-ccw", 90.0f32, tr("Pivoter de 90° à gauche")), ("rotate-cw", -90.0, tr("Pivoter de 90° à droite"))].into_iter().enumerate() {
+        let rb = Rect::from_center_size(c + vec2(if k == 0 { -size * 0.6 } else { size * 0.6 }, size * 1.05), vec2(22.0, 22.0));
+        let rr = ui.interact(rb, ui.id().with(("cube-roll", k, doc.id)), Sense::click());
+        painter.rect_filled(rb, CornerRadius::same(6), if rr.hovered() { t.hover } else { Color32::TRANSPARENT });
+        icons::paint(ui, rb.shrink(4.0), icon, 13.0, t.text_muted);
+        if rr.on_hover_text(tip).clicked() {
+            doc.cam_goal = None;
+            doc.camera.roll(deg);
+        }
+    }
 }
 
 fn inside(p: Pos2, poly: &[Pos2; 4]) -> bool {
@@ -1095,22 +1216,34 @@ fn inside(p: Pos2, poly: &[Pos2; 4]) -> bool {
 /// Floating tool strip at the top of the viewport.
 fn toolbar(ui: &mut egui::Ui, rect: Rect, doc: &mut Document, st: &Settings, cmds: &mut Cmds) {
     let t = Tokens::get(ui.ctx());
-    let tools: [(Tool, &str, &str, &'static str); 5] = [
-        (Tool::Select, "mouse-pointer-2", tr("Sélection"), "tool.select"),
+    let select_on = doc.measure.tool == Tool::Select && !doc.pan_tool && !doc.gizmo;
+    // navigation / manipulation: select, pan, move, rotate, reset
+    let manip: [(&str, bool, &str, &'static str); 4] = [
+        ("mouse-pointer-2", select_on, tr("Sélection"), "tool.select"),
+        ("hand", doc.pan_tool, tr("Panoramique : le clic gauche déplace la vue"), "tool.pan"),
+        ("move-3d", doc.gizmo && !doc.gizmo_rotate, tr("Déplacer la pièce sélectionnée"), "asm.move"),
+        ("rotate-3d", doc.gizmo && doc.gizmo_rotate, tr("Tourner la pièce sélectionnée autour d'un axe"), "asm.rotate"),
+    ];
+    let tools: [(Tool, &str, &str, &'static str); 4] = [
         (Tool::Distance, "ruler", tr("Distance"), "tool.distance"),
         (Tool::Edge, "spline-pointer", tr("Arête"), "tool.edge"),
         (Tool::Diameter, "diameter", tr("Diamètre"), "tool.diameter"),
         (Tool::Angle, "drafting-compass", tr("Angle"), "tool.angle"),
     ];
-    let toggles: [(&str, bool, &str, &'static str); 5] = [
+    let toggles: [(&str, bool, &str, &'static str); 7] = [
         ("maximize", false, tr("Ajuster à l'écran"), "view.fit"),
+        ("scan-search", false, tr("Cadrer la sélection"), "view.frame_selected"),
         ("cuboid", doc.camera.ortho, tr("Projection orthographique"), "view.ortho"),
-        ("spline-pointer", st.edges, tr("Arêtes"), "view.edges"),
+        ("pen-line", st.edges, tr("Arêtes"), "view.edges"),
         ("scan", doc.show_bbox, tr("Boîte englobante"), "view.bbox"),
         ("scissors", doc.section.is_some(), tr("Plan de coupe"), "view.section"),
+        ("boxes", doc.explode_panel, tr("Vue éclatée"), "view.explode"),
     ];
-    let b = 30.0;
-    let w = b * 10.0 + 4.0 * 9.0 + 14.0 + 16.0;
+    let moved = doc.asm.user.iter().any(|m| *m != glam::Mat4::IDENTITY);
+    let n_buttons = 4.0 + 1.0 + 4.0 + 7.0 + 2.0;
+    let full = |b: f32| b * n_buttons + 4.0 * (n_buttons - 1.0) + 4.0 * 7.0 + 12.0;
+    let b = if full(30.0) + 24.0 <= rect.width() { 30.0 } else { 26.0 };
+    let w = full(b);
     let r = Rect::from_center_size(egui::pos2(rect.center().x, rect.top() + 28.0), vec2(w, b + 10.0));
     egui::Area::new(ui.id().with(("toolbar", doc.id))).fixed_pos(r.min).order(egui::Order::Middle).show(ui.ctx(), |ui| {
         egui::Frame::new()
@@ -1121,23 +1254,45 @@ fn toolbar(ui: &mut egui::Ui, rect: Rect, doc: &mut Document, st: &Settings, cmd
             .shadow(egui::Shadow { offset: [0, 4], blur: 14, spread: 0, color: t.shadow })
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
+                let sep = |ui: &mut egui::Ui| {
+                    ui.add_space(1.0);
+                    let (sep, _) = ui.allocate_exact_size(vec2(1.0, b - 8.0), Sense::hover());
+                    ui.painter().rect_filled(sep, CornerRadius::ZERO, t.divider);
+                    ui.add_space(1.0);
+                };
+                let tip_with = |ui: &egui::Ui, tip: &str, cmd: &str| {
+                    let sc = crate::commands::shortcut_text(ui.ctx(), cmd);
+                    if sc.is_empty() { tip.to_string() } else { format!("{tip}  ({sc})") }
+                };
                 ui.horizontal(|ui| {
-                    for (tool, icon, tip, cmd) in tools {
-                        let sc = crate::commands::shortcut_text(ui.ctx(), cmd);
-                        if icons::button(ui, icon, b, doc.measure.tool == tool, &format!("{tip}  ({sc})")).clicked() {
+                    for (icon, on, tip, cmd) in manip {
+                        if icons::button(ui, icon, b, on, &tip_with(ui, tip, cmd)).clicked() {
                             cmds.push(cmd);
                         }
                     }
-                    ui.add_space(3.0);
-                    let (sep, _) = ui.allocate_exact_size(vec2(1.0, b - 8.0), Sense::hover());
-                    ui.painter().rect_filled(sep, CornerRadius::ZERO, t.divider);
-                    ui.add_space(3.0);
-                    for (icon, on, tip, cmd) in toggles {
-                        let sc = crate::commands::shortcut_text(ui.ctx(), cmd);
-                        let tip = if sc.is_empty() { tip.to_string() } else { format!("{tip}  ({sc})") };
-                        if icons::button(ui, icon, b, on, &tip).clicked() {
+                    let reset_tip = tr("Réinitialiser la position (sélection, sinon tout)");
+                    if ui.add_enabled_ui(moved, |ui| icons::button(ui, "rotate-ccw", b, false, reset_tip)).inner.clicked() {
+                        cmds.push(if doc.selected.is_some_and(|i| doc.subtree(i).iter().any(|&k| doc.asm.is_moved(k))) { "asm.reset_sel" } else { "asm.reset_all" });
+                    }
+                    sep(ui);
+                    for (tool, icon, tip, cmd) in tools {
+                        if icons::button(ui, icon, b, doc.measure.tool == tool, &tip_with(ui, tip, cmd)).clicked() {
                             cmds.push(cmd);
                         }
+                    }
+                    sep(ui);
+                    for (icon, on, tip, cmd) in toggles {
+                        if icons::button(ui, icon, b, on, &tip_with(ui, tip, cmd)).clicked() {
+                            cmds.push(cmd);
+                        }
+                    }
+                    sep(ui);
+                    let (can_undo, can_redo) = (!doc.undo.is_empty(), !doc.redo.is_empty());
+                    if ui.add_enabled_ui(can_undo, |ui| icons::button(ui, "undo-2", b, false, &tip_with(ui, tr("Annuler"), "edit.undo"))).inner.clicked() {
+                        cmds.push("edit.undo");
+                    }
+                    if ui.add_enabled_ui(can_redo, |ui| icons::button(ui, "redo-2", b, false, &tip_with(ui, tr("Rétablir"), "edit.redo"))).inner.clicked() {
+                        cmds.push("edit.redo");
                     }
                 });
             });
@@ -1188,6 +1343,10 @@ fn viewport_menu(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, cmds: &mu
             ui.close();
         }
         ui.separator();
+    }
+    if widgets::menu_check(ui, doc.explode_panel, tr("Vue éclatée…"), &sc("view.explode")).clicked() {
+        cmds.push("view.explode");
+        ui.close();
     }
     ui.menu_button(tr("Assemblage"), |ui| {
         ui.set_min_width(250.0);
@@ -1275,6 +1434,88 @@ fn opacity_row(ui: &mut egui::Ui, doc: &mut Document, i: Option<usize>) {
     });
 }
 
+/// Floating "Vue éclatée" panel under the toolbar: slider, exact %, animate, reset, lines.
+fn explode_panel(ui: &mut egui::Ui, rect: Rect, doc: &mut Document) {
+    let t = Tokens::get(ui.ctx());
+    let can = doc.asm.can_explode();
+    let pos = egui::pos2(rect.center().x - 160.0, rect.top() + 28.0 + 30.0);
+    let mut close = false;
+    egui::Area::new(ui.id().with(("explode-panel", doc.id))).fixed_pos(pos).order(egui::Order::Middle).show(ui.ctx(), |ui| {
+        egui::Frame::new()
+            .fill(t.card.gamma_multiply(0.98))
+            .stroke(Stroke::new(1.0, t.border))
+            .corner_radius(CornerRadius::same(12))
+            .inner_margin(egui::Margin::symmetric(14, 10))
+            .shadow(egui::Shadow { offset: [0, 4], blur: 14, spread: 0, color: t.shadow })
+            .show(ui, |ui| {
+                ui.set_width(320.0);
+                ui.horizontal(|ui| {
+                    ui.add(icons::image("boxes", 16.0, t.accent_text));
+                    ui.label(egui::RichText::new(tr("Vue éclatée")).font(theme::semibold(13.0)).color(t.text));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if icons::button(ui, "x", 22.0, false, tr("Fermer")).clicked() {
+                            close = true;
+                        }
+                    });
+                });
+                if !can {
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(tr("Rien à éclater : ce modèle ne contient qu'une seule face (ou plus de 1500 faces dans un seul corps)."))
+                            .font(theme::regular(12.0))
+                            .color(t.text_muted),
+                    );
+                    return;
+                }
+                ui.add_space(4.0);
+                let mut pct = doc.asm.explode_goal * 100.0;
+                let mut changed = None;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().slider_width = 200.0;
+                    let r = ui.add(egui::Slider::new(&mut pct, 0.0..=100.0).show_value(false));
+                    if r.changed() {
+                        changed = Some(r.dragged());
+                    }
+                    let d = ui.add(egui::DragValue::new(&mut pct).range(0.0..=100.0).speed(0.5).max_decimals(0).suffix(" %"));
+                    if d.changed() {
+                        changed = Some(d.dragged());
+                    }
+                });
+                if let Some(dragging) = changed {
+                    doc.checkpoint_coalesced("explode");
+                    doc.asm.explode_goal = (pct / 100.0).clamp(0.0, 1.0);
+                    if dragging {
+                        doc.asm.explode = doc.asm.explode_goal;
+                        doc.apply_transforms();
+                    }
+                    ui.ctx().request_repaint();
+                }
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let out = doc.asm.explode_goal >= 0.5;
+                    if widgets::icon_pill(ui, if out { "minimize-2" } else { "play" }, if out { tr("Rassembler") } else { tr("Animer") }, true).clicked() {
+                        doc.checkpoint();
+                        doc.asm.explode_goal = if out { 0.0 } else { 1.0 };
+                        ui.ctx().request_repaint();
+                    }
+                    if widgets::icon_pill(ui, "rotate-ccw", tr("Réinitialiser"), false).clicked() {
+                        doc.checkpoint();
+                        doc.asm.explode_goal = 0.0;
+                        doc.asm.explode = 0.0;
+                        doc.apply_transforms();
+                    }
+                    let mut lines = doc.asm.explode_lines;
+                    if ui.checkbox(&mut lines, tr("Lignes")).changed() {
+                        doc.asm.explode_lines = lines;
+                    }
+                });
+            });
+    });
+    if close {
+        doc.explode_panel = false;
+    }
+}
+
 /// Explosion amount slider (0–100 %).
 fn explode_row(ui: &mut egui::Ui, doc: &mut Document) {
     let t = Tokens::get(ui.ctx());
@@ -1286,6 +1527,7 @@ fn explode_row(ui: &mut egui::Ui, doc: &mut Document) {
         ui.spacing_mut().slider_width = 110.0;
         let r = ui.add(egui::Slider::new(&mut v, 0.0..=1.0).custom_formatter(|x, _| format!("{:.0} %", x * 100.0)));
         if r.changed() {
+            doc.checkpoint_coalesced("explode");
             doc.asm.explode_goal = v;
             // follow the slider directly while it is dragged, animate otherwise
             if r.dragged() {
@@ -1389,6 +1631,10 @@ pub const STAGES: &[&str] = &[
     "Analyse du maillage (1/2)…",
     "Construction du maillage (2/2)…",
     "Lecture des informations…",
+    "Séparation des corps…",
+    "Analyse du fichier IFC…",
+    "Maillage des éléments IFC…",
+    "Construction de l'arbre…",
     "Vignette…",
 ];
 
@@ -1405,6 +1651,15 @@ pub fn tr_stage(s: &str) -> String {
 
 pub fn info_panel(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, cmds: &mut Cmds) {
     let t = Tokens::get(ui.ctx());
+    // fold button in the panel's top-right corner, over the first card title
+    {
+        let r = ui.max_rect();
+        let br = Rect::from_min_size(egui::pos2(r.right() - 24.0, r.top() + 4.0), vec2(22.0, 22.0));
+        let sc = crate::commands::shortcut_text(ui.ctx(), "view.info");
+        if icons::button(&mut ui.new_child(egui::UiBuilder::new().max_rect(br)), "panel-right-close", 22.0, false, &format!("{}  ({sc})", tr("Replier le panneau"))).clicked() {
+            cmds.push("view.info");
+        }
+    }
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         ui.add_space(6.0);
         let card = |ui: &mut egui::Ui, title: &str, add: &mut dyn FnMut(&mut egui::Ui)| {
@@ -1455,15 +1710,16 @@ pub fn info_panel(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, cmds: &m
                 // the model's own axes (Z-up formats are shown Y-up)
                 let (x, y, z) = if s.up_z { (d.x, d.z, d.y) } else { (d.x, d.y, d.z) };
                 ui.label(
-                    egui::RichText::new(format!("{} × {} × {} {}", st.fmt_len_bare(x as f64), st.fmt_len_bare(y as f64), st.fmt_len_bare(z as f64), st.units.suffix()))
+                    egui::RichText::new(st.fmt_dims(x as f64, y as f64, z as f64))
                         .font(theme::semibold(15.0))
                         .color(t.text),
                 );
                 ui.label(egui::RichText::new(tr("Longueur × largeur × hauteur (boîte englobante)")).font(theme::regular(11.0)).color(t.text_faint));
                 ui.add_space(6.0);
-                kv(ui, "X", st.fmt_len(x as f64));
-                kv(ui, "Y", st.fmt_len(y as f64));
-                kv(ui, "Z", st.fmt_len(z as f64));
+                let mx = x.max(y).max(z) as f64;
+                kv(ui, "X", st.fmt_len_group(x as f64, mx));
+                kv(ui, "Y", st.fmt_len_group(y as f64, mx));
+                kv(ui, "Z", st.fmt_len_group(z as f64, mx));
                 ui.add_space(4.0);
                 kv(ui, tr("Volume"), st.fmt_volume(stt.volume));
                 kv(ui, tr("Surface"), st.fmt_area(stt.area));
@@ -1501,7 +1757,7 @@ pub fn info_panel(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, cmds: &m
                     let hi = w.transform_point3(Vec3::from(m.bbox_max));
                     let d = (hi - lo).abs();
                     let (x, y, z) = if s.up_z { (d.x, d.z, d.y) } else { (d.x, d.y, d.z) };
-                    kv(ui, tr("Dimensions"), format!("{} × {} × {}", st.fmt_len_bare(x as f64), st.fmt_len_bare(y as f64), st.fmt_len_bare(z as f64)));
+                    kv(ui, tr("Dimensions"), st.fmt_dims(x as f64, y as f64, z as f64));
                     let (v, a) = doc.mesh_va[mi];
                     kv(ui, tr("Volume"), st.fmt_volume(v.abs()));
                     kv(ui, tr("Surface"), st.fmt_area(a));
@@ -1752,14 +2008,7 @@ pub fn dims_text(doc: &Document, st: &Settings) -> Option<String> {
     let (lo, hi) = doc.stats.bbox?;
     let d = hi - lo;
     let (x, y, z) = if s.up_z { (d.x, d.z, d.y) } else { (d.x, d.y, d.z) };
-    Some(format!(
-        "{}: {} × {} × {} {}",
-        doc.title,
-        st.fmt_len_bare(x as f64),
-        st.fmt_len_bare(y as f64),
-        st.fmt_len_bare(z as f64),
-        st.units.suffix()
-    ))
+    Some(format!("{}: {}", doc.title, st.fmt_dims(x as f64, y as f64, z as f64)))
 }
 
 pub fn toggle_section(doc: &mut Document) {

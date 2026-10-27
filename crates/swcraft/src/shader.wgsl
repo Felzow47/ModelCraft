@@ -15,6 +15,12 @@ struct Globals {
     light2: vec4<f32>,
     // section cap colour
     cap: vec4<f32>,
+    // camera position (world)
+    eye: vec4<f32>,
+    // xyz: unit vector toward the camera, w: how far edges are pulled toward it (world units)
+    fwd: vec4<f32>,
+    // x: headlight
+    light3: vec4<f32>,
 };
 
 struct Pass {
@@ -100,11 +106,12 @@ fn fs_mesh(i: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32> 
     let d1 = max(dot(n, l1), 0.0);
     let d2 = max(dot(n, l2), 0.0);
     let hemi = 0.5 + 0.5 * n.y;
+    let head = max(dot(n, v), 0.0) * g.light3.x;
     let amb = g.light.z * mix(vec3<f32>(1.0 - g.light2.z), vec3<f32>(1.0 + g.light2.z), hemi);
     let h = normalize(l1 + v);
     let spec = pow(max(dot(n, h), 0.0), g.light2.w) * g.light.w;
     let rim = pow(1.0 - max(dot(n, v), 0.0), 3.0) * g.light2.x;
-    var col = base * (amb + g.light.x * d1 + g.light.y * d2) + vec3<f32>(spec + rim);
+    var col = base * (amb + g.light.x * d1 + g.light.y * d2 + head) + vec3<f32>(spec + rim);
     var a = i.opacity;
     if (a < 0.999) {
         // see-through parts: brighter, glass-like silhouettes so the shape stays readable
@@ -127,7 +134,16 @@ fn vs_edge(v: VsIn) -> EdgeOut {
     let model = mat4x4<f32>(v.m0, v.m1, v.m2, v.m3);
     let world = model * vec4<f32>(v.pos, 1.0);
     var o: EdgeOut;
-    var c = g.view_proj * world;
+    // pull the edge toward the camera by a fixed amount so it never z-fights with its faces
+    // (depth bias does not apply to lines). Perspective: along the eye ray, so it stays on the
+    // same pixel; orthographic: along the view direction.
+    var pushed = world.xyz + g.fwd.xyz * g.fwd.w;
+    if (g.params.x < 0.5) {
+        let to_eye = g.eye.xyz - world.xyz;
+        let d = length(to_eye);
+        pushed = world.xyz + to_eye * (min(g.fwd.w, d * 0.5) / max(d, 1e-20));
+    }
+    var c = g.view_proj * vec4<f32>(pushed, 1.0);
     let px = vec2<f32>(2.0 / max(g.params.z, 1.0), 2.0 / max(g.params.w, 1.0));
     c = vec4<f32>(c.xy + pass_.offset.xy * px * c.w, c.z, c.w);
     o.clip = c;

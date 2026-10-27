@@ -180,7 +180,7 @@ fn page(app: &mut App, ui: &mut egui::Ui, cat: SettingsCat) {
             row(ui, tr("Fichiers récents"), tr("Nombre de fichiers affichés sur l'accueil."), |ui| {
                 ui.add(egui::Slider::new(&mut s.recent_max, 3..=30));
             });
-            row(ui, tr("Associations de fichiers"), tr("Ajoute ModelCraft à « Ouvrir avec » pour SLDPRT, SLDASM, STEP, IGES, STL, OBJ, 3DS… (utilisateur courant, sans droits administrateur)."), |ui| {
+            row(ui, tr("Associations de fichiers"), tr("Ajoute ModelCraft à « Ouvrir avec » pour SLDPRT, SLDASM, STEP, IGES, IFC, FBX, glTF, STL, OBJ, 3MF… (utilisateur courant, sans droits administrateur)."), |ui| {
                 if widgets::icon_pill(ui, "link", tr("Associer"), false).clicked() {
                     app.cmds.push("tool.assoc");
                 }
@@ -239,8 +239,14 @@ fn page(app: &mut App, ui: &mut egui::Ui, cat: SettingsCat) {
             });
         }
         SettingsCat::Navigation => {
-            row(ui, tr("Style de navigation"), tr("SolidWorks : clic molette pour pivoter, Ctrl+molette pour déplacer. Blender : molette pour pivoter, Maj+molette pour déplacer. CAO : clic droit pour pivoter, clic molette pour déplacer."), |ui| {
+            row(ui, tr("Style de navigation"), tr("Blender (défaut) : clic molette ou clic gauche pour pivoter, Maj+clic molette ou clic droit pour déplacer. SolidWorks : clic gauche ou molette pour pivoter, Ctrl+molette ou clic droit pour déplacer. CAO : clic molette pour déplacer, Maj+molette pour pivoter. L'outil Panoramique (main) fait déplacer la vue au clic gauche."), |ui| {
                 widgets::segmented(ui, &mut s.nav, &[(NavStyle::SolidWorks, "SolidWorks"), (NavStyle::Blender, "Blender"), (NavStyle::Cad, tr("CAO"))]);
+            });
+            row(ui, tr("Raccourcis Blender"), tr("Pavé numérique 1/3/7 : face, droite, dessus (Ctrl = vue opposée), 5 : ortho, 2/4/6/8 : tourner de 15°, 9 : vue opposée, « . » : cadrer la sélection, Origine : tout cadrer, G : déplacer, R : tourner. Désactivé : anciens raccourcis (0-6 = vues, G = grille, R = diamètre)."), |ui| {
+                widgets::switch(ui, &mut s.blender_keys);
+            });
+            row(ui, tr("Rotation"), tr("Libre : rotation illimitée dans toutes les directions (trackball). Plateau tournant : l'axe Y reste vertical, arrêt aux pôles."), |ui| {
+                widgets::segmented(ui, &mut s.orbit, &[(OrbitMode::Free, tr("Libre")), (OrbitMode::Turntable, tr("Plateau tournant"))]);
             });
             row(ui, tr("Inverser le zoom"), tr("Inverse le sens de la molette."), |ui| {
                 widgets::switch(ui, &mut s.invert_zoom);
@@ -261,6 +267,9 @@ fn page(app: &mut App, ui: &mut egui::Ui, cat: SettingsCat) {
         SettingsCat::Measure => {
             row(ui, tr("Unités"), tr("Unité des cotes, distances et diamètres."), |ui| {
                 widgets::segmented(ui, &mut s.units, &[(Units::Mm, "mm"), (Units::Cm, "cm"), (Units::M, "m"), (Units::In, "in")]);
+            });
+            row(ui, tr("Unités automatiques"), tr("Les grandes valeurs passent en cm², m², m³… (ex. 6 115 613 mm² → 6,12 m²)."), |ui| {
+                widgets::switch(ui, &mut s.auto_units);
             });
             row(ui, tr("Décimales"), tr("Nombre de chiffres après la virgule."), |ui| {
                 ui.add(egui::Slider::new(&mut s.decimals, 0..=6));
@@ -309,7 +318,7 @@ fn about(app: &mut App, ctx: &egui::Context) {
             ui.vertical(|ui| {
                 widgets::wordmark(ui, 26.0);
                 ui.label(widgets::mono_caps(&format!("V{}", crate::branding::VERSION), 11.0, t.accent_text));
-                ui.label(egui::RichText::new(tr("Visionneuse 3D native pour SolidWorks, STEP, IGES, STL, OBJ, 3DS et 3DXML.")).color(t.text_muted));
+                ui.label(egui::RichText::new(tr("Visionneuse 3D native pour SolidWorks, STEP, IGES, IFC, FBX, glTF, STL, OBJ, 3MF, 3DS, 3DXML et bien d'autres.")).color(t.text_muted));
             });
         });
         ui.add_space(12.0);
@@ -336,17 +345,28 @@ fn shortcuts(app: &mut App, ctx: &egui::Context) {
     let mut close = false;
     let esc = modal(ctx, "shortcuts", vec2(720.0, 520.0), |ui| {
         close = title_row(ui, tr("Raccourcis clavier"));
+        let note = if app.settings.blender_keys {
+            tr("Raccourcis façon Blender (Paramètres › Navigation). Les chiffres marchent au pavé numérique comme sur la rangée du haut ; « . » du pavé cadre la sélection, Origine cadre tout.")
+        } else {
+            tr("Raccourcis classiques ModelCraft. Activez « Raccourcis Blender » dans Paramètres › Navigation pour la disposition Blender.")
+        };
+        ui.label(egui::RichText::new(note).font(theme::regular(12.0)).color(t.text_muted));
+        ui.add_space(6.0);
         egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
             ui.columns(2, |cols| {
                 for (gi, g) in GROUPS.iter().enumerate() {
                     let ui = &mut cols[if gi < 2 || gi == 4 { 0 } else { 1 }];
                     widgets::section_title(ui, tr(g));
-                    for c in COMMANDS.iter().filter(|c| c.group == *g && c.shortcut.is_some()) {
+                    for c in COMMANDS.iter().filter(|c| c.group == *g) {
+                        let keys = commands::all_keys_text(ui.ctx(), c.id);
+                        if keys.is_empty() {
+                            continue;
+                        }
                         ui.horizontal(|ui| {
                             ui.add(icons::image(c.icon, 14.0, t.icon));
                             ui.label(egui::RichText::new(tr(c.label)).color(t.text));
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                ui.label(egui::RichText::new(commands::shortcut_text(ui.ctx(), c.id)).font(theme::mono(11.5)).color(t.accent_text));
+                                ui.label(egui::RichText::new(keys).font(theme::mono(11.5)).color(t.accent_text));
                             });
                         });
                     }
@@ -372,9 +392,9 @@ fn shortcuts(app: &mut App, ctx: &egui::Context) {
 
 pub fn nav_lines(nav: NavStyle) -> Vec<(&'static str, &'static str)> {
     match nav {
-        NavStyle::SolidWorks => vec![(tr("Pivoter"), tr("Clic gauche / molette")), (tr("Déplacer"), tr("Clic droit / Ctrl+molette")), (tr("Zoom"), tr("Molette")), (tr("Sélectionner"), tr("Clic"))],
-        NavStyle::Blender => vec![(tr("Pivoter"), tr("Clic molette")), (tr("Déplacer"), tr("Maj+clic molette")), (tr("Zoom"), tr("Molette")), (tr("Sélectionner"), tr("Clic"))],
-        NavStyle::Cad => vec![(tr("Pivoter"), tr("Clic droit")), (tr("Déplacer"), tr("Clic molette")), (tr("Zoom"), tr("Molette")), (tr("Sélectionner"), tr("Clic"))],
+        NavStyle::SolidWorks => vec![(tr("Pivoter"), tr("Clic gauche / molette")), (tr("Déplacer"), tr("Clic droit / Ctrl+molette")), (tr("Zoom"), tr("Molette / Maj+molette")), (tr("Sélectionner"), tr("Clic")), (tr("Tout cadrer"), tr("Double-clic"))],
+        NavStyle::Blender => vec![(tr("Pivoter"), tr("Clic molette / clic gauche")), (tr("Déplacer"), tr("Maj+clic molette / clic droit")), (tr("Zoom"), tr("Molette / Ctrl+clic molette")), (tr("Sélectionner"), tr("Clic")), (tr("Tout cadrer"), tr("Double-clic molette"))],
+        NavStyle::Cad => vec![(tr("Pivoter"), tr("Clic gauche / Maj+molette")), (tr("Déplacer"), tr("Clic molette / clic droit")), (tr("Zoom"), tr("Molette")), (tr("Sélectionner"), tr("Clic")), (tr("Tout cadrer"), tr("Double-clic"))],
     }
 }
 

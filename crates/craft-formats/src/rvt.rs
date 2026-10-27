@@ -211,7 +211,7 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
     props.push(("Données du modèle".into(), format!("{np} partition(s), {:.1} Mo (format Autodesk propriétaire)", sz as f64 / 1048576.0)));
     s.properties = props;
     s.warnings.push(
-        "Géométrie Revit non décodée (base d'objets Autodesk propriétaire et compressée, sans maillage enregistré) : seuls l'aperçu et les informations du projet sont affichés. Pour la 3D, exportez en IFC, STEP ou FBX depuis Revit."
+        "Géométrie Revit non décodée (base d'objets Autodesk propriétaire et compressée, sans maillage enregistré) : seuls l'aperçu et les informations du projet sont affichés. Pour la 3D : dans Revit, Fichier › Exporter › IFC, puis ouvrez le fichier .ifc obtenu dans ModelCraft (niveaux, éléments et couleurs)."
             .into(),
     );
     if s.preview.is_none() {

@@ -1,10 +1,10 @@
-# ModelCraft — la visionneuse 3D ultime (V3)
+# ModelCraft — la visionneuse 3D ultime (V4)
 
 <p align="center"><img src="screenshots/v2/logo.png" width="640" alt="Logo ModelCraft"></p>
 
 Visionneuse native, légère et instantanée pour **SolidWorks (`.SLDPRT` / `.SLDASM`), STEP, IGES,
-STL, OBJ, 3DS, 3DXML, eDrawings et Revit (aperçu)**, écrite en Rust (wgpu + egui). Un seul `.exe`, sans
-installeur, sans licence, hors ligne.
+IFC, FBX, glTF/GLB, COLLADA, 3MF, PLY, STL, OBJ, VRML/X3D, USD, 3DS, 3DXML, eDrawings et Revit (aperçu)**, écrite en Rust (wgpu + egui). Un seul `.exe` (ou l'installateur
+`ModelCraft-Setup-0.4.0.exe`), sans licence, hors ligne.
 
 Interface dans l'esprit de la suite ArtCraft (disposition reprise de PdfCraft, sous licence
 MIT/Apache — voir `NOTICE.md`). ModelCraft est un projet **indépendant**, non affilié.
@@ -32,11 +32,83 @@ MIT/Apache — voir `NOTICE.md`). ModelCraft est un projet **indépendant**, non
 | 3DXML | `.3dxml` | ✅ | représentations tessellées, assemblages |
 | eDrawings | `.easm` `.eprt` | ⚠️ partiel | vignette intégrée seulement (géométrie HSF non décodée) |
 | Autodesk Revit | `.rvt` `.rfa` `.rte` `.rft` | ⚠️ partiel | vignette + informations du fichier et du projet (version, partage, chemins, paramètres) ; pas de 3D, voir *Limites* |
+| IFC (BIM) | `.ifc` `.ifczip` | ✅ complet | IFC2x3 / IFC4 / IFC4x3 via web-ifc : niveaux → éléments, couleurs, transparence (export IFC de Revit, ArchiCAD, Tekla…) |
+| FBX | `.fbx` | ✅ | binaire et ASCII via assimp : arbre, couleurs, axe vertical du fichier (pas d'animation) |
+| glTF 2.0 | `.gltf` `.glb` | ✅ | nœuds, transformations, couleurs PBR |
+| COLLADA | `.dae` | ✅ | unités et axe vertical du fichier |
+| 3MF / AMF | `.3mf` `.amf` | ✅ | objets et couleurs (mm) |
+| PLY / OFF | `.ply` `.off` | ✅ | ASCII et binaire (mm) ; nuages de points seuls → message clair |
+| VRML 97 / X3D | `.wrl` `.vrml` `.wrz` `.x3dv` `.x3d` | ✅ | lecteur VRML intégré (DEF/USE, primitives, couleurs) ; X3D XML via assimp |
+| USD | `.usd` `.usda` `.usdc` `.usdz` | ⚠️ partiel | maillages et transformations (tinyusdz) |
+| DXF | `.dxf` | ⚠️ partiel | faces 3D et maillages seulement (pas les dessins 2D ni les solides ACIS) |
+| Blender | `.blend` | ⚠️ partiel | anciens fichiers 2.7x seulement (assimp). **Blender 2.8+ : Fichier › Exporter › Wavefront (.obj) avec matériaux, glTF 2.0 ou FBX**, puis ouvrir l'export |
+| Autres (assimp) | `.x` `.lwo` `.ac` `.ase` `.ms3d` `.md2`… | ⚠️ | via assimp |
 | Parasolid | `.x_t` `.x_b` | ❌ | message clair : aucun lecteur libre — exporter en STEP |
+| DWG / SketchUp / Rhino | `.dwg` `.skp` `.3dm` | ❌ | message clair : LibreDWG est GPL, SDK SketchUp propriétaire ; exporter en DXF/IFC, DAE/glTF, STEP/OBJ |
+
+### Nouveautés V4
+
+**Navigation et outils**
+- **Raccourcis Blender** par défaut (*Paramètres › Navigation › Raccourcis Blender*, désactivable) :
+  clic molette = pivoter, `Maj`+clic molette = déplacer la vue, `Ctrl`+clic molette = zoom,
+  pavé `1/3/7` (+`Ctrl` = vue opposée), `5` ortho, `2/4/6/8` = tourner de 15°, `9` vue opposée,
+  pavé `.` (ou `,`) = **cadrer la sélection**, `Origine` = tout cadrer, `G` déplacer, `R` tourner,
+  double-clic molette = tout cadrer. Tous les raccourcis sont listés dans *Aide › Raccourcis*.
+- **Outil Panoramique** (main, `Q`) : le clic gauche déplace la vue (translation pure).
+- **Déplacer** (`G`) et **Tourner** (`R`) une pièce avec un manipulateur : flèches X/Y/Z, anneaux
+  X/Y/Z (`Ctrl` = pas de 15°, angle affiché), ou glisser la pièce pour la faire pivoter librement
+  « comme en vrai ». **Réinitialiser** remet la sélection (sinon tout) à sa place.
+- **Annuler / rétablir** (`Ctrl+Z`, `Ctrl+Y` / `Ctrl+Maj+Z`) : déplacements, rotations, éclaté,
+  opacités, masquage / isolement.
+- **Panneaux latéraux repliables** (boutons en haut des panneaux, `T` / `N`), état mémorisé.
+- **Survol synchronisé** : survoler une pièce dans la vue la surligne dans l'arbre, et inversement.
+
+**Affichage**
+- Vue **plus claire** (fond gris bleuté, éclairage « phare » qui suit la caméra) en gardant un
+  thème sombre lisible ; les anciens réglages par défaut sont migrés automatiquement.
+- **Arêtes stables** quel que soit l'angle de vue (plus de clignotement contre les faces).
+- **Vue éclatée corrigée** : chaque pièce s'éloigne du centre du modèle en ligne droite, sa
+  direction ne s'inverse jamais quand le curseur monte, et à 100 % deux pièces imbriquées
+  (étrier dans sa bride) sortent entièrement l'une de l'autre ; fonctionne aussi sur une **pièce
+  SLDPRT/STEP d'un seul corps** (éclatement par faces, ≤ 1500 faces). Bouton dans la barre
+  d'outils + panneau flottant 0–100 %, lignes d'éclatement discrètes.
+- Accueil : grille de formats qui s'adapte à la largeur (plus de texte caché sous « Ouvrir un fichier »).
+
+| Éclaté (assemblage) | Éclaté (pièce d'un seul corps) |
+|---|---|
+| ![Éclaté](screenshots/v4/v4_explode_a2.png) | ![Éclaté pièce](screenshots/v4/v4_explode_part.png) |
+| **Barre d'outils : sélection, panoramique, déplacer, tourner** | **Panneaux repliés** |
+| ![Tourner](screenshots/v4/v4_rotate.png) | ![Replié](screenshots/v4/v4_folded.png) |
+| **Cadrer la sélection (pavé .)** | **Accueil** |
+| ![Cadrer](screenshots/v4/v4_frame_selected.png) | ![Accueil](screenshots/v4/v4_home.png) |
+| **Éclaté : un étrier sort entièrement de sa bride** | **Outil Déplacer (manipulateur X/Y/Z)** |
+| ![Éclaté étrier](screenshots/v4/v4_explode_a1.png) | ![Déplacer](screenshots/v4/v4_move.png) |
+| **Vue plus claire** | **Outil Panoramique actif** |
+| ![Vue](screenshots/v4/v4_viewport.png) | ![Panoramique](screenshots/v4/v4_pan.png) |
+| **Aide › Raccourcis** | **Installateur : une case par extension** |
+| ![Raccourcis](screenshots/v4/v4_shortcuts.png) | ![Installateur](screenshots/v4/v4_installer.png) |
+
+**Formats et installation**
+- **Installateur Windows** (Inno Setup) : menu Démarrer, icône Bureau en option, liste
+  d'extensions à cocher (une case par extension), désinstallation propre.
+- OBJ + `.mtl` : opacité, textures (couleur moyenne), exports Blender.
+
+- **Rotation libre** (trackball, sans blocage aux pôles) par défaut ; *Paramètres › Rotation* : Libre ou Plateau tournant. Boutons « pivoter de 90° » sur le cube de vue.
+- **Vue éclatée** : bouton de la barre d'outils, menu Affichage, menu contextuel et Ctrl+K ; panneau flottant (curseur 0–100 %, valeur, animer, réinitialiser). Fonctionne aussi sur une pièce à plusieurs corps (séparation automatique des corps) et sur chaque pièce d'un assemblage ; message si rien n'est éclatable.
+- **Opacité de la sélection** appliquée uniquement aux composants / corps sélectionnés.
+- **Nombres lisibles** : séparateurs de milliers et unités automatiques (`6 115 613,46 mm²` → `6,12 m²`), désactivables (*Paramètres › Unités automatiques*), respectent le nombre de décimales.
+- **Composants d'assemblage introuvables** : recherche élargie, sans tenir compte de la casse — chemin d'origine, arborescence du projet déplacée (dossiers d'origine recréés à côté de l'assemblage), puis tout le dossier du projet (2 niveaux au-dessus, recherche bornée).
+- **Revit** : le message propose l'export IFC (Fichier › Exporter › IFC), désormais lisible par ModelCraft.
 
 ## Utilisation (Windows)
 
-Copiez `dist\modelcraft.exe` où vous voulez (ex. `C:\Outils\ModelCraft\`). Aucune DLL.
+**Installateur** : lancez `dist\ModelCraft-Setup-0.4.0.exe` (sans droits admin, installé pour
+l'utilisateur courant). Il crée l'entrée du menu Démarrer (ModelCraft + scanner) et propose une
+**case par extension** à associer (SolidWorks, STEP, IGES, 3DXML, eDrawings, IFC cochés ; STL,
+OBJ, FBX, glTF… décochés car souvent déjà ouverts par un autre logiciel). Désinstallation :
+*Paramètres Windows › Applications*.
+
+**Version portable** : copiez `dist\modelcraft.exe` où vous voulez (ex. `C:\Outils\ModelCraft\`). Aucune DLL.
 
 - **Ouvrir** : bouton **+ Ouvrir** / `Ctrl+O`, glisser-déposer (un dossier déposé est
   *épinglé* sur l'accueil), ou `modelcraft.exe "F:\chemin\piece.step"`. Plusieurs fichiers
@@ -116,21 +188,25 @@ les 2 s, résultat (CHARGÉ / ÉCHEC / PANIQUE), statistiques du maillage. Par d
 
 Sélection de faces et de composants avec surbrillance ; le panneau de droite liste les mesures.
 
-### Souris et clavier (navigation « SolidWorks », modifiable dans les paramètres)
+### Souris et clavier (navigation « Blender » par défaut, modifiable dans les paramètres)
 
 | Action | Commande |
 |---|---|
-| Tourner | clic gauche + glisser |
-| Déplacer | clic droit / molette enfoncée + glisser |
-| Zoom (vers le curseur) | molette (inversible) |
-| Ajuster | `F`, double-clic |
-| Vues | `0` iso · `1` face · `2` dessus · `3` droite · `4` arrière · `5` dessous · `6` gauche, ou le **cube de vue** |
-| Masquer / isoler / tout afficher | `H` / `I` / `Maj+H` |
-| Arêtes · ortho · boîte · coupe · grille | `E` · `O` · `B` · `X` · `G` |
-| Arbre · panneau d'infos | `T` · `P` |
+| Pivoter | clic molette (ou clic gauche) + glisser |
+| Déplacer la vue | `Maj`+clic molette, clic droit, ou outil **Panoramique** (`Q`) + clic gauche |
+| Zoom (vers le curseur) | molette (inversible), `Ctrl`+clic molette |
+| Tout cadrer · cadrer la sélection | `Origine` / `F` / double-clic molette · pavé `.` / `,` |
+| Vues (pavé numérique ou rangée du haut) | `1` face · `3` droite · `7` dessus · `Ctrl+1/3/7` opposées · `0` iso · `9` vue opposée · `5` ortho · `2/4/6/8` tourner de 15° |
+| Déplacer · tourner une pièce | `G` · `R` (re-appuyer pour quitter), `Ctrl` = pas de 15° |
+| Annuler · rétablir | `Ctrl+Z` · `Ctrl+Y` / `Ctrl+Maj+Z` |
+| Masquer / isoler / tout afficher | `H` / `I` ou `/` / `Maj+H` ou `Alt+H` |
+| Arêtes · boîte · coupe · grille | `E` · `B` · `X` · `Maj+G` |
+| Arbre · panneau d'infos | `T` · `P` ou `N` |
 | Paramètres · palette · plein écran | `Ctrl+,` · `Ctrl+K` · `F11` |
 
-Styles de navigation disponibles : SolidWorks, Blender, AutoCAD/Inventor.
+Styles de navigation : Blender (défaut), SolidWorks, CAO (AutoCAD/Inventor). Avec
+« Raccourcis Blender » désactivé, les anciens raccourcis reviennent (`0`–`6` = vues, `G` = grille,
+`R` = diamètre).
 
 ### Paramètres (`%APPDATA%\ModelCraft\settings.json`)
 
@@ -197,6 +273,13 @@ OCCT_INC=/chemin/occt/include/opencascade OCCT_LIB=/chemin/occt/lib \
 ```
 Sans `occt`, ModelCraft fonctionne pour tous les autres formats et affiche un message pour STEP/IGES.
 
+**FBX, glTF, 3MF…** demandent la fonctionnalité `assimp` (assimp 6.0.2 statique, `ASSIMP_DIR` =
+préfixe d'installation contenant `lib/libassimp.a` et `lib/libzlibstatic.a`, compilé avec
+`-DBUILD_SHARED_LIBS=OFF -DASSIMP_BUILD_VRML_IMPORTER=OFF -DASSIMP_BUILD_USD_IMPORTER=ON`).
+**IFC** demande la fonctionnalité `ifc` : web-ifc compilé en statique (`cmake --build <dossier> --target web-ifc-library`
+avec `-DCMAKE_CXX_FLAGS=-Dmapbox=wi_mapbox`), `WEBIFC_SRC=<web-ifc>/src/cpp` et `WEBIFC_BUILD=<dossier de build>`.
+Exemple complet : `--features swcraft/occt,swcraft/assimp,swcraft/ifc,swcraft-scan/occt,swcraft-scan/assimp,swcraft-scan/ifc`.
+
 Compilation croisée Linux → Windows (utilisée pour `dist/`, OCCT compilé avec mingw « posix ») :
 ```
 rustup target add x86_64-pc-windows-gnu
@@ -207,6 +290,14 @@ OCCT_INC=/chemin/occt/include/opencascade OCCT_LIB=/chemin/occt-mingw/win64/gcc/
 ```
 (`.cargo/config.toml` configure l'éditeur de liens mingw et la CRT statique ; l'icône
 et les infos de version sont intégrées via `windres`.)
+
+**Installateur Windows** ([Inno Setup](https://jrsoftware.org/isinfo.php) 6, gratuit) : après la
+compilation Windows et la copie des deux `.exe` dans `dist/`,
+```
+python3 installer/gen_iss.py            # génère installer/modelcraft.iss (extensions lues dans platform.rs, version dans Cargo.toml)
+iscc installer\modelcraft.iss           # Windows ; sous Linux : wine "C:\InnoSetup6\ISCC.exe" ...
+```
+produit `dist/ModelCraft-Setup-<version>.exe`.
 
 Outil de diagnostic : `cargo run --release -p sw-format --example swinfo -- fichier.SLDASM [--streams] [--obj sortie.obj]`.
 
@@ -226,7 +317,7 @@ arêtes B-rep superposées, fond dégradé, surbrillance de sélection, plan de 
 l'initialisation GPU échoue, ModelCraft se relance en Vulkan puis en OpenGL. Forcer un
 moteur : `WGPU_BACKEND=dx12|vulkan|gl`.
 
-## Limites connues (V3)
+## Limites connues (V4)
 
 - **eDrawings `.easm`** : seule la vignette est affichée (géométrie HSF non décodée).
 - **Revit `.rvt`** : seuls la vignette (`RevitPreview4.0`, absente de beaucoup de fichiers) et les
@@ -234,8 +325,18 @@ moteur : `WGPU_BACKEND=dx12|vulkan|gl`.
   jamais le fichier entier (pic ~7 Mo même pour un RVT de 66 Mo). La géométrie Revit est stockée
   dans les flux `Partitions/*` sous forme d'une base d'objets Autodesk propriétaire, compressée
   par morceaux, **sans maillage enregistré** : la décoder reviendrait à réimplémenter le noyau
-  Revit, ce qui n'est pas réaliste. Pour la 3D, exporter en IFC / STEP / FBX depuis Revit.
-- **Parasolid `.x_t`** : non supporté (aucun lecteur libre) ; exporter en STEP.
+  Revit, ce qui n'est pas réaliste. Pour la 3D : exporter en **IFC** depuis Revit, puis l'ouvrir dans ModelCraft.
+- **Parasolid `.x_t`** : non supporté (aucun lecteur libre) ; exporter en STEP. Les fichiers SolidWorks
+  sans maillage d'affichage contiennent pourtant leur B-rep Parasolid (flux `Config-N-Partition`,
+  « TRANSMIT FILE » binaire) : un lecteur indépendant du format XT (documenté publiquement par
+  Siemens) relié à OpenCascade est envisageable, mais c'est un chantier de plusieurs semaines.
+- **Flux `MeshData/Config-N-Mesh-*`** (SolidWorks récents, maillages très lourds) : non décodés —
+  aucun fichier d'exemple contenant ce flux n'est disponible pour le développer et le vérifier.
+  Les fichiers concernés sortent en `no_mesh` dans `swcraft-scan` ; un `--diag` sur l'un d'eux
+  (liste des flux) permettra de s'y attaquer.
+- **Blender `.blend`** : seuls les anciens fichiers 2.7x passent (via assimp) ; le format interne
+  de Blender 2.8+ change à chaque version. Exporter en OBJ (+ `.mtl`), glTF ou FBX.
+- **DWG, SketchUp, Rhino** : non pris en charge (voir `NOTICE.md`).
 - SolidWorks : seul le maillage d'affichage enregistré est utilisé (pas de recalcul B-rep) ;
   un fichier sans données graphiques n'affiche que sa vignette.
 - Les messages d'erreur des lecteurs de fichiers restent en français dans l'interface anglaise.

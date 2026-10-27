@@ -68,6 +68,8 @@ pub enum Handle {
     Ring(usize),
     /// Free move in the view plane.
     Free,
+    /// Rotate mode, part grabbed away from the rings: turn it like a ball held in the hand.
+    Spin,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -125,9 +127,36 @@ pub struct Document {
     pub gizmo: bool,
     /// Also show the rotation rings of the gizmo.
     pub gizmo_rotate: bool,
+    /// Floating "Vue éclatée" panel open.
+    pub explode_panel: bool,
     /// Gizmo / free drag in progress.
     pub drag: Option<GizmoDrag>,
+    /// Pan tool: the left button pans the view.
+    pub pan_tool: bool,
+    /// Where the hover comes from (the tree or the viewport), so one does not clear the other.
+    pub hover_from_tree: bool,
+    /// Viewer actions that can be undone (Ctrl+Z) / redone (Ctrl+Y).
+    pub undo: Vec<ViewState>,
+    pub redo: Vec<ViewState>,
+    /// Aspect ratio of the viewport (frame selected / frame all from the keyboard).
+    pub aspect: f32,
+    /// Last coalesced checkpoint (slider drags make one undo step, not hundreds).
+    last_ck: Option<(&'static str, std::time::Instant)>,
 }
+
+/// Everything a viewer action can change (moves, explosion, opacity, visibility).
+#[derive(Clone, PartialEq)]
+pub struct ViewState {
+    user: Vec<Mat4>,
+    explode: f32,
+    opacity: Vec<f32>,
+    global_opacity: f32,
+    others_transparent: bool,
+    hidden: Vec<bool>,
+}
+
+/// Undo steps kept per document.
+const UNDO_MAX: usize = 100;
 
 impl Drop for Document {
     fn drop(&mut self) {
@@ -173,7 +202,26 @@ impl Document {
         let ctx2 = ctx.clone();
         let spawned = std::thread::Builder::new().name("loader".into()).spawn(move || {
             crate::crash::set_current_file(Some(&p));
-            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| craft_formats::load_any(&p, &opts)))
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                craft_formats::load_any(&p, &opts).map(|mut s| {
+                    // a single part with several bodies: one child per body (explode / opacity by body)
+                    if let Some(pr) = &opts.progress {
+                        pr.report(0.97, "Séparation des corps…");
+                    }
+                    if sw_format::bodies::split_single_part(&mut s) == 0 {
+                        // CAD assemblies (SolidWorks, STEP, IGES): bodies inside each part too;
+                        // mesh formats already come split into objects
+                        let cad = match &s.container {
+                            sw_format::ContainerKind::Other(f) => matches!(*f, "STEP" | "IGES"),
+                            _ => true,
+                        };
+                        if cad {
+                            sw_format::bodies::split_assembly_parts(&mut s);
+                        }
+                    }
+                    s
+                })
+            }))
                 .unwrap_or_else(|e| Err(format!("le lecteur a planté sur ce fichier (erreur interne : {})", crate::crash::panic_text(&*e))));
             crate::crash::set_current_file(None);
             let _ = tx.send(r);
@@ -217,7 +265,14 @@ impl Document {
             reveal_in_tree: false,
             gizmo: false,
             gizmo_rotate: false,
+            explode_panel: false,
             drag: None,
+            pan_tool: false,
+            hover_from_tree: false,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            aspect: 1.5,
+            last_ck: None,
         }
     }
 
@@ -307,6 +362,108 @@ impl Document {
         self.needs_fit = true;
     }
 
+    /// A part that is a single body cannot be exploded by bodies: split it into its faces
+    /// (viewer-only) so the exploded view still separates something. Returns true if done.
+    pub fn split_into_faces(&mut self, device: &eframe::wgpu::Device, ctx: &egui::Context) -> bool {
+        if self.asm.can_explode() {
+            return false;
+        }
+        let Some(mut scene) = self.scene.take() else { return false };
+        if sw_format::bodies::split_single_part_faces(&mut scene) == 0 {
+            self.scene = Some(scene);
+            return false;
+        }
+        let cam = self.camera.clone();
+        self.gpu = None;
+        self.selected = None;
+        self.hover = None;
+        self.face_sel = None;
+        self.set_scene(scene, device, ctx);
+        self.camera = cam;
+        self.needs_fit = false;
+        self.highlight_dirty = true;
+        true
+    }
+
+    fn view_state(&self) -> ViewState {
+        ViewState {
+            user: self.asm.user.clone(),
+            explode: self.asm.explode_goal,
+            opacity: self.asm.opacity.clone(),
+            global_opacity: self.asm.global_opacity,
+            others_transparent: self.asm.others_transparent,
+            hidden: self.hidden.clone(),
+        }
+    }
+
+    /// Remember the current state before a viewer action (no-op if nothing changed since the
+    /// last checkpoint). Call it before moving, exploding, hiding or changing an opacity.
+    pub fn checkpoint(&mut self) {
+        if self.scene.is_none() {
+            return;
+        }
+        let s = self.view_state();
+        if self.undo.last() != Some(&s) {
+            self.undo.push(s);
+            if self.undo.len() > UNDO_MAX {
+                self.undo.remove(0);
+            }
+        }
+        self.redo.clear();
+        self.last_ck = None;
+    }
+
+    /// Checkpoint for continuous edits (sliders): successive calls of the same kind less than
+    /// a second apart are one undo step.
+    pub fn checkpoint_coalesced(&mut self, kind: &'static str) {
+        let now = std::time::Instant::now();
+        if let Some((k, t)) = self.last_ck {
+            if k == kind && now.duration_since(t).as_secs_f32() < 1.0 {
+                self.last_ck = Some((kind, now));
+                return;
+            }
+        }
+        self.checkpoint();
+        self.last_ck = Some((kind, now));
+    }
+
+    fn restore(&mut self, s: ViewState) {
+        if s.user.len() != self.asm.user.len() || s.hidden.len() != self.hidden.len() {
+            return;
+        }
+        self.asm.user = s.user;
+        self.asm.explode_goal = s.explode;
+        self.asm.explode = s.explode;
+        self.asm.opacity = s.opacity;
+        self.asm.global_opacity = s.global_opacity;
+        self.asm.others_transparent = s.others_transparent;
+        self.hidden = s.hidden;
+        self.drag = None;
+        self.update_visibility();
+        self.apply_transforms();
+    }
+
+    /// Undo the last viewer action. Returns false when there is nothing to undo.
+    pub fn undo(&mut self) -> bool {
+        let cur = self.view_state();
+        // skip checkpoints identical to the current state (an action that changed nothing)
+        while let Some(s) = self.undo.pop() {
+            if s != cur {
+                self.redo.push(cur);
+                self.restore(s);
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn redo(&mut self) -> bool {
+        let Some(s) = self.redo.pop() else { return false };
+        self.undo.push(self.view_state());
+        self.restore(s);
+        true
+    }
+
     pub fn update_visibility(&mut self) {
         let Some(s) = &self.scene else { return };
         let n = s.components.len();
@@ -383,6 +540,7 @@ impl Document {
     }
 
     pub fn hide(&mut self, i: usize) {
+        self.checkpoint();
         if let Some(h) = self.hidden.get_mut(i) {
             *h = true;
         }
@@ -396,6 +554,7 @@ impl Document {
 
     pub fn toggle_hidden(&mut self, i: usize) {
         if self.hidden.get(i).copied().unwrap_or(false) {
+            self.checkpoint();
             self.hidden[i] = false;
             self.update_visibility();
         } else {
@@ -404,12 +563,14 @@ impl Document {
     }
 
     pub fn show_all(&mut self) {
+        self.checkpoint();
         self.hidden.iter_mut().for_each(|h| *h = false);
         self.update_visibility();
     }
 
     /// Hide everything except `i`, its ancestors (so it stays reachable) and its subtree.
     pub fn isolate(&mut self, i: usize) {
+        self.checkpoint();
         let Some(s) = &self.scene else { return };
         let keep: HashSet<usize> = self.subtree(i).into_iter().collect();
         let mut anc = HashSet::new();
@@ -477,7 +638,9 @@ impl Document {
                     [0.0; 4]
                 };
                 let color = c.color.or(s.meshes[mi].color).map(|c| [c[0], c[1], c[2], 1.0]).unwrap_or([0.0; 4]);
-                let opacity = effective_opacity(&self.asm, i, &sel);
+                // material transparency (glass in IFC / glTF / VRML) multiplies the viewer opacity
+                let mat_alpha = c.color.or(s.meshes[mi].color).map(|c| c[3]).unwrap_or(1.0).clamp(0.05, 1.0);
+                let opacity = effective_opacity(&self.asm, i, &sel) * mat_alpha;
                 let center = self.acc[i].transform_point3(self.asm.center0[i]).to_array();
                 items.push(InstanceDesc { mesh: mi, model: self.display[i].to_cols_array(), tint, color, opacity, center });
             }
@@ -539,6 +702,7 @@ impl Document {
     }
 
     pub fn reset_position(&mut self, i: Option<usize>) {
+        self.checkpoint();
         match i {
             Some(i) => {
                 for k in self.subtree(i) {
@@ -551,6 +715,7 @@ impl Document {
     }
 
     pub fn set_opacity(&mut self, i: Option<usize>, v: f32) {
+        self.checkpoint_coalesced("opacity");
         let v = v.clamp(0.02, 1.0);
         match i {
             Some(i) => {

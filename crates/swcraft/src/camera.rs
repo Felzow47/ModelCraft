@@ -1,15 +1,14 @@
-//! Turntable orbit camera (Y-up, like SolidWorks).
+//! Orbit camera. The orientation is a quaternion, so the free (trackball) mode rotates without
+//! any limit or gimbal lock; the turntable mode keeps +Y vertical (optional setting).
 
-use glam::{Mat4, Vec2, Vec3};
+use glam::{Mat3, Mat4, Quat, Vec2, Vec3};
 
 #[derive(Clone, Debug)]
 pub struct Camera {
     pub target: Vec3,
     pub distance: f32,
-    /// Rotation around +Y (radians). 0 = looking from +Z (front).
-    pub yaw: f32,
-    /// Elevation (radians), clamped to [-90°, 90°].
-    pub pitch: f32,
+    /// Camera-to-world rotation: local +Z points from the target to the eye, +Y is screen up.
+    pub rot: Quat,
     pub fov_y: f32,
     pub ortho: bool,
     /// Scene radius, used for clip planes.
@@ -21,8 +20,7 @@ impl Default for Camera {
         let mut c = Camera {
             target: Vec3::ZERO,
             distance: 1.0,
-            yaw: 0.0,
-            pitch: 0.0,
+            rot: Quat::IDENTITY,
             fov_y: 30f32.to_radians(),
             ortho: false,
             radius: 1.0,
@@ -34,23 +32,31 @@ impl Default for Camera {
 
 impl Camera {
     pub fn set_iso(&mut self) {
-        self.yaw = 45f32.to_radians();
-        self.pitch = 35.264f32.to_radians();
+        self.rot = Self::orientation(45f32.to_radians(), 35.264f32.to_radians());
     }
     pub fn set_view(&mut self, yaw_deg: f32, pitch_deg: f32) {
-        self.yaw = yaw_deg.to_radians();
-        self.pitch = pitch_deg.to_radians();
+        self.rot = Self::orientation(yaw_deg.to_radians(), pitch_deg.to_radians());
+    }
+
+    /// Orientation looking at the target from azimuth `yaw` (around +Y, 0 = from +Z) and elevation
+    /// `pitch` (radians), with no roll. Exact at ±90° (top / bottom views).
+    pub fn orientation(yaw: f32, pitch: f32) -> Quat {
+        let f = Vec3::new(pitch.cos() * yaw.sin(), pitch.sin(), pitch.cos() * yaw.cos());
+        let u = Vec3::new(-pitch.sin() * yaw.sin(), pitch.cos(), -pitch.sin() * yaw.cos());
+        let r = u.cross(f).normalize();
+        let u = f.cross(r).normalize();
+        Quat::from_mat3(&Mat3::from_cols(r, u, f)).normalize()
     }
 
     pub fn forward_dir(&self) -> Vec3 {
         // direction from target to eye
-        Vec3::new(self.pitch.cos() * self.yaw.sin(), self.pitch.sin(), self.pitch.cos() * self.yaw.cos())
+        self.rot * Vec3::Z
     }
     pub fn up(&self) -> Vec3 {
-        Vec3::new(-self.pitch.sin() * self.yaw.sin(), self.pitch.cos(), -self.pitch.sin() * self.yaw.cos())
+        self.rot * Vec3::Y
     }
     pub fn right(&self) -> Vec3 {
-        self.up().cross(self.forward_dir()).normalize()
+        self.rot * Vec3::X
     }
     pub fn eye(&self) -> Vec3 {
         self.target + self.forward_dir() * self.distance
@@ -83,9 +89,35 @@ impl Camera {
         self.distance = r / half.sin() * 1.08;
     }
 
-    pub fn orbit(&mut self, delta: Vec2) {
-        self.yaw -= delta.x * 0.008;
-        self.pitch = (self.pitch + delta.y * 0.008).clamp(-89.9f32.to_radians(), 89.9f32.to_radians());
+    /// Rotate by a mouse delta in pixels. Free mode (default): trackball around the screen axes,
+    /// unlimited in every direction. Turntable: around world +Y and the screen horizontal axis,
+    /// stopping at the poles so +Y stays up.
+    pub fn orbit(&mut self, delta: Vec2, turntable: bool) {
+        const K: f32 = 0.008;
+        if turntable {
+            let q_yaw = Quat::from_axis_angle(Vec3::Y, -delta.x * K);
+            let f = self.forward_dir();
+            let pitch = f.y.clamp(-1.0, 1.0).asin();
+            let lim = 89.9f32.to_radians();
+            let dp = (pitch + delta.y * K).clamp(-lim, lim) - pitch;
+            let q_pitch = Quat::from_axis_angle(self.right(), -dp);
+            self.rot = (q_yaw * q_pitch * self.rot).normalize();
+            // remove any roll so the horizon stays level
+            let f = self.forward_dir();
+            let yaw = f.x.atan2(f.z);
+            let pitch = f.y.clamp(-1.0, 1.0).asin();
+            if pitch.abs() < lim + 1e-3 {
+                self.rot = Self::orientation(yaw, pitch);
+            }
+        } else {
+            let q = Quat::from_axis_angle(self.up(), -delta.x * K) * Quat::from_axis_angle(self.right(), -delta.y * K);
+            self.rot = (q * self.rot).normalize();
+        }
+    }
+
+    /// Roll around the viewing axis (degrees, positive = counter-clockwise on screen).
+    pub fn roll(&mut self, deg: f32) {
+        self.rot = (Quat::from_axis_angle(self.forward_dir(), deg.to_radians()) * self.rot).normalize();
     }
 
     /// Pan by a pixel delta, given the viewport height in pixels.
@@ -119,20 +151,74 @@ impl Camera {
         }
     }
 
-    /// Smoothly move towards another orientation (used by the view cube).
-    pub fn lerp_towards(&mut self, yaw: f32, pitch: f32, k: f32) {
-        let mut dy = (yaw - self.yaw) % std::f32::consts::TAU;
-        if dy > std::f32::consts::PI {
-            dy -= std::f32::consts::TAU;
-        } else if dy < -std::f32::consts::PI {
-            dy += std::f32::consts::TAU;
+    /// Smoothly move towards another orientation (view cube, standard views). Returns true once
+    /// the goal is reached (and snaps to it).
+    pub fn lerp_towards(&mut self, goal: Quat, k: f32) -> bool {
+        let goal = if self.rot.dot(goal) < 0.0 { -goal } else { goal };
+        if self.rot.angle_between(goal) < 1e-3 {
+            self.rot = goal;
+            return true;
         }
-        self.yaw += dy * k;
-        self.pitch += (pitch - self.pitch) * k;
+        self.rot = self.rot.slerp(goal, k).normalize();
+        false
     }
 
     /// Distance multiplier (dolly) without moving the target.
     pub fn dolly(&mut self, factor: f32) {
         self.distance = (self.distance * factor).clamp(self.radius * 1e-4, self.radius * 1e4);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn free_orbit_full_turn_any_axis() {
+        let mut c = Camera::default();
+        c.set_view(0.0, 0.0);
+        let f0 = c.forward_dir();
+        // vertical drag: 2*pi / 0.008 px goes over the top and back with no clamp
+        let steps = 200;
+        let px = std::f32::consts::TAU / 0.008 / steps as f32;
+        let mut max_y: f32 = 0.0;
+        for _ in 0..steps {
+            c.orbit(Vec2::new(0.0, px), false);
+            max_y = max_y.max(c.forward_dir().y);
+        }
+        assert!(max_y > 0.999, "went over the pole");
+        assert!((c.forward_dir() - f0).length() < 1e-2, "full vertical turn returns to start");
+        for _ in 0..steps {
+            c.orbit(Vec2::new(px, 0.0), false);
+        }
+        assert!((c.forward_dir() - f0).length() < 1e-2);
+    }
+
+    #[test]
+    fn standard_views_exact() {
+        let mut c = Camera::default();
+        c.set_view(0.0, 90.0);
+        assert!((c.forward_dir() - Vec3::Y).length() < 1e-5);
+        assert!((c.up() - Vec3::NEG_Z).length() < 1e-5);
+        c.set_view(90.0, 0.0);
+        assert!((c.forward_dir() - Vec3::X).length() < 1e-5);
+        assert!((c.up() - Vec3::Y).length() < 1e-5);
+        let g = Camera::orientation(0.0, -90f32.to_radians());
+        for _ in 0..200 {
+            if c.lerp_towards(g, 0.25) {
+                break;
+            }
+        }
+        assert!((c.forward_dir() - Vec3::NEG_Y).length() < 1e-4);
+    }
+
+    #[test]
+    fn turntable_keeps_y_up() {
+        let mut c = Camera::default();
+        for _ in 0..500 {
+            c.orbit(Vec2::new(13.0, 7.0), true);
+        }
+        assert!(c.forward_dir().y < 1.0 && c.up().y >= -1e-3);
+        assert!(c.right().y.abs() < 1e-4);
     }
 }

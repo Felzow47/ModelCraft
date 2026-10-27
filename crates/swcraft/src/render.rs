@@ -10,6 +10,8 @@ use sw_format::Scene;
 use wgpu::util::DeviceExt;
 
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+/// Texture shown by egui (raw sRGB bytes copied from the render target).
+const DISPLAY_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Uniform slots for the edge passes (thick edges are drawn several times, offset by pixels).
 const PASS_SLOTS: usize = 9;
@@ -53,6 +55,9 @@ struct Globals {
     light: [f32; 4],
     light2: [f32; 4],
     cap: [f32; 4],
+    eye: [f32; 4],
+    fwd: [f32; 4],
+    light3: [f32; 4],
 }
 
 /// Largest single GPU buffer we create. wgpu's default `max_buffer_size` is 256 MiB and many
@@ -276,16 +281,18 @@ pub struct Light {
     pub flat: bool,
     pub hemi: f32,
     pub shininess: f32,
+    /// Light from the viewer's position: no face seen head-on is ever dark.
+    pub head: f32,
 }
 
 impl Light {
     pub fn preset(p: crate::settings::Lighting) -> Light {
         use crate::settings::Lighting::*;
         match p {
-            Studio => Light { key: 0.85, fill: 0.30, ambient: 0.23, spec: 0.35, rim: 0.12, flat: false, hemi: 0.3, shininess: 48.0 },
-            Soft => Light { key: 0.55, fill: 0.35, ambient: 0.42, spec: 0.12, rim: 0.06, flat: false, hemi: 0.15, shininess: 24.0 },
-            Contrast => Light { key: 1.05, fill: 0.15, ambient: 0.12, spec: 0.55, rim: 0.2, flat: false, hemi: 0.45, shininess: 80.0 },
-            Flat => Light { key: 0.0, fill: 0.0, ambient: 1.0, spec: 0.0, rim: 0.0, flat: true, hemi: 0.0, shininess: 1.0 },
+            Studio => Light { key: 0.72, fill: 0.34, ambient: 0.36, spec: 0.30, rim: 0.10, flat: false, hemi: 0.22, shininess: 48.0, head: 0.24 },
+            Soft => Light { key: 0.50, fill: 0.38, ambient: 0.52, spec: 0.12, rim: 0.06, flat: false, hemi: 0.12, shininess: 24.0, head: 0.22 },
+            Contrast => Light { key: 1.0, fill: 0.20, ambient: 0.20, spec: 0.50, rim: 0.18, flat: false, hemi: 0.4, shininess: 80.0, head: 0.10 },
+            Flat => Light { key: 0.0, fill: 0.0, ambient: 1.0, spec: 0.0, rim: 0.0, flat: true, hemi: 0.0, shininess: 1.0, head: 0.0 },
         }
     }
 }
@@ -304,6 +311,9 @@ pub struct ViewSettings {
     /// Section plane (normal, offset) when active.
     pub section: Option<([f32; 3], f32)>,
     pub cap_color: [f32; 3],
+    /// Edges are drawn this far (world units) closer to the camera than the faces, so they
+    /// never sink into the surface at some angles.
+    pub edge_push: f32,
     /// Grid / bounding box lines (line list, world space).
     pub lines: Vec<LineVertex>,
 }
@@ -328,6 +338,10 @@ pub struct Target {
     msaa: Option<wgpu::TextureView>,
     pub resolve: wgpu::Texture,
     pub resolve_view: wgpu::TextureView,
+    /// Same pixels in a non-sRGB texture: egui samples textures as gamma-encoded values, so
+    /// handing it the sRGB texture directly would decode (darken) the image a second time.
+    pub display: wgpu::Texture,
+    pub display_view: wgpu::TextureView,
     depth: wgpu::TextureView,
 }
 
@@ -515,11 +529,14 @@ impl Renderer {
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
         );
         let depth = mk("depth", DEPTH_FORMAT, self.samples, wgpu::TextureUsages::RENDER_ATTACHMENT);
+        let display = mk("display", DISPLAY_FORMAT, 1, wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST);
         self.target = Some(Target {
             size,
             msaa,
             resolve_view: resolve.create_view(&Default::default()),
             resolve,
+            display_view: display.create_view(&Default::default()),
+            display,
             depth: depth.create_view(&Default::default()),
         });
         true
@@ -548,6 +565,16 @@ impl Renderer {
             light: [l.key, l.fill, l.ambient, l.spec],
             light2: [l.rim, if l.flat { 1.0 } else { 0.0 }, l.hemi, l.shininess],
             cap: [vs.cap_color[0], vs.cap_color[1], vs.cap_color[2], 1.0],
+            eye: {
+                let inv = vs.view.inverse();
+                let e = inv.w_axis;
+                [e.x, e.y, e.z, 0.0]
+            },
+            fwd: {
+                let b = vs.view.inverse().z_axis.truncate().normalize_or_zero();
+                [b.x, b.y, b.z, vs.edge_push]
+            },
+            light3: [l.head, 0.0, 0.0, 0.0],
         };
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&g));
         // pixel offsets for thick edges: a small disc of passes
@@ -674,6 +701,8 @@ impl Renderer {
                 rp.draw(0..vs.lines.len() as u32, 0..1);
             }
         }
+        // sRGB → same bytes in a plain RGBA texture (copies may differ only in sRGB-ness)
+        enc.copy_texture_to_texture(t.resolve.as_image_copy(), t.display.as_image_copy(), wgpu::Extent3d { width: t.size[0], height: t.size[1], depth_or_array_layers: 1 });
         queue.submit([enc.finish()]);
     }
 }

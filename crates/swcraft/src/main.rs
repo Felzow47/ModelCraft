@@ -1,4 +1,4 @@
-//! ModelCraft — the ultimate native 3D viewer (SolidWorks, STEP, IGES, STL, OBJ, 3DS, 3DXML).
+//! ModelCraft — the ultimate native 3D viewer (SolidWorks, STEP, IGES, IFC, FBX, glTF, STL, OBJ, 3MF, 3DS, 3DXML…).
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;

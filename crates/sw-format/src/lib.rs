@@ -11,6 +11,7 @@
 //! * [`Scene`]: everything a viewer needs, in one call.
 
 pub mod assembly;
+pub mod bodies;
 pub mod container;
 pub mod ctl;
 pub mod dl;
@@ -249,29 +250,99 @@ fn stem_of(path: &str) -> String {
     }
 }
 
-/// Locate a referenced component file on disk: original path, then the
-/// assembly's folder (and its parent) by file name (case-insensitive).
+/// Locate a referenced component file on disk (all comparisons case-insensitive):
+/// 1. the stored absolute path;
+/// 2. the stored path's trailing folders re-rooted at the assembly folder and its ancestors
+///    (a project tree that was moved or copied to another drive);
+/// 3. the assembly's folder and its parent, by file name;
+/// 4. the whole folder tree around the assembly (up to two levels above it, bounded walk),
+///    preferring the candidate whose folders best match the stored path.
 pub fn resolve_component_path(asm_dir: &Path, stored: &str, cache: &mut HashMap<PathBuf, Vec<PathBuf>>) -> Option<PathBuf> {
     let p = PathBuf::from(stored);
-    if cfg!(windows) && p.is_file() {
+    if (cfg!(windows) || !stored.contains('\\')) && p.is_file() {
         return Some(p);
     }
-    let fname = stored.rsplit(['\\', '/']).next()?.to_lowercase();
-    let mut dirs = vec![asm_dir.to_path_buf()];
-    if let Some(parent) = asm_dir.parent() {
-        dirs.push(parent.to_path_buf());
-    }
-    for d in dirs {
-        let list = cache.entry(d.clone()).or_insert_with(|| {
-            std::fs::read_dir(&d)
-                .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.is_file()).collect())
-                .unwrap_or_default()
-        });
-        if let Some(found) = list.iter().find(|q| q.file_name().is_some_and(|n| n.to_string_lossy().to_lowercase() == fname)) {
-            return Some(found.clone());
+    let parts: Vec<&str> = stored.split(['\\', '/']).filter(|s| !s.is_empty() && !s.ends_with(':')).collect();
+    let fname = parts.last()?.to_lowercase();
+    let ancestors: Vec<PathBuf> = asm_dir.ancestors().take(4).map(Path::to_path_buf).collect();
+    // 2. re-rooted tails, longest first (only folders inside the tail are tried, not the drive)
+    for k in (2..=parts.len().min(5)).rev() {
+        let tail = &parts[parts.len() - k..];
+        for root in &ancestors {
+            if let Some(f) = walk_ci(root, tail, cache) {
+                return Some(f);
+            }
         }
     }
-    None
+    // 3. same folder, parent
+    for d in ancestors.iter().take(2) {
+        if let Some(f) = dir_listing(d, cache).iter().find(|q| name_lc(q) == fname) {
+            return Some(f.clone());
+        }
+    }
+    // 4. the tree under the grandparent (or the highest ancestor available)
+    let root = ancestors.get(2).or(ancestors.last())?.clone();
+    let key = root.join("\0tree");
+    let index = cache.entry(key).or_insert_with(|| tree_index(&root));
+    let stored_dirs: Vec<String> = parts[..parts.len() - 1].iter().map(|s| s.to_lowercase()).collect();
+    index
+        .iter()
+        .filter(|q| name_lc(q) == fname)
+        .max_by_key(|q| {
+            // trailing folder names in common with the stored path, then shallower paths
+            let dirs: Vec<String> = q.parent().map(|d| d.components().map(|c| c.as_os_str().to_string_lossy().to_lowercase()).collect()).unwrap_or_default();
+            let common = dirs.iter().rev().zip(stored_dirs.iter().rev()).take_while(|(a, b)| a == b).count();
+            (common, usize::MAX - dirs.len())
+        })
+        .cloned()
+}
+
+fn name_lc(p: &Path) -> String {
+    p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default()
+}
+
+/// Entries (files and folders) of one folder, cached.
+fn dir_listing<'a>(d: &Path, cache: &'a mut HashMap<PathBuf, Vec<PathBuf>>) -> &'a Vec<PathBuf> {
+    cache.entry(d.to_path_buf()).or_insert_with(|| std::fs::read_dir(d).map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path()).collect()).unwrap_or_default())
+}
+
+/// Follow `tail` (folder names then the file name) from `root`, case-insensitively.
+fn walk_ci(root: &Path, tail: &[&str], cache: &mut HashMap<PathBuf, Vec<PathBuf>>) -> Option<PathBuf> {
+    let mut cur = root.to_path_buf();
+    for (i, seg) in tail.iter().enumerate() {
+        let lc = seg.to_lowercase();
+        let last = i + 1 == tail.len();
+        let next = dir_listing(&cur, cache).iter().find(|q| name_lc(q) == lc && if last { q.is_file() } else { q.is_dir() })?.clone();
+        cur = next;
+    }
+    Some(cur)
+}
+
+/// SolidWorks / 3D files below `root` (bounded: depth 6, 200 000 entries).
+fn tree_index(root: &Path) -> Vec<PathBuf> {
+    const EXTS: &[&str] = &["sldprt", "sldasm", "prt", "asm", "step", "stp", "igs", "iges", "x_t", "x_b"];
+    let mut out = Vec::new();
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    let mut seen = 0usize;
+    while let Some((d, depth)) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.filter_map(|e| e.ok()) {
+            seen += 1;
+            if seen > 200_000 {
+                return out;
+            }
+            let Ok(ft) = e.file_type() else { continue };
+            let p = e.path();
+            if ft.is_dir() {
+                if depth < 6 {
+                    stack.push((p, depth + 1));
+                }
+            } else if p.extension().is_some_and(|x| EXTS.contains(&x.to_string_lossy().to_lowercase().as_str())) {
+                out.push(p);
+            }
+        }
+    }
+    out
 }
 
 /// Load just the faces of a file's display list (used for external components).
@@ -615,4 +686,30 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
         timings,
         up_z: false,
     })
+}
+
+#[cfg(test)]
+mod resolve_tests {
+    #[test]
+    fn component_search_case_insensitive_tree() {
+        let root = std::env::temp_dir().join(format!("mc_res_{}", std::process::id()));
+        let asm = root.join("Projet").join("Assemblages");
+        let sub = root.join("Projet").join("Pièces").join("Visserie");
+        std::fs::create_dir_all(&asm).unwrap();
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("VIS M6.SLDPRT"), b"x").unwrap();
+        let want = sub.join("VIS M6.SLDPRT");
+        // moved project tree: the stored folders re-rooted next to the assembly
+        let mut c = std::collections::HashMap::new();
+        let r = super::resolve_component_path(&asm, r"D:\Old\Projet\pièces\visserie\vis m6.sldprt", &mut c);
+        assert_eq!(r.as_deref(), Some(want.as_path()));
+        // unrelated stored folders: found by the bounded tree walk
+        let mut c = std::collections::HashMap::new();
+        let r = super::resolve_component_path(&asm, r"C:\X\Y\Vis M6.sldprt", &mut c);
+        assert_eq!(r.as_deref(), Some(want.as_path()));
+        // absent file
+        let mut c = std::collections::HashMap::new();
+        assert!(super::resolve_component_path(&asm, r"C:\X\nope.sldprt", &mut c).is_none());
+        std::fs::remove_dir_all(&root).ok();
+    }
 }

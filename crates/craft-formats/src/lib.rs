@@ -20,6 +20,12 @@ pub mod tds;
 pub mod xml3d;
 #[cfg(feature = "occt")]
 pub mod occt;
+#[cfg(feature = "assimp")]
+pub mod assimp;
+#[cfg(feature = "ifc")]
+pub mod webifc;
+pub mod vrml;
+pub mod off;
 
 use std::path::Path;
 use std::time::Instant;
@@ -45,24 +51,44 @@ pub struct FormatInfo {
 
 pub fn formats() -> Vec<FormatInfo> {
     let step = if cfg!(feature = "occt") { Support::Full } else { Support::None };
+    let asm = if cfg!(feature = "assimp") { Support::Full } else { Support::None };
+    let ifc = if cfg!(any(feature = "ifc", feature = "assimp")) { Support::Full } else { Support::None };
+    let asm_partial = if cfg!(feature = "assimp") { Support::Partial } else { Support::None };
     vec![
         FormatInfo { exts: &["sldprt"], name: "SolidWorks pièce", support: Support::Full, note: "Géométrie d'affichage enregistrée par SolidWorks, couleurs comprises." },
         FormatInfo { exts: &["sldasm"], name: "SolidWorks assemblage", support: Support::Full, note: "Arbre et positions ; les pièces sont lues à côté de l'assemblage." },
         FormatInfo { exts: &["step", "stp"], name: "STEP AP203/AP214/AP242", support: step, note: "B-rep maillé par Open CASCADE, couleurs et assemblages." },
         FormatInfo { exts: &["iges", "igs"], name: "IGES", support: step, note: "Surfaces maillées par Open CASCADE." },
         FormatInfo { exts: &["stl"], name: "STL", support: Support::Full, note: "ASCII et binaire." },
-        FormatInfo { exts: &["obj"], name: "Wavefront OBJ", support: Support::Full, note: "Groupes et couleurs des matériaux (.mtl)." },
+        FormatInfo { exts: &["obj"], name: "Wavefront OBJ", support: Support::Full, note: "Groupes, couleurs et opacité des matériaux (.mtl), couleur moyenne des textures map_Kd ; les exports Blender sont lus en mètres." },
         FormatInfo { exts: &["3ds"], name: "3D Studio", support: Support::Full, note: "Objets, matrices et couleurs des matériaux." },
+        FormatInfo { exts: &["ifc", "ifczip"], name: "IFC (BIM)", support: ifc, note: "Export IFC de Revit, ArchiCAD, Tekla… (IFC2x3, IFC4, IFC4x3) : niveaux, éléments et couleurs." },
+        FormatInfo { exts: &["fbx"], name: "Autodesk FBX", support: asm, note: "Binaire et ASCII : arbre des objets et couleurs (sans animation)." },
+        FormatInfo { exts: &["gltf", "glb"], name: "glTF 2.0", support: asm, note: "glTF / GLB : nœuds, transformations et couleurs PBR." },
+        FormatInfo { exts: &["dae"], name: "COLLADA", support: asm, note: "Scène, unités et axe vertical du fichier." },
+        FormatInfo { exts: &["3mf"], name: "3MF", support: asm, note: "Format d'impression 3D (objets et couleurs), en millimètres." },
+        FormatInfo { exts: &["ply"], name: "PLY", support: asm, note: "ASCII et binaire (scans, impression 3D), lu en millimètres." },
+        FormatInfo { exts: &["off"], name: "OFF", support: Support::Full, note: "Object File Format, lu en millimètres." },
+        FormatInfo { exts: &["amf"], name: "AMF", support: asm, note: "Additive Manufacturing Format, en millimètres." },
+        FormatInfo { exts: &["wrl", "wrz", "vrml", "x3dv"], name: "VRML 97 / X3D classique", support: Support::Full, note: "Transformations, DEF/USE, couleurs, faces indexées et primitives (lecteur intégré)." },
+        FormatInfo { exts: &["x3d", "x3db"], name: "X3D (XML)", support: asm, note: "Scène X3D encodée en XML." },
+        FormatInfo { exts: &["usd", "usda", "usdc", "usdz"], name: "Universal Scene Description", support: asm, note: "USD / USDZ (lecteur tinyusdz), maillages et transformations." },
+        FormatInfo { exts: &["dxf"], name: "AutoCAD DXF", support: asm_partial, note: "Faces 3D et maillages uniquement (pas les dessins 2D ni les solides ACIS)." },
+        FormatInfo { exts: &["blend"], name: "Blender", support: asm_partial, note: "Anciens .blend (2.7x) seulement, via assimp. Blender 2.8 et plus : Fichier › Exporter › Wavefront (.obj, avec .mtl), glTF 2.0 ou FBX." },
+        FormatInfo { exts: &["x", "lwo", "lws", "ac", "ase", "ms3d", "cob", "smd", "md2", "md3", "md5mesh", "b3d", "nff", "xgl", "zgl", "ogex", "irrmesh", "irr"], name: "Autres formats 3D", support: asm_partial, note: "DirectX .x, LightWave, AC3D, ASE, MilkShape, Quake… (via assimp)." },
         FormatInfo { exts: &["3dxml"], name: "3D XML", support: Support::Partial, note: "Représentations maillées 3DXML (pas de B-rep CATIA)." },
         FormatInfo { exts: &["easm", "eprt"], name: "eDrawings", support: Support::Partial, note: "Aperçu et maillages lisibles uniquement." },
         FormatInfo { exts: &["rvt", "rfa", "rte", "rft"], name: "Autodesk Revit", support: Support::Partial, note: "Vignette et informations du projet (géométrie propriétaire non lisible)." },
         FormatInfo { exts: &["x_t", "x_b"], name: "Parasolid", support: Support::None, note: "Format B-rep propriétaire ; exportez en STEP depuis SolidWorks." },
+        FormatInfo { exts: &["dwg"], name: "AutoCAD DWG", support: Support::None, note: "Pas de lecteur libre compatible (LibreDWG est sous GPL) ; exportez en DXF, STEP ou IFC." },
+        FormatInfo { exts: &["skp"], name: "SketchUp", support: Support::None, note: "Le SDK SketchUp est propriétaire ; exportez en COLLADA (.dae), glTF ou STL." },
+        FormatInfo { exts: &["3dm"], name: "Rhino", support: Support::None, note: "Non pris en charge pour l'instant ; exportez en STEP, OBJ ou glTF." },
     ]
 }
 
 /// Every extension the viewer opens (lowercase, no dot).
 pub fn open_extensions() -> Vec<&'static str> {
-    formats().into_iter().filter(|f| f.support != Support::None || f.exts[0] == "x_t").flat_map(|f| f.exts.iter().copied()).collect()
+    formats().into_iter().filter(|f| f.support != Support::None || matches!(f.exts[0], "x_t" | "dwg" | "skp" | "3dm")).flat_map(|f| f.exts.iter().copied()).collect()
 }
 
 pub fn ext_of(path: &Path) -> String {
@@ -156,6 +182,19 @@ pub fn load_any(path: &Path, opts: &Options) -> Result<Scene, String> {
         "x_t" | "x_b" | "xmt_txt" => {
             return Err("Format Parasolid (.x_t) non supporté : aucun lecteur libre n'existe. Exportez le modèle en STEP depuis le logiciel d'origine.".into())
         }
+        #[cfg(feature = "ifc")]
+        "ifc" => webifc::load(path, &read(3.0)?, opts)?,
+        #[cfg(feature = "ifc")]
+        "ifczip" => webifc::load(path, &webifc::unzip_ifc(&read(1.0)?)?, opts)?,
+        "wrl" | "wrz" | "vrml" | "x3dv" => vrml::load(path, &read(6.0)?)?,
+        #[cfg(feature = "assimp")]
+        e if assimp::handles(e) => assimp::load(path, opts)?,
+        "off" => off::load(path, &read(6.0)?)?,
+        "dwg" => return Err("AutoCAD DWG non supporté : il n'existe pas de lecteur libre compatible avec une diffusion intégrée (LibreDWG est sous GPL). Exportez en DXF, STEP ou IFC depuis AutoCAD.".into()),
+        "skp" => return Err("SketchUp (.skp) non supporté : le SDK SketchUp est propriétaire. Exportez en COLLADA (.dae), glTF ou STL depuis SketchUp.".into()),
+        "3dm" => return Err("Rhino (.3dm) pas encore pris en charge. Exportez en STEP, OBJ ou glTF depuis Rhino.".into()),
+        #[cfg(not(feature = "assimp"))]
+        e if ["fbx", "gltf", "glb", "dae", "3mf", "ply", "amf", "x3d", "usd", "usdz", "dxf"].contains(&e) => return Err(format!("Format « .{e} » : cette version a été compilée sans assimp.")),
         _ => return Err(format!("Format « .{ext} » non supporté")),
     };
     opts.ctl().check().map_err(|e| e.to_string())?;

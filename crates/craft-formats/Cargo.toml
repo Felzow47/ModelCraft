@@ -9,6 +9,10 @@ license.workspace = true
 default = []
 # STEP / IGES through a small C++ shim over a static OpenCascade build (OCCT_DIR must point to it).
 occt = ["dep:cc"]
+# FBX, glTF, COLLADA, 3MF, PLY, IFC, X3D, USD… through a static assimp build (ASSIMP_DIR).
+assimp = ["dep:cc"]
+# IFC 2x3 / 4 / 4x3 through a static web-ifc build (WEBIFC_SRC / WEBIFC_BUILD).
+ifc = ["dep:cc"]
 
 [dependencies]
 sw-format = { path = "../sw-format" }
@@ -17,6 +21,7 @@ roxmltree = "0.20"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 flate2 = "1"
 cfb = "0.15"
+glam = "0.30"
 
 [build-dependencies]
 cc = { version = "1", optional = true }

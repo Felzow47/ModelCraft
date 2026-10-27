@@ -267,14 +267,17 @@ fn family(id: &str) -> &'static str {
         "file.open" | "file.home" | "file.close" | "file.reload" => "a",
         "file.reveal" | "file.copy_path" | "file.screenshot" => "b",
         "file.quit" => "c",
+        "edit.undo" | "edit.redo" => "u",
         "edit.hide" | "edit.isolate" | "edit.show_all" | "edit.deselect" => "a",
         "edit.copy_dims" => "b",
         "edit.settings" => "c",
-        "view.fit" => "a",
-        "view.iso" | "view.front" | "view.top" | "view.right" | "view.back" | "view.bottom" | "view.left" => "b",
+        "view.fit" | "view.frame_selected" => "a",
+        "view.iso" | "view.front" | "view.top" | "view.right" | "view.back" | "view.bottom" | "view.left" | "view.flip" => "b",
+        "view.orbit_left" | "view.orbit_right" | "view.orbit_up" | "view.orbit_down" => "o",
         "view.ortho" | "view.edges" | "view.bbox" | "view.section" | "view.grid" | "view.axes" | "view.viewcube" => "c",
+        "view.explode" => "e",
         "view.tree" | "view.info" | "view.theme" | "view.fullscreen" => "d",
-        "tool.select" | "tool.distance" | "tool.edge" | "tool.diameter" | "tool.angle" => "a",
+        "tool.select" | "tool.pan" | "tool.distance" | "tool.edge" | "tool.diameter" | "tool.angle" => "a",
         "tool.clear" => "b",
         "asm.move" | "asm.rotate" | "asm.reset_sel" | "asm.reset_all" => "c",
         "asm.explode" | "asm.explode_lines" => "d",
@@ -305,14 +308,16 @@ pub fn checked(app: &App, id: &str) -> Option<bool> {
         "view.viewcube" => s.show_viewcube,
         "view.tree" => s.show_tree,
         "view.info" => s.show_info,
-        "tool.select" => d.is_some_and(|d| d.measure.tool == Tool::Select),
+        "tool.select" => d.is_some_and(|d| d.measure.tool == Tool::Select && !d.pan_tool && !d.gizmo),
+        "tool.pan" => d.is_some_and(|d| d.pan_tool),
         "tool.distance" => d.is_some_and(|d| d.measure.tool == Tool::Distance),
         "tool.edge" => d.is_some_and(|d| d.measure.tool == Tool::Edge),
         "tool.diameter" => d.is_some_and(|d| d.measure.tool == Tool::Diameter),
         "tool.angle" => d.is_some_and(|d| d.measure.tool == Tool::Angle),
-        "asm.move" => d.is_some_and(|d| d.gizmo),
-        "asm.rotate" => d.is_some_and(|d| d.gizmo_rotate),
+        "asm.move" => d.is_some_and(|d| d.gizmo && !d.gizmo_rotate),
+        "asm.rotate" => d.is_some_and(|d| d.gizmo && d.gizmo_rotate),
         "asm.explode" => d.is_some_and(|d| d.asm.explode_goal > 0.0),
+        "view.explode" => d.is_some_and(|d| d.explode_panel),
         "asm.explode_lines" => d.is_some_and(|d| d.asm.explode_lines),
         "asm.transparent" => d.is_some_and(|d| d.selected.is_some_and(|i| d.asm.opacity.get(i).is_some_and(|o| *o < 0.999))),
         "asm.others" => d.is_some_and(|d| d.asm.others_transparent),
@@ -351,7 +356,7 @@ pub fn status_bar(app: &mut App, ui: &mut egui::Ui) {
                                     e = glam::vec3(e.x, e.z, e.y);
                                 }
                                 let st = &app.settings;
-                                ui.label(small(format!("{} × {} × {}", st.fmt_len_bare(e.x as f64), st.fmt_len_bare(e.y as f64), st.fmt_len(e.z as f64))));
+                                ui.label(small(st.fmt_dims(e.x as f64, e.y as f64, e.z as f64)));
                             }
                             if let Some(ms) = d.load_time {
                                 ui.label(small(trf("chargé en {t} s", &[("t", &format!("{ms:.2}"))])));
@@ -418,6 +423,29 @@ pub fn document_view(app: &mut App, ui: &mut egui::Ui, i: usize) {
         ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("viewport-rect"), r));
         let gfx = viewer::Gfx { rs: &app.rs, renderer: &mut app.renderer, tex: &mut app.tex };
         viewer::viewport(ui, &mut app.docs[i], &app.settings, gfx, &mut cmds);
+        // folded side panels: a button on the viewport edge brings each one back
+        let fold = |ui: &mut egui::Ui, pos: egui::Pos2, icon: &str, tip: String, id: &'static str, cmds: &mut viewer::Cmds| {
+            egui::Area::new(ui.id().with(("unfold", id))).fixed_pos(pos).order(egui::Order::Middle).show(ui.ctx(), |ui| {
+                egui::Frame::new()
+                    .fill(t.card.gamma_multiply(0.96))
+                    .stroke(Stroke::new(1.0, t.border))
+                    .corner_radius(CornerRadius::same(9))
+                    .inner_margin(egui::Margin::same(3))
+                    .show(ui, |ui| {
+                        if crate::icons::button(ui, icon, 26.0, false, &tip).clicked() {
+                            cmds.push(id);
+                        }
+                    });
+            });
+        };
+        if !app.settings.show_tree && has_tree {
+            let sc = crate::commands::shortcut_text(ui.ctx(), "view.tree");
+            fold(ui, r.left_top() + egui::vec2(10.0, 10.0), "panel-left-open", format!("{}  ({sc})", tr("Afficher l'arbre de création")), "view.tree", &mut cmds);
+        }
+        if !app.settings.show_info {
+            let sc = crate::commands::shortcut_text(ui.ctx(), "view.info");
+            fold(ui, r.right_top() + egui::vec2(-44.0, 10.0), "panel-right-open", format!("{}  ({sc})", tr("Afficher le panneau des propriétés")), "view.info", &mut cmds);
+        }
     });
     cmds.append(&mut app.cmds);
     app.cmds = cmds;
