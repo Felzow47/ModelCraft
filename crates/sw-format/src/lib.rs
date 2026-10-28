@@ -17,6 +17,7 @@ pub mod ctl;
 pub mod dl;
 pub mod mesh;
 pub mod meshdata;
+pub mod pointcloud;
 pub mod preview;
 
 pub use container::{Container, ContainerKind, StreamInfo};
@@ -551,6 +552,30 @@ fn build_meshdata_mesh(c: &Container, opts: &LoadOptions, warnings: &mut Vec<Str
     Ok(Some(m))
 }
 
+/// ScanTo3D point cloud (`ThirdPty/SWNGREStream`) shown as splats.
+fn build_point_cloud(c: &Container, opts: &LoadOptions, warnings: &mut Vec<String>) -> Result<Option<mesh::TriMesh>> {
+    let Some(info) = c.find(pointcloud::STREAM) else { return Ok(None) };
+    let ctl = &opts.ctl;
+    let d = c.read_info_ctl(info, ctl, (0.05, 0.6))?;
+    ctl.check()?;
+    ctl.report(0.65, "Nuage de points…");
+    let Some(cloud) = pointcloud::decode(&d) else { return Ok(None) };
+    drop(d);
+    // 9 vertices per splat; also keep the GPU load reasonable
+    let max_points = (vertex_budget() / 9).min(2_000_000);
+    let m = pointcloud::splats(&cloud, max_points);
+    let shown = m.triangle_count() / 3;
+    if shown < cloud.points.len() {
+        warnings.push(format!("Nuage de points : {} points, {} affichés (sous-échantillonné)", cloud.points.len(), shown));
+    } else {
+        warnings.push(format!("Nuage de points : {} points", cloud.points.len()));
+    }
+    if cloud.declared > cloud.points.len() {
+        warnings.push(format!("Nuage de points incomplet : {} points annoncés", cloud.declared));
+    }
+    Ok(Some(m))
+}
+
 /// Open a file and build a renderable scene.
 pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
     let ctl = &opts.ctl;
@@ -603,8 +628,22 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
             Err(e) => warnings.push(format!("Corps maillés illisibles ({e})")),
         }
     }
-    if from_meshdata {
-        // geometry found in MeshData: no "no mesh" warning
+    let mut from_cloud = false;
+    if blocks.is_empty() && kind == DocKind::Part {
+        let t = Instant::now();
+        match build_point_cloud(&c, opts, &mut warnings) {
+            Ok(Some(m)) => {
+                blocks.push((None, m));
+                from_cloud = true;
+                timings.decode += t.elapsed();
+            }
+            Ok(None) => {}
+            Err(Error::Cancelled) => return Err(Error::Cancelled),
+            Err(e) => warnings.push(format!("Nuage de points illisible ({e})")),
+        }
+    }
+    if from_meshdata || from_cloud {
+        // geometry found in MeshData / point cloud: no "no mesh" warning
     } else if !had_dl && warnings.is_empty() {
         warnings.push("Pas de flux DisplayLists (fichier enregistré sans données graphiques)".into());
     } else if had_dl && blocks.is_empty() && warnings.is_empty() {
