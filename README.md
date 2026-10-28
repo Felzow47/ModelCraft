@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # ModelCraft - la visionneuse 3D ultime (V4)
 
 <p align="center"><img src="screenshots/v2/logo.png" width="640" alt="Logo ModelCraft"></p>
@@ -351,3 +352,6 @@ moteur : `WGPU_BACKEND=dx12|vulkan|gl`.
 MIT pour le code de ModelCraft. Code d'interface adapté de PdfCraft (MIT/Apache-2.0),
 icônes Lucide (ISC), polices Inter et JetBrains Mono (OFL), OpenCascade (LGPL-2.1) :
 détails dans [`NOTICE.md`](NOTICE.md).
+=======
+# ModelCraft
+>>>>>>> 5acfdbd (Initial commit)
