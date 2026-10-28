@@ -10,7 +10,7 @@
 //! no 3D geometry is decoded. Streams are read individually from the file: the (often hundreds of
 //! megabytes) model partitions are never loaded.
 
-use crate::empty_scene;
+use crate::{empty_scene, rvt_model};
 use std::io::Read;
 use std::path::Path;
 use sw_format::{Rgba, Scene};
@@ -185,6 +185,11 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
                 }
             }
         }
+        if let Some((_, f)) = bfi.iter().find(|(k, _)| k == "Format") {
+            if f.len() == 4 && f.chars().all(|c| c.is_ascii_digit()) && !props.iter().any(|(k, _)| k == "Revit") {
+                props.push(("Revit".into(), f.clone()));
+            }
+        }
         for (k, v) in bfi {
             if let Some(l) = label(&k) {
                 if !v.is_empty() && !props.iter().any(|(pk, _)| pk == l) {
@@ -209,15 +214,99 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
     }
     let (np, sz) = names.iter().filter(|(n, _)| n.starts_with("Partitions/")).fold((0, 0u64), |a, (_, l)| (a.0 + 1, a.1 + l));
     props.push(("Données du modèle".into(), format!("{np} partition(s), {:.1} Mo (format Autodesk propriétaire)", sz as f64 / 1048576.0)));
+    ctl.check().map_err(|e| e.to_string())?;
+    ctl.report(0.7, "Éléments du modèle…");
+    let t0 = std::time::Instant::now();
+    let family = matches!(crate::ext_of(path).as_str(), "rfa" | "rft");
+    let boxes = element_boxes(&mut cf, &names, family);
+    s.timings.decode = t0.elapsed();
+    ctl.check().map_err(|e| e.to_string())?;
+    let n = match &boxes {
+        Ok(b) => build_boxes(&mut s, b, family),
+        Err(_) => 0,
+    };
+    if n > 0 {
+        props.push(("Éléments 3D".into(), format!("{n} (boîtes englobantes)")));
+        s.warnings.push(
+            "Revit : chaque élément est affiché par sa boîte englobante, colorée par catégorie (pas encore sa forme exacte). Pour la géométrie complète : dans Revit, Fichier › Exporter › IFC, puis ouvrez le .ifc dans ModelCraft."
+                .into(),
+        );
+    } else {
+        let why = match &boxes {
+            Err(e) => e.clone(),
+            Ok(_) => "aucun élément placé avec une boîte".into(),
+        };
+        s.warnings.push(format!(
+            "Géométrie Revit non lue ({why}) : seuls l'aperçu et les informations du projet sont affichés. Pour la 3D : dans Revit, Fichier › Exporter › IFC, puis ouvrez le fichier .ifc obtenu dans ModelCraft."
+        ));
+    }
     s.properties = props;
-    s.warnings.push(
-        "Géométrie Revit non décodée (base d'objets Autodesk propriétaire et compressée, sans maillage enregistré) : seuls l'aperçu et les informations du projet sont affichés. Pour la 3D : dans Revit, Fichier › Exporter › IFC, puis ouvrez le fichier .ifc obtenu dans ModelCraft (niveaux, éléments et couleurs)."
-            .into(),
-    );
-    if s.preview.is_none() {
+    if s.preview.is_none() && n == 0 {
         s.warnings.push("Aucune vignette enregistrée dans ce fichier Revit".into());
     }
     Ok(s)
+}
+
+/// Stored size above which a partition is not read (memory bound).
+const MAX_PARTITION: u64 = 2 << 30;
+/// Most boxes drawn.
+const MAX_BOXES: usize = 400_000;
+
+/// The placed elements' boxes of every partition (see `rvt_model`).
+pub fn element_boxes<F: Read + std::io::Seek>(cf: &mut cfb::CompoundFile<F>, names: &[(String, u64)], family: bool) -> Result<Vec<rvt_model::ElemBox>, String> {
+    let schema = rvt_model::read_stream(cf, "/Formats/Latest", 64 << 20, 64 << 20, |_| true).ok_or("schéma illisible")?;
+    if schema.verified == 0 {
+        return Err("schéma illisible".into());
+    }
+    let outline = rvt_model::schema_inline_tag(&schema.data, "Outline").ok_or("format antérieur à Revit 2024 ou inconnu")?;
+    drop(schema);
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut any_chain = false;
+    for (n, _) in names.iter().filter(|(n, _)| n.starts_with("Partitions/")) {
+        let Some(inf) = rvt_model::read_stream(cf, &format!("/{n}"), MAX_PARTITION, rvt_model::MAX_INFLATED, rvt_model::until_chain_end()) else { continue };
+        let chain = rvt_model::walk_chain(&inf.data);
+        if chain.records.is_empty() {
+            continue;
+        }
+        any_chain = true;
+        for b in rvt_model::scan_boxes(&inf.data, &chain, outline, MAX_BOXES).boxes {
+            if rvt_model::category_in(b.category, family).is_some() && (!family || b.category != -1 || (0..3).all(|a| b.max[a] - b.min[a] > 1e-3)) && seen.insert((b.category, b.min.map(f64::to_bits), b.max.map(f64::to_bits))) {
+                out.push(b);
+            }
+        }
+    }
+    if !any_chain {
+        return Err("enregistrements d'éléments non reconnus".into());
+    }
+    Ok(out)
+}
+
+/// One mesh and one component per category; returns the number of boxes.
+fn build_boxes(s: &mut Scene, boxes: &[rvt_model::ElemBox], family: bool) -> usize {
+    let t = std::time::Instant::now();
+    let mut by: std::collections::BTreeMap<&'static str, (Vec<[f32; 3]>, Vec<[u32; 3]>, [f32; 4], usize)> = Default::default();
+    for b in boxes {
+        let Some((name, color)) = rvt_model::category_in(b.category, family) else { continue };
+        let e = by.entry(name).or_insert_with(|| (Vec::new(), Vec::new(), color, 0));
+        rvt_model::push_box(b, &mut e.0, &mut e.1);
+        e.3 += 1;
+    }
+    let mut n = 0;
+    let root = s.components.len();
+    s.components.push(crate::component(&crate::stem(&s.path), 0, None, true, None));
+    for (name, (pos, tri, color, count)) in by {
+        let mesh = sw_format::mesh::build_from_triangles(&pos, &tri, 30.0, true);
+        s.meshes.push(sw_format::SceneMesh { name: name.to_string(), mesh, source: sw_format::MeshSource::Embedded, color: Some(color) });
+        s.components.push(crate::component(&format!("{name} ({count})"), 1, Some(root), false, Some(s.meshes.len() - 1)));
+        n += count;
+    }
+    if n == 0 {
+        s.components.truncate(root);
+    }
+    s.timings.mesh = t.elapsed();
+    s.up_z = true;
+    n
 }
 
 #[cfg(test)]
@@ -241,6 +330,39 @@ mod tests {
         assert!(kv.contains(&("Titre".into(), "Projet".into())));
         assert!(kv.contains(&("Version du produit".into(), "2018".into())));
         assert!(kv.contains(&("Nom du bâtiment".into(), "B-42".into())));
+    }
+
+    /// Autodesk's sample files (not in the repository): RVT_SAMPLES=/folder, default
+    /// /workspace/rvt-samples; skipped when absent.
+    #[test]
+    fn sample_boxes() {
+        let dir = std::env::var_os("RVT_SAMPLES").map(std::path::PathBuf::from).unwrap_or_else(|| "/workspace/rvt-samples".into());
+        let get = |n: &str| {
+            let p = dir.join(n);
+            p.exists().then(|| load(&p, &crate::Options::default()).expect(n))
+        };
+        let count = |s: &Scene| s.meshes.iter().map(|m| m.mesh.triangle_count() / 12).sum::<usize>();
+        if let Some(s) = get("DynamoSample_2025.rvt") {
+            let n = count(&s);
+            eprintln!("DynamoSample_2025: {n} boxes, {:?}", s.components.iter().map(|c| c.name.clone()).collect::<Vec<_>>());
+            assert!(n > 100, "{n}");
+            assert!(s.components.iter().any(|c| c.name.starts_with("Murs")));
+            // a building a few tens of metres wide
+            let (lo, hi) = s.meshes.iter().fold(([f32::MAX; 3], [f32::MIN; 3]), |(l, h), m| {
+                (std::array::from_fn(|i| l[i].min(m.mesh.bbox_min[i])), std::array::from_fn(|i| h[i].max(m.mesh.bbox_max[i])))
+            });
+            assert!((0..3).all(|i| hi[i] - lo[i] < 200.0), "{lo:?} {hi:?}");
+        }
+        if let Some(s) = get("M_Chair-Desk.rfa") {
+            eprintln!("M_Chair-Desk: {} boxes", count(&s));
+            assert!(count(&s) >= 3);
+            assert!(s.properties.iter().any(|(k, _)| k == "Revit"));
+        }
+        if let Some(s) = get("BatchPrintInitial.rvt") {
+            eprintln!("BatchPrintInitial: {} boxes", count(&s));
+            assert_eq!(count(&s), 0);
+            assert!(!s.warnings.is_empty());
+        }
     }
 
     /// Real files: SW_SAMPLES3=/folder with .rvt files (skipped if absent).

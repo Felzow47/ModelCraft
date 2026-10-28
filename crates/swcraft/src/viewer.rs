@@ -2132,6 +2132,7 @@ fn prop_label(k: &str) -> String {
         "Version du produit" => tr("Version du produit").into(),
         "Catégorie" => tr("Catégorie").into(),
         "Données du modèle" => tr("Données du modèle").into(),
+        "Éléments 3D" => tr("Éléments 3D").into(),
         _ => k.to_string(),
     }
 }
