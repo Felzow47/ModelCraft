@@ -211,3 +211,26 @@ ElementId autres que les phases ; relations de filtre autres qu'égal/différent
   (valeurs stables entre versions). Toutes les catégories d'étiquettes, têtes, symboles, repères,
   titres de vue et conditions d'appui sont rangées sous « Symboles d'annotation ». Sur le parc local,
   il ne reste plus de catégorie inconnue parmi celles relevées.
+
+### V6.2 : vue de démarrage et ouverture des vues
+
+- Vue de démarrage (Revit « Gérer > Vue de démarrage », API `StartingViewSettings`) : classe
+  `InitialViewSettings : Element`, un seul champ `m_initialViewId` (ElementId de la vue ou de la
+  feuille). Hypothèse « StartingView » écartée : aucune classe de ce nom dans `/Formats/Latest`
+  (3981 classes, Revit 2018 à 2025). L'élément est dans une partition, lu par le même balayage que
+  les vues. Absent ou -1 quand le projet n'a pas de vue de démarrage (Revit rouvre alors la
+  dernière vue active, non lue).
+- Vérifié sur 4 modèles du parc (noms non notés, NDA) : chacun ouvre sur une feuille, à la même
+  place dans le navigateur que dans Revit (capture de l'utilisateur), sous une organisation de
+  feuilles avec plusieurs niveaux de dossiers.
+- `BrowserNode` porte maintenant `id` (ElementId de la vue, -1 sinon) et `start`.
+- ModelCraft ouvre le fichier sur cette vue : ligne sélectionnée, dossiers parents dépliés, liste
+  défilée jusqu'à elle. Clic sur une vue ou une feuille du navigateur = l'ouvrir : plans (et plans
+  de plafond) vus de dessus, coupes / élévations / détails de face, en orthographique ; vues 3D
+  en isométrique ; feuilles, vues de dessin, légendes et nomenclatures affichées à plat (feuille
+  blanche avec l'aperçu `RevitPreview4.0` quand il existe, qui est souvent la feuille active au
+  dernier enregistrement). Pastille « Vue : … » dans la vue 3D, croix pour revenir à toute la
+  maquette.
+- Pas encore fait : contenu 2D des feuilles (lignes du cartouche, fenêtres, textes), cadrage
+  sur la zone de la vue (zone cadrée, plage de vue), filtrage des éléments par vue, orientation
+  réelle des coupes / élévations et des vues 3D enregistrées.

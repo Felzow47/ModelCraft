@@ -134,6 +134,12 @@ impl Schema {
     pub fn tags_list(&self) -> Vec<u16> {
         self.classes.keys().copied().collect()
     }
+    /// Classes whose name contains `sub`: (tag, name, parent name, own field names).
+    pub fn find(&self, sub: &str) -> Vec<(u16, String, String, Vec<String>)> {
+        let mut v: Vec<_> = self.classes.iter().filter(|(_, c)| c.name.contains(sub)).map(|(t, c)| (*t, c.name.clone(), self.name(c.parent).to_string(), c.fields.iter().map(|f| f.0.clone()).collect())).collect();
+        v.sort();
+        v
+    }
     pub fn name(&self, tag: u16) -> &str {
         self.classes.get(&tag).map(|c| c.name.as_str()).unwrap_or("")
     }
@@ -569,6 +575,9 @@ pub struct Model {
     pub orgs: HashMap<i64, Org>,
     /// Current organization for views, sheets, schedules.
     pub current: [Option<i64>; 3],
+    /// Starting view (`InitialViewSettings.m_initialViewId`, "Vue de démarrage"); `None` when
+    /// the project has none (Revit then reopens the last active views).
+    pub initial_view: Option<i64>,
 }
 
 impl Model {
@@ -632,6 +641,10 @@ impl Model {
                     .collect();
                 let folders = list(&e.f, "m_folderDefinitions").iter().map(|f| (int(f, "m_paramId").unwrap_or(-1), int(f, "m_numCharsToUse").unwrap_or(0).max(0) as usize)).collect();
                 self.orgs.insert(e.id, Org { id: e.id, name, kind: int(&e.f, "m_type").unwrap_or(-1), default: int(&e.f, "m_bDefault") == Some(1), filters, folders, sort_asc: int(&e.f, "m_bSortOrderAsc") != Some(0) });
+            } else if cls == "InitialViewSettings" {
+                if let Some(v) = int(&e.f, "m_initialViewId").filter(|&v| v > 0) {
+                    self.initial_view = Some(v);
+                }
             } else if cls == "ProjectPhase" {
                 self.phases.insert(e.id, text(&e.f, "m_name").unwrap_or_default());
             } else if s.isa(e.tag, "DBView") {
@@ -712,7 +725,7 @@ pub fn read_model<F: Read + std::io::Seek>(cf: &mut cfb::CompoundFile<F>, names:
     drop(fmt);
     let mut want = vec![false; 65536];
     for &t in schema.classes.keys() {
-        if ["DBView", "DBViewType", "BrowserOrganization", "ProjectPhase", "RvtLinkSymbol", "RvtLinkInstance", "FamilySurrogate", "FamSymSurrogate", "Family", "ElementGroupType"].iter().any(|b| schema.isa(t, b)) {
+        if ["DBView", "DBViewType", "BrowserOrganization", "ProjectPhase", "RvtLinkSymbol", "RvtLinkInstance", "FamilySurrogate", "FamSymSurrogate", "Family", "ElementGroupType", "InitialViewSettings"].iter().any(|b| schema.isa(t, b)) {
             want[t as usize] = true;
         }
     }
@@ -1056,7 +1069,7 @@ impl Node {
         }
     }
     fn flatten(&self, depth: u16, out: &mut Vec<BrowserNode>) {
-        out.push(BrowserNode { label: self.label.clone(), depth, kind: self.kind.unwrap_or(K::Other) });
+        out.push(BrowserNode { label: self.label.clone(), depth, kind: self.kind.unwrap_or(K::Other), id: if self.id > 0 { self.id } else { -1 }, start: false });
         // Revit lists the sub-folders before the views of a folder
         for c in self.folders.iter().chain(self.leaves.iter()) {
             c.flatten(depth + 1, out);
@@ -1245,6 +1258,12 @@ pub fn build(m: &Model) -> Vec<BrowserNode> {
     families(m, &mut out);
     groups(m, &mut out);
     links(m, &mut out);
+    // the starting view ("Vue de démarrage"): Revit opens the project on it
+    if let Some(sv) = m.initial_view {
+        for r in out.iter_mut().filter(|r| r.id == sv) {
+            r.start = true;
+        }
+    }
     out
 }
 
@@ -1356,20 +1375,20 @@ fn families(m: &Model, out: &mut Vec<BrowserNode>) {
     if cats.is_empty() {
         return;
     }
-    out.push(BrowserNode { label: "Familles".into(), depth: 0, kind: K::Families });
+    out.push(BrowserNode { label: "Familles".into(), depth: 0, kind: K::Families, id: -1, start: false });
     for (_, (label, mut fams)) in cats {
-        out.push(BrowserNode { label: label.into(), depth: 1, kind: K::Folder });
+        out.push(BrowserNode { label: label.into(), depth: 1, kind: K::Folder, id: -1, start: false });
         fams.sort_by_key(|f| sort_key(&f.name));
         // the same family can have several surrogates: one row, types merged
         fams.dedup_by(|a, b| a.name == b.name);
         for f in fams {
-            out.push(BrowserNode { label: f.name.clone(), depth: 2, kind: K::Family });
+            out.push(BrowserNode { label: f.name.clone(), depth: 2, kind: K::Family, id: -1, start: false });
             let ids: Vec<i64> = m.families.iter().filter(|g| g.name == f.name && category_label(g.category) == label).map(|g| g.surrogate).collect();
             let mut types: Vec<&str> = m.family_types.iter().filter(|(s, n)| ids.contains(s) && !n.is_empty()).map(|(_, n)| n.as_str()).collect();
             types.sort_by_key(|n| sort_key(n));
             types.dedup();
             for t in types {
-                out.push(BrowserNode { label: t.into(), depth: 3, kind: K::FamilyType });
+                out.push(BrowserNode { label: t.into(), depth: 3, kind: K::FamilyType, id: -1, start: false });
             }
         }
     }
@@ -1386,16 +1405,16 @@ fn groups(m: &Model, out: &mut Vec<BrowserNode>) {
         return;
     }
     let named: Vec<&Group> = m.groups.iter().filter(|g| !g.name.is_empty()).collect();
-    out.push(BrowserNode { label: "Groupes".into(), depth: 0, kind: K::Groups });
-    out.push(BrowserNode { label: "Détail".into(), depth: 1, kind: K::Folder });
+    out.push(BrowserNode { label: "Groupes".into(), depth: 0, kind: K::Groups, id: -1, start: false });
+    out.push(BrowserNode { label: "Détail".into(), depth: 1, kind: K::Folder, id: -1, start: false });
     for g in sorted_groups(named.iter().copied().filter(|g| g.detail && !named.iter().any(|p| p.id == g.attached_to)).collect()) {
-        out.push(BrowserNode { label: g.name.clone(), depth: 2, kind: K::Group });
+        out.push(BrowserNode { label: g.name.clone(), depth: 2, kind: K::Group, id: -1, start: false });
     }
-    out.push(BrowserNode { label: "Modèle".into(), depth: 1, kind: K::Folder });
+    out.push(BrowserNode { label: "Modèle".into(), depth: 1, kind: K::Folder, id: -1, start: false });
     for g in sorted_groups(named.iter().copied().filter(|g| !g.detail).collect()) {
-        out.push(BrowserNode { label: g.name.clone(), depth: 2, kind: K::Group });
+        out.push(BrowserNode { label: g.name.clone(), depth: 2, kind: K::Group, id: -1, start: false });
         for a in sorted_groups(named.iter().copied().filter(|a| a.attached_to == g.id).collect()) {
-            out.push(BrowserNode { label: a.name.clone(), depth: 3, kind: K::Group });
+            out.push(BrowserNode { label: a.name.clone(), depth: 3, kind: K::Group, id: -1, start: false });
         }
     }
 }
@@ -1412,14 +1431,14 @@ fn links(m: &Model, out: &mut Vec<BrowserNode>) {
         return;
     }
     items.sort_by_key(|(n, _)| sort_key(n));
-    out.push(BrowserNode { label: "Liens Revit".into(), depth: 0, kind: K::Links });
+    out.push(BrowserNode { label: "Liens Revit".into(), depth: 0, kind: K::Links, id: -1, start: false });
     for (name, l) in items {
         let loaded = l.state.is_empty() || l.state.eq_ignore_ascii_case("Loaded");
-        out.push(BrowserNode { label: name.clone(), depth: 1, kind: if loaded { K::Link } else { K::LinkUnloaded } });
+        out.push(BrowserNode { label: name.clone(), depth: 1, kind: if loaded { K::Link } else { K::LinkUnloaded }, id: -1, start: false });
         let mut inst: Vec<String> = l.instances.iter().map(|i| if i.trim().is_empty() { name.clone() } else { format!("{name} : {i}") }).collect();
         inst.sort_by_key(|n| sort_key(n));
         for i in inst {
-            out.push(BrowserNode { label: i, depth: 2, kind: K::LinkInstance });
+            out.push(BrowserNode { label: i, depth: 2, kind: K::LinkInstance, id: -1, start: false });
         }
     }
 }

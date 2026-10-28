@@ -219,6 +219,10 @@ pub struct BrowserNode {
     pub label: String,
     pub depth: u16,
     pub kind: BrowserKind,
+    /// Element id of the view or sheet the row stands for, -1 for folders and other rows.
+    pub id: i64,
+    /// The project's starting view (Revit "Vue de démarrage"): the file opens on it.
+    pub start: bool,
 }
 
 impl Scene {

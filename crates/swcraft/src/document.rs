@@ -142,6 +142,12 @@ pub struct Document {
     /// Open rows of the document browser.
     pub browser_open: HashSet<usize>,
     pub browser_sel: Option<usize>,
+    /// Active Revit view or sheet (browser row), as when it is opened in Revit; `None` = the
+    /// whole model in 3D.
+    pub view_ctx: Option<usize>,
+    /// Scroll the browser to the selected row for this many frames (the list height is only
+    /// known after its first frame).
+    pub browser_reveal: u8,
     pub load_time: Option<f64>,
     /// Set to stop the loader thread.
     pub cancel: Arc<std::sync::atomic::AtomicBool>,
@@ -293,6 +299,8 @@ impl Document {
             show_browser: false,
             browser_open: HashSet::new(),
             browser_sel: None,
+            view_ctx: None,
+            browser_reveal: 0,
             load_time: None,
             reveal_in_tree: false,
             gizmo: false,
@@ -396,8 +404,78 @@ impl Document {
                 return;
             }
         }
+        let start = scene.browser.iter().position(|r| r.start);
         self.scene = Some(scene);
         self.update_visibility();
+        self.needs_fit = true;
+        // Revit opens a project on its starting view ("Vue de démarrage"): same here
+        if let Some(i) = start {
+            self.activate_view(i, false);
+        }
+    }
+
+    /// 2D-only browser rows (sheets, drafting views, legends, schedules): no 3D camera.
+    pub fn view_is_flat(&self, row: usize) -> bool {
+        use sw_format::BrowserKind as K;
+        self.scene.as_ref().and_then(|s| s.browser.get(row)).is_some_and(|r| matches!(r.kind, K::Sheet | K::Drafting | K::Legend | K::Schedule))
+    }
+
+    /// Can this browser row be opened like a Revit view (double-click in Revit)?
+    pub fn view_openable(&self, row: usize) -> bool {
+        use sw_format::BrowserKind as K;
+        self.scene.as_ref().and_then(|s| s.browser.get(row)).is_some_and(|r| {
+            r.id > 0 && matches!(r.kind, K::Plan | K::CeilingPlan | K::View3d | K::Section | K::Elevation | K::Detail | K::Drafting | K::Rendering | K::Legend | K::Schedule | K::Sheet)
+        })
+    }
+
+    /// Opens a view or sheet of the project browser: selects and reveals its row, then puts
+    /// the viewer in that view's context (plans from above, sections and elevations from the
+    /// front, both orthographic; 3D views in 3D; sheets and other 2D views on their sheet).
+    pub fn activate_view(&mut self, row: usize, animate: bool) {
+        use sw_format::BrowserKind as K;
+        let Some(b) = self.scene.as_ref().map(|s| &s.browser) else { return };
+        let Some(r) = b.get(row) else { return };
+        let kind = r.kind;
+        // unfold the parents
+        let mut d = r.depth;
+        let mut parents = Vec::new();
+        for j in (0..row).rev() {
+            if b[j].depth < d {
+                parents.push(j);
+                d = b[j].depth;
+                if d == 0 {
+                    break;
+                }
+            }
+        }
+        self.browser_open.extend(parents);
+        self.browser_sel = Some(row);
+        self.view_ctx = Some(row);
+        self.show_browser = true;
+        self.browser_reveal = if animate { 0 } else { 4 };
+        let goal = match kind {
+            K::Plan | K::CeilingPlan => Some(((0.0f32, 90.0f32), true)),
+            K::Section | K::Elevation | K::Detail => Some(((0.0, 0.0), true)),
+            K::View3d | K::Rendering => Some(((45.0, 35.264), false)),
+            _ => None,
+        };
+        if let Some(((y, p), ortho)) = goal {
+            if ortho {
+                self.camera.ortho = true;
+            }
+            if animate {
+                self.cam_goal = Some((y.to_radians(), p.to_radians()));
+            } else {
+                self.camera.set_view(y, p);
+            }
+            self.needs_fit = true;
+        }
+    }
+
+    /// Back to the whole model in 3D.
+    pub fn leave_view(&mut self) {
+        self.view_ctx = None;
+        self.cam_goal = Some((45f32.to_radians(), 35.264f32.to_radians()));
         self.needs_fit = true;
     }
 

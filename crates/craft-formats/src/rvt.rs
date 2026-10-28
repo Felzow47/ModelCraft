@@ -450,6 +450,10 @@ mod tests {
             let s = load(&p, &crate::Options::default()).expect("rvt");
             assert!(s.properties.iter().any(|(k, _)| k == "Revit"), "{}", p.display());
             assert!(s.properties.iter().any(|(k, _)| k == "Titre"), "{}", p.display());
+            // at most one starting view, always a view or sheet row
+            let starts: Vec<_> = s.browser.iter().filter(|r| r.start).collect();
+            assert!(starts.len() <= 1, "{}", p.display());
+            assert!(starts.iter().all(|r| r.id > 0), "{}", p.display());
         }
     }
 }

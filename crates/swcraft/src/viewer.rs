@@ -366,12 +366,21 @@ fn browser_panel(ui: &mut egui::Ui, doc: &mut Document, full: bool) {
     let row_h = 24.0;
     let mut toggle = None;
     let mut select = None;
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, row_h, rows.len(), |ui, range| {
+    let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]);
+    if doc.browser_reveal > 0 {
+        doc.browser_reveal -= 1;
+        // a view opened on load (starting view): bring its row into sight, a few rows below the top
+        if let Some(k) = doc.browser_sel.and_then(|s| rows.iter().position(|&r| r == s)) {
+            area = area.vertical_scroll_offset(((k as f32 - 4.0) * row_h).max(0.0));
+        }
+    }
+    area.show_rows(ui, row_h, rows.len(), |ui, range| {
         for &i in &rows[range] {
             let r = &b[i];
             let depth = if filter.is_empty() { r.depth } else { 0 };
             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
             let selected = doc.browser_sel == Some(i);
+            let active = doc.view_ctx == Some(i);
             let press = theme::Press::track(ui, &resp);
             if selected {
                 ui.painter().rect_filled(rect, CornerRadius::same(6), t.accent_soft);
@@ -387,11 +396,13 @@ fn browser_panel(ui: &mut egui::Ui, doc: &mut Document, full: bool) {
             }
             let col = if r.kind == sw_format::BrowserKind::LinkUnloaded { Color32::from_rgb(0xe5, 0x48, 0x4d) } else if selected { t.accent_text } else if r.depth == 0 { t.text } else { t.icon };
             icons::paint(ui, Rect::from_center_size(egui::pos2(x0 + 25.0, rect.center().y), vec2(16.0, 16.0)), browser_icon(r.kind, open && kids), 15.0, col);
-            let font = if r.depth == 0 || selected { theme::medium(13.0) } else { theme::regular(13.0) };
+            let font = if r.depth == 0 || selected || active { theme::semibold(13.0) } else { theme::regular(13.0) };
             let label = browser_label(&r.label, r.kind);
             widgets::row_text(ui, egui::pos2(x0 + 38.0, rect.center().y), label.clone(), font, t.text, rect.right() - x0 - 44.0);
             let resp = if r.kind == sw_format::BrowserKind::LinkUnloaded {
                 resp.on_hover_text(format!("{label}\n{}", tr("Non chargé lors du dernier enregistrement (déchargé ou introuvable)")))
+            } else if r.start {
+                resp.on_hover_text(format!("{label}\n{}", tr("Vue de démarrage du projet (Revit s'ouvre sur cette vue)")))
             } else if label.chars().count() > 26 {
                 resp.on_hover_text(&label)
             } else {
@@ -416,9 +427,6 @@ fn browser_panel(ui: &mut egui::Ui, doc: &mut Document, full: bool) {
             });
         }
     });
-    if let Some(i) = select {
-        doc.browser_sel = Some(i);
-    }
     match toggle {
         Some(k) if k > b.len() => {
             // unfold the whole subtree
@@ -438,6 +446,13 @@ fn browser_panel(ui: &mut egui::Ui, doc: &mut Document, full: bool) {
             }
         }
         None => {}
+    }
+    if let Some(i) = select {
+        if doc.view_openable(i) {
+            doc.activate_view(i, true);
+        } else {
+            doc.browser_sel = Some(i);
+        }
     }
 }
 
@@ -531,6 +546,11 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
     let aspect = px[0] as f32 / px[1] as f32;
     let resp = ui.allocate_rect(rect, Sense::click_and_drag());
 
+    if let Some(row) = doc.view_ctx.filter(|&r| doc.view_is_flat(r)) {
+        sheet_view(ui, doc, rect, row);
+        loading_overlay(ui, doc, rect, cmds);
+        return;
+    }
     let geometry = doc.scene.as_ref().is_some_and(|s| s.has_geometry());
     if !geometry {
         empty_or_preview(ui, doc, rect);
@@ -807,6 +827,21 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
     }
     if doc.measure.tool != Tool::Select && resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+    }
+
+    // ---- active Revit view (opened from the project browser)
+    if let Some(r) = doc.view_ctx.and_then(|i| doc.scene.as_ref().and_then(|s| s.browser.get(i))).cloned() {
+        let label = browser_label(&r.label, r.kind);
+        let g = ui.painter().layout_no_wrap(format!("{} : {label}", tr("Vue")), theme::medium(12.5), t.text);
+        let chip = Rect::from_min_size(rect.left_top() + vec2(12.0, 12.0), vec2(g.size().x + 44.0, 26.0));
+        ui.painter().rect(chip, CornerRadius::same(13), t.card.gamma_multiply(0.94), Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
+        ui.painter().galley(egui::pos2(chip.left() + 12.0, chip.center().y - g.size().y * 0.5), g, t.text);
+        let close = Rect::from_center_size(egui::pos2(chip.right() - 15.0, chip.center().y), vec2(18.0, 18.0));
+        let cr = ui.interact(close, egui::Id::new(("leave-view", doc.id)), Sense::click()).on_hover_text(tr("Revenir à toute la maquette en 3D"));
+        icons::paint(ui, close, "x", 13.0, if cr.hovered() { t.text } else { t.text_muted });
+        if cr.clicked() {
+            doc.leave_view();
+        }
     }
 
     // ---- context menu
@@ -1916,6 +1951,60 @@ fn explode_row(ui: &mut egui::Ui, doc: &mut Document) {
             ui.ctx().request_repaint();
         }
     });
+}
+
+/// A sheet (or drafting view, legend, schedule) opened from the project browser: shown flat,
+/// like Revit's sheet view. Its 2D content (title block lines, placed views, texts) is not
+/// decoded yet, so the sheet shows its frame and title, plus the preview saved in the file.
+fn sheet_view(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, row: usize) {
+    use sw_format::BrowserKind as K;
+    let t = Tokens::get(ui.ctx());
+    let Some(r) = doc.scene.as_ref().and_then(|s| s.browser.get(row)).cloned() else { return };
+    let p = ui.painter_at(rect);
+    p.rect_filled(rect, CornerRadius::ZERO, t.pasteboard);
+    let label = browser_label(&r.label, r.kind);
+    // paper: landscape ISO A ratio, or the saved preview's ratio
+    let ratio = doc.preview.as_ref().map(|x| x.size_vec2()).map(|s| s.x / s.y.max(1.0)).filter(|k| (0.3..4.0).contains(k)).unwrap_or(std::f32::consts::SQRT_2);
+    let avail = vec2(rect.width() - 80.0, rect.height() - 140.0).max(vec2(120.0, 80.0));
+    let w = avail.x.min(avail.y * ratio);
+    let paper = Rect::from_center_size(rect.center() - vec2(0.0, 24.0), vec2(w, w / ratio));
+    p.rect_filled(paper.translate(vec2(3.0, 4.0)), CornerRadius::same(2), Color32::from_black_alpha(40));
+    p.rect_filled(paper, CornerRadius::same(2), Color32::WHITE);
+    let ink = Color32::from_gray(40);
+    let border = paper.shrink((w * 0.015).max(6.0));
+    p.rect_stroke(border, CornerRadius::ZERO, Stroke::new(1.2, ink), egui::StrokeKind::Inside);
+    if let Some(tex) = &doc.preview {
+        let s = tex.size_vec2();
+        let k = (border.width() / s.x).min(border.height() / s.y);
+        p.image(tex.id(), Rect::from_center_size(border.center(), s * k), Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+    }
+    // title block strip, bottom right (sheet number and name)
+    if r.kind == K::Sheet && doc.preview.is_none() {
+        let tb = Rect::from_min_max(egui::pos2(border.right() - (border.width() * 0.32).max(140.0).min(border.width()), border.bottom() - 34.0), border.right_bottom());
+        p.rect_filled(tb, CornerRadius::ZERO, Color32::WHITE);
+        p.rect_stroke(tb, CornerRadius::ZERO, Stroke::new(1.0, ink), egui::StrokeKind::Inside);
+        let g = p.layout_no_wrap(label.clone(), theme::semibold(12.0), ink);
+        let g = if g.size().x > tb.width() - 12.0 { p.layout(label.clone(), theme::semibold(10.0), ink, tb.width() - 12.0) } else { g };
+        p.galley(tb.left_center() + vec2(6.0, -g.size().y * 0.5), g, ink);
+    }
+    let what = match r.kind {
+        K::Sheet => tr("Feuille"),
+        K::Legend => tr("Légende"),
+        K::Schedule => tr("Nomenclature"),
+        _ => tr("Vue de dessin"),
+    };
+    let head = if r.start { format!("{what} : {label}  ·  {}", tr("vue de démarrage")) } else { format!("{what} : {label}") };
+    p.text(paper.center_bottom() + vec2(0.0, 16.0), Align2::CENTER_TOP, head, theme::medium(13.0), t.text);
+    let note = if doc.preview.is_some() { tr("Contenu 2D (cartouche, vues placées, textes) pas encore lu ; image : aperçu enregistré dans le fichier") } else { tr("Contenu 2D (cartouche, vues placées, textes) pas encore lu") };
+    p.text(paper.center_bottom() + vec2(0.0, 36.0), Align2::CENTER_TOP, note, theme::regular(12.0), t.text_muted);
+    let has3d = doc.scene.as_ref().is_some_and(|s| s.has_geometry());
+    if has3d {
+        let br = Rect::from_center_size(paper.center_bottom() + vec2(0.0, 72.0), vec2(200.0, 28.0));
+        let resp = ui.put(br, egui::Button::new(tr("Voir la maquette en 3D")));
+        if resp.clicked() {
+            doc.leave_view();
+        }
+    }
 }
 
 fn empty_or_preview(ui: &mut egui::Ui, doc: &Document, rect: Rect) {
