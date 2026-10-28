@@ -205,6 +205,8 @@ pub static EN: &[(&str, &str)] = &[
     ("shader.wgsl", "shader.wgsl"),
     ("Replier le panneau", "Fold the panel"),
     ("Filtrer les composants…", "Filter components…"),
+    ("Filtrer les vues et feuilles…", "Filter views and sheets…"),
+    ("Navigateur de projet", "Project Browser"),
     ("Chargement…", "Loading…"),
     ("Afficher", "Show"),
     ("Masquer", "Hide"),

@@ -317,7 +317,7 @@ mod explode_tests {
         let meshes: Vec<SceneMesh> = [[0.0, -0.0085, 0.0], [0.0, -0.0081, 0.0]].iter().map(|c| SceneMesh { name: "m".into(), mesh: tri_at(*c), source: sw_format::MeshSource::Embedded, color: None }).collect();
         let id = [1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.];
         let comp = |name: &str, mesh: usize| SceneComponent { name: name.into(), path: String::new(), depth: 0, parent: None, is_assembly: false, world: id, mesh: Some(mesh), suppressed: false, hidden: false, color: None };
-        let scene = sw_format::Scene { meshes, components: vec![comp("a", 0), comp("b", 1)], path: Default::default(), kind: sw_format::DocKind::Assembly, container: sw_format::ContainerKind::Other("t"), stream_count: 0, preview: None, warnings: vec![], properties: vec![], timings: Default::default(), up_z: false };
+        let scene = sw_format::Scene { meshes, components: vec![comp("a", 0), comp("b", 1)], path: Default::default(), kind: sw_format::DocKind::Assembly, container: sw_format::ContainerKind::Other("t"), stream_count: 0, preview: None, warnings: vec![], properties: vec![], timings: Default::default(), up_z: false, browser: vec![] };
         let asm = Assembly::new(&scene, vec![Mat4::IDENTITY; 2]);
         assert!(asm.world_off[0].dot(asm.world_off[1]) < 0.0, "they must not move the same way");
         assert!((asm.world_off[0] - asm.world_off[1]).length() > 0.05);
@@ -343,6 +343,7 @@ mod explode_tests {
             properties: vec![],
             timings: Default::default(),
             up_z: false,
+            browser: vec![],
         };
         let mut asm = Assembly::new(&scene, vec![Mat4::IDENTITY; 6]);
         assert!(asm.can_explode());
@@ -407,7 +408,7 @@ mod explode_tests {
             components.push(SceneComponent { name: format!("e{k}"), path: String::new(), depth: 2, parent: Some(1 + k % 2), is_assembly: false, world: id, mesh: Some(k), suppressed: false, hidden: false, color: None });
         }
         let n = components.len();
-        let scene = sw_format::Scene { meshes, components, path: Default::default(), kind: sw_format::DocKind::Assembly, container: sw_format::ContainerKind::Other("t"), stream_count: 0, preview: None, warnings: vec![], properties: vec![], timings: Default::default(), up_z: false };
+        let scene = sw_format::Scene { meshes, components, path: Default::default(), kind: sw_format::DocKind::Assembly, container: sw_format::ContainerKind::Other("t"), stream_count: 0, preview: None, warnings: vec![], properties: vec![], timings: Default::default(), up_z: false, browser: vec![] };
         let mut asm = Assembly::new(&scene, vec![Mat4::IDENTITY; n]);
         let pos = |asm: &Assembly| {
             let (_, acc) = asm.compute();

@@ -15,6 +15,7 @@
 pub mod easm;
 pub mod obj;
 pub mod rvt;
+pub mod rvt_browser;
 pub mod rvt_model;
 pub mod stl;
 pub mod tds;
@@ -230,6 +231,7 @@ pub fn empty_scene(path: &Path, format: &'static str) -> Scene {
         properties: Vec::new(),
         timings: Timings::default(),
         up_z: true,
+        browser: Vec::new(),
     }
 }
 

@@ -174,6 +174,38 @@ pub struct Scene {
     pub timings: Timings,
     /// The model's vertical axis is +Z (most CAD exchange formats); SolidWorks is Y-up.
     pub up_z: bool,
+    /// Read-only document browser (Revit "Navigateur de projet"), flattened in display order.
+    pub browser: Vec<BrowserNode>,
+}
+
+/// What a browser row stands for (drives its icon).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserKind {
+    Views,
+    Legends,
+    Schedules,
+    Sheets,
+    Folder,
+    Plan,
+    CeilingPlan,
+    View3d,
+    Section,
+    Elevation,
+    Detail,
+    Drafting,
+    Rendering,
+    Legend,
+    Schedule,
+    Sheet,
+    Other,
+}
+
+/// One row of the document browser; `depth` 0 rows are the top-level sections.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BrowserNode {
+    pub label: String,
+    pub depth: u16,
+    pub kind: BrowserKind,
 }
 
 impl Scene {
@@ -851,6 +883,7 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
         properties: Vec::new(),
         timings,
         up_z: false,
+        browser: Vec::new(),
     })
 }
 

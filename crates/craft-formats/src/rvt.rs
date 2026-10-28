@@ -245,6 +245,13 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
             .into(),
         );
     }
+    if !family {
+        let t1 = std::time::Instant::now();
+        if let Some(m) = crate::rvt_browser::read_model(&mut cf, &names, MAX_PARTITION) {
+            s.browser = crate::rvt_browser::build(&m);
+        }
+        s.timings.decode += t1.elapsed();
+    }
     s.properties = props;
     Ok(s)
 }

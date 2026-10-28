@@ -136,6 +136,12 @@ pub struct Document {
     pub needs_fit: bool,
     pub cam_goal: Option<(f32, f32)>,
     pub tree_filter: String,
+    /// Left panel shows the document browser (Revit "Navigateur de projet") instead of the
+    /// component tree.
+    pub show_browser: bool,
+    /// Open rows of the document browser.
+    pub browser_open: HashSet<usize>,
+    pub browser_sel: Option<usize>,
     pub load_time: Option<f64>,
     /// Set to stop the loader thread.
     pub cancel: Arc<std::sync::atomic::AtomicBool>,
@@ -284,6 +290,9 @@ impl Document {
             needs_fit: true,
             cam_goal: None,
             tree_filter: String::new(),
+            show_browser: false,
+            browser_open: HashSet::new(),
+            browser_sel: None,
             load_time: None,
             reveal_in_tree: false,
             gizmo: false,
@@ -363,6 +372,11 @@ impl Document {
         }
         if n == 1 {
             self.expanded.insert(0);
+        }
+        // a Revit project opens on its project browser, sections unfolded (as in Revit)
+        if !scene.browser.is_empty() && self.browser_open.is_empty() {
+            self.show_browser = true;
+            self.browser_open = scene.browser.iter().enumerate().filter(|(_, r)| r.depth == 0).map(|(i, _)| i).collect();
         }
         if let Some(p) = &scene.preview {
             let img = egui::ColorImage::from_rgba_unmultiplied([p.width as usize, p.height as usize], &p.pixels);

@@ -33,9 +33,13 @@ fn col_f(c: Color32) -> [f32; 3] {
 pub fn tree_panel(ui: &mut egui::Ui, doc: &mut Document, cmds: &mut Cmds) {
     let t = Tokens::get(ui.ctx());
     ui.add_space(6.0);
+    let has_browser = doc.scene.as_ref().is_some_and(|s| !s.browser.is_empty());
+    if !has_browser {
+        doc.show_browser = false;
+    }
     ui.horizontal(|ui| {
         ui.add_space(4.0);
-        ui.label(widgets::mono_caps(tr("Arbre de création"), 10.5, t.text_faint));
+        ui.label(widgets::mono_caps(if doc.show_browser { tr("Navigateur de projet") } else { tr("Arbre de création") }, 10.5, t.text_faint));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let sc = crate::commands::shortcut_text(ui.ctx(), "view.tree");
             if icons::button(ui, "panel-left-close", 22.0, false, &format!("{}  ({sc})", tr("Replier le panneau"))).clicked() {
@@ -44,9 +48,16 @@ pub fn tree_panel(ui: &mut egui::Ui, doc: &mut Document, cmds: &mut Cmds) {
         });
     });
     ui.add_space(4.0);
+    if has_browser {
+        ui.horizontal(|ui| {
+            ui.add_space(2.0);
+            widgets::segmented(ui, &mut doc.show_browser, &[(true, tr("Navigateur de projet")), (false, tr("Composants"))]);
+        });
+        ui.add_space(6.0);
+    }
     ui.add(
         egui::TextEdit::singleline(&mut doc.tree_filter)
-            .hint_text(tr("Filtrer les composants…"))
+            .hint_text(if doc.show_browser { tr("Filtrer les vues et feuilles…") } else { tr("Filtrer les composants…") })
             .desired_width(f32::INFINITY)
             .margin(egui::Margin::symmetric(10, 6)),
     );
@@ -57,6 +68,10 @@ pub fn tree_panel(ui: &mut egui::Ui, doc: &mut Document, cmds: &mut Cmds) {
         }
         return;
     };
+    if doc.show_browser {
+        browser_panel(ui, doc);
+        return;
+    }
     let filter = doc.tree_filter.to_lowercase();
     let n = scene.components.len();
     // rows to show
@@ -258,6 +273,134 @@ pub fn tree_panel(ui: &mut egui::Ui, doc: &mut Document, cmds: &mut Cmds) {
             }
             _ => {}
         }
+    }
+}
+
+fn browser_icon(k: sw_format::BrowserKind, open: bool) -> &'static str {
+    use sw_format::BrowserKind as K;
+    match k {
+        K::Views => "layers",
+        K::Legends | K::Legend => "sticky-note",
+        K::Schedules | K::Schedule => "table-2",
+        K::Sheets | K::Sheet => "file-text",
+        K::Folder => if open { "folder-open" } else { "folder" },
+        K::Plan => "map",
+        K::CeilingPlan => "grid-2x2",
+        K::View3d => "cuboid",
+        K::Section => "square-split-vertical",
+        K::Elevation => "panel-top",
+        K::Detail => "zoom-in",
+        K::Drafting => "pen-line",
+        K::Rendering => "image",
+        K::Other => "app-window",
+    }
+}
+
+fn browser_label(label: &str, k: sw_format::BrowserKind) -> String {
+    use sw_format::BrowserKind as K;
+    let section = matches!(k, K::Views | K::Legends | K::Schedules | K::Sheets | K::Folder);
+    if section && crate::i18n::current() == crate::i18n::Lang::En {
+        craft_formats::rvt_browser::label_en(label)
+    } else {
+        label.to_string()
+    }
+}
+
+/// The document browser (Revit "Navigateur de projet"): views in their folders, legends,
+/// schedules and sheets, read-only.
+fn browser_panel(ui: &mut egui::Ui, doc: &mut Document) {
+    let t = Tokens::get(ui.ctx());
+    let Some(scene) = &doc.scene else { return };
+    let b = &scene.browser;
+    let filter = doc.tree_filter.to_lowercase();
+    let has_kids = |i: usize| b.get(i + 1).is_some_and(|n| n.depth > b[i].depth);
+    let mut rows: Vec<usize> = Vec::new();
+    if filter.is_empty() {
+        let mut skip: Option<u16> = None;
+        for (i, r) in b.iter().enumerate() {
+            if let Some(d) = skip {
+                if r.depth > d {
+                    continue;
+                }
+                skip = None;
+            }
+            rows.push(i);
+            if has_kids(i) && !doc.browser_open.contains(&i) {
+                skip = Some(r.depth);
+            }
+        }
+    } else {
+        rows = (0..b.len()).filter(|&i| !has_kids(i) && b[i].label.to_lowercase().contains(&filter)).collect();
+    }
+    let row_h = 24.0;
+    let mut toggle = None;
+    let mut select = None;
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, row_h, rows.len(), |ui, range| {
+        for &i in &rows[range] {
+            let r = &b[i];
+            let depth = if filter.is_empty() { r.depth } else { 0 };
+            let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
+            let selected = doc.browser_sel == Some(i);
+            let press = theme::Press::track(ui, &resp);
+            if selected {
+                ui.painter().rect_filled(rect, CornerRadius::same(6), t.accent_soft);
+            } else {
+                press.wash(ui, rect, 6, false);
+            }
+            let x0 = rect.left() + 6.0 + depth as f32 * 14.0;
+            let kids = filter.is_empty() && has_kids(i);
+            let open = doc.browser_open.contains(&i);
+            if kids {
+                let cr = Rect::from_center_size(egui::pos2(x0 + 7.0, rect.center().y), vec2(16.0, 16.0));
+                icons::paint(ui, cr, if open { "chevron-down" } else { "chevron-right" }, 14.0, t.text_muted);
+            }
+            let col = if selected { t.accent_text } else if r.depth == 0 { t.text } else { t.icon };
+            icons::paint(ui, Rect::from_center_size(egui::pos2(x0 + 25.0, rect.center().y), vec2(16.0, 16.0)), browser_icon(r.kind, open && kids), 15.0, col);
+            let font = if r.depth == 0 || selected { theme::medium(13.0) } else { theme::regular(13.0) };
+            let label = browser_label(&r.label, r.kind);
+            widgets::row_text(ui, egui::pos2(x0 + 38.0, rect.center().y), label.clone(), font, t.text, rect.right() - x0 - 44.0);
+            let resp = if label.chars().count() > 26 { resp.on_hover_text(&label) } else { resp };
+            if resp.clicked() {
+                if kids {
+                    toggle = Some(i);
+                }
+                select = Some(i);
+            }
+            resp.context_menu(|ui| {
+                ui.set_min_width(200.0);
+                if widgets::menu_icon_item(ui, "copy", tr("Copier le nom"), "").clicked() {
+                    ui.ctx().copy_text(label.clone());
+                    ui.close();
+                }
+                if kids && widgets::menu_icon_item(ui, "list-tree", tr("Déplier tout"), "").clicked() {
+                    toggle = Some(usize::MAX - i);
+                    ui.close();
+                }
+            });
+        }
+    });
+    if let Some(i) = select {
+        doc.browser_sel = Some(i);
+    }
+    match toggle {
+        Some(k) if k > b.len() => {
+            // unfold the whole subtree
+            let i = usize::MAX - k;
+            let d = b[i].depth;
+            doc.browser_open.insert(i);
+            for j in i + 1..b.len() {
+                if b[j].depth <= d {
+                    break;
+                }
+                doc.browser_open.insert(j);
+            }
+        }
+        Some(i) => {
+            if !doc.browser_open.remove(&i) {
+                doc.browser_open.insert(i);
+            }
+        }
+        None => {}
     }
 }
 

@@ -137,3 +137,50 @@ Vérifié sur les projets d'exemple publiés par Autodesk (revit.downloads.autod
   l'alignement qui contient les clés.
 - Les fichiers en travail partagé sont lus comme les autres (une partition par sous-projet), en
   lecture seule : aucun verrou, aucun fichier temporaire, aucune synchronisation avec le central.
+
+## V6 : navigateur de projet (implémenté, `crates/craft-formats/src/rvt_browser.rs`)
+
+Objectif : à l'ouverture d'un .rvt, le panneau de gauche montre le « Navigateur de projet » comme
+Revit (Vues par dossiers, Légendes, Nomenclatures/Quantités, Feuilles), en lecture seule.
+Observations sur les échantillons publics uniquement (2018, 2021, 2023, 2025), sans
+désassemblage.
+
+**Schéma (`/Formats/Latest`).** Chaque classe : `[u16 len][nom][u16 parent]` (si le parent a le
+bit 0x8000 : `00 00` puis sa définition en ligne), `[u32][u32 nb champs]`, les champs
+`[u32 len][nom][type]`, puis `u32 ng` et ng GUID de 16 octets. Type : `b0 b1 00 00`, puis
+`u32 n` si b1 = 0x10, puis `u16 classe` si b0 = 0x0e et b1 ∈ {0x00, 0x50, 0x10}.
+`0e 00 c` objet par valeur (c = ElementId : un id de 4 ou 8 octets), `0e 01/02` pointeur
+possédé, `0e 03` pointeur brut (u32), `0e 50 c` ensemble (u32 n puis n éléments),
+`0e 51` tableau de pointeurs, `08 60` chaîne UTF-16 (u32 longueur), `07` double, `04` int32,
+`01` booléen, `0b` 8 octets (2025, `TreeItemData`).
+
+**Éléments dans les partitions.** `[id][u32][u32 taille][u16 classe]`, le corps suit
+directement la classe ; champs de toute la chaîne de classes dans l'ordre du schéma (Element
+d'abord : `m_id`, `m_famId`, `m_ownerDBViewId`…). Pointeur non nul : `ff ff ff ff [u16 classe]`
+et son contenu est écrit après le corps, dans l'ordre de rencontre (file) ; `00000000` nul ;
+petite valeur = renvoi. On valide un élément quand `m_id` décodé = id de l'en-tête. Les vues
+sont au-delà de la fin de la chaîne d'enregistrements : on lit les partitions entières.
+
+**Ce qu'on lit.** `DBView*` (nom, type, gabarit, vue principale pour les vues dépendantes,
+fenêtres sur feuille, numéro de feuille), leurs jeux de paramètres différés
+(`ParamValueSetInt/ElementId/AString/Double` : discipline -1005163, phase -1012102…),
+`DBViewType` (`m_systemFamilyIdx` : 0x66 3D, 0x68 rendu, 0x69 nomenclature, 0x6b feuille,
+0x6c dessin, 0x6d plan d'étage, 0x6e surface, 0x6f plafond, 0x70 coupe, 0x71 détail,
+0x72 élévation, 0x75 légende, 0x76 tableau, 0x77 poteaux graphiques, 0x78 structure ; nom
+du type dans `SymbolInfo`), `ProjectPhase`, `BrowserOrganization` (filtres, définitions de
+dossiers `{paramètre, nb de caractères}`, tri ; `m_type` 0 vues, 1 feuilles, 3
+nomenclatures) et, dans `/Global/Latest`, `BrowserOrganizationTracking` (organisation
+courante des vues, feuilles et nomenclatures ; sa table `m_folderNameToIdMap` contient les
+noms de dossiers de Revit, qui ont servi à vérifier la règle de nommage).
+
+**Arbre.** Exclus : gabarits, vues de familles (`m_famId` ≠ -1), vues possédées par une feuille
+(nomenclatures de révisions), `DBViewProject`, navigateur de systèmes. Dossier « famille et
+type » : pluriel de la famille, plus « (type) » si le nom du type n'est pas le nom par
+défaut (« Coupes (Wall Section) », « Plans d'étage »). Les élévations d'avant 2019 sans type
+prennent le premier type de la famille élévation. Valeur vide : dossier « ??? ». Tri
+alphanumérique sans accents ; vues dépendantes sous leur vue principale ; feuilles « NUM -
+Nom ». Filtres : égal / différent seulement (« pas sur des feuilles » pris en charge).
+
+**Reste inconnu.** Aucune légende ni paramètre de projet dans les échantillons (valeurs
+attendues dans `ParamValueSetAString` avec des id positifs) ; libellés des valeurs
+ElementId autres que les phases ; relations de filtre autres qu'égal/différent.
