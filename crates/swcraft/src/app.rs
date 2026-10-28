@@ -710,7 +710,7 @@ impl App {
             self.settings.show_tree = false;
             self.settings.show_info = false;
         }
-        if matches!(show.as_str(), "move" | "rotate" | "pivot" | "framesel") {
+        if matches!(show.as_str(), "move" | "rotate" | "pivot" | "framesel" | "facemove") {
             // the selection card shows the author's original file path: keep it out of shots
             self.settings.show_info = false;
         }
@@ -735,6 +735,34 @@ impl App {
                 d.needs_fit = true;
             }
             "pan" => d.pan_tool = true,
+            "facemove" => {
+                // Move tool on one face of a single body: the face is detached and pulled out
+                let pick = d.scene.as_ref().and_then(|s| {
+                    let ci = s.components.iter().position(|c| c.mesh.is_some_and(|m| s.meshes[m].mesh.face_start.len() >= 2))?;
+                    let mi = s.components[ci].mesh?;
+                    let m = &s.meshes[mi].mesh;
+                    let w = d.display[ci];
+                    let f = (0..m.face_start.len()).max_by(|&a, &b| {
+                        let aa = crate::measure::face_props(m, m.face_triangles(a), w).1;
+                        let bb = crate::measure::face_props(m, m.face_triangles(b), w).1;
+                        aa.partial_cmp(&bb).unwrap_or(std::cmp::Ordering::Equal)
+                    })?;
+                    let (n, _, _) = crate::measure::face_props(m, m.face_triangles(f), w);
+                    Some((ci, mi, f, m.face_triangles(f).start, n))
+                });
+                if let Some((ci, mi, f, tri, n)) = pick {
+                    d.select(Some(ci));
+                    d.face_sel = Some(crate::document::FaceSel { comp: ci, mesh: mi, face: Some(f), tri });
+                    d.gizmo = true;
+                    if d.detach_selected_face(&dev, ctx) {
+                        if let (Some(i), Some((lo, hi))) = (d.selected, d.bbox()) {
+                            let off = n.normalize_or_zero() * (hi - lo).length() * 0.25;
+                            d.move_component(i, glam::Mat4::from_translation(off));
+                        }
+                    }
+                    d.needs_fit = true;
+                }
+            }
             "pivot" => {
                 // Rotate tool with the pivot on a 3D cursor at the foot of the model
                 d.select(Some(0));
@@ -937,6 +965,13 @@ impl eframe::App for App {
         let cmds = std::mem::take(&mut self.cmds);
         for c in cmds {
             self.run(c, &ctx);
+        }
+        // Move / Rotate with a face selected: that face becomes its own piece (viewer-only)
+        let dev = self.rs.device.clone();
+        let detached = self.doc_mut().is_some_and(|d| d.gizmo && d.face_sel.is_some_and(|f| f.face.is_some()) && d.drag.is_none() && d.detach_selected_face(&dev, &ctx));
+        if detached {
+            self.toast(tr("Face détachée : elle se déplace seule, le reste de la pièce ne bouge pas (affichage uniquement)"));
+            ctx.request_repaint();
         }
         // title
         let title = match self.doc() {

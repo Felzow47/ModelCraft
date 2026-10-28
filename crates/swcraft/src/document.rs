@@ -407,6 +407,80 @@ impl Document {
         true
     }
 
+    /// Move / Rotate on a selected face: detach that face into its own child component
+    /// (viewer-only, the file is never modified) so it moves alone while the rest of the body
+    /// stays, even when the whole model is one single body. Moves, opacity, visibility and the
+    /// undo history of the other components are kept. Returns true when a face was detached;
+    /// a face that is already a whole component just selects that component.
+    pub fn detach_selected_face(&mut self, device: &eframe::wgpu::Device, ctx: &egui::Context) -> bool {
+        let Some(f) = self.face_sel else { return false };
+        let Some(face) = f.face else { return false };
+        let Some(scene) = self.scene.as_ref() else { return false };
+        let Some(mesh) = scene.components.get(f.comp).and_then(|c| c.mesh) else { return false };
+        if mesh != f.mesh || scene.meshes.get(mesh).is_none_or(|m| m.mesh.face_start.len() < 2) {
+            // the face is the whole component (e.g. already detached): move the component
+            self.face_sel = None;
+            self.select(Some(f.comp));
+            self.highlight_dirty = true;
+            self.instances_dirty = true;
+            return false;
+        }
+        let mut scene = self.scene.take().unwrap();
+        let Some(ins) = sw_format::bodies::detach_face(&mut scene, f.comp, face, "Face") else {
+            self.scene = Some(scene);
+            return false;
+        };
+        // keep the viewer state of every component, with a neutral entry for the new one
+        let mut user = std::mem::take(&mut self.asm.user);
+        let mut opacity = std::mem::take(&mut self.asm.opacity);
+        let (explode, goal, lines) = (self.asm.explode, self.asm.explode_goal, self.asm.explode_lines);
+        let (global, others) = (self.asm.global_opacity, self.asm.others_transparent);
+        let mut hidden = std::mem::take(&mut self.hidden);
+        let ok = ins <= user.len() && ins <= opacity.len() && ins <= hidden.len();
+        if ok {
+            user.insert(ins, Mat4::IDENTITY);
+            opacity.insert(ins, 1.0);
+            hidden.insert(ins, false);
+        }
+        for st in self.undo.iter_mut().chain(self.redo.iter_mut()) {
+            if ins <= st.user.len() && ins <= st.opacity.len() && ins <= st.hidden.len() {
+                st.user.insert(ins, Mat4::IDENTITY);
+                st.opacity.insert(ins, 1.0);
+                st.hidden.insert(ins, false);
+            }
+        }
+        let expanded: HashSet<usize> = self.expanded.iter().map(|&i| if i >= ins { i + 1 } else { i }).chain([f.comp]).collect();
+        let cam = self.camera.clone();
+        let cursor = self.cursor3d;
+        self.gpu = None;
+        self.hover = None;
+        self.face_sel = None;
+        self.drag = None;
+        self.set_scene(scene, device, ctx);
+        self.camera = cam;
+        self.cursor3d = cursor;
+        self.needs_fit = false;
+        self.expanded = expanded;
+        let n = self.scene.as_ref().map(|s| s.components.len()).unwrap_or(0);
+        if ok && user.len() == n && opacity.len() == n && hidden.len() == n {
+            self.asm.user = user;
+            self.asm.opacity = opacity;
+            self.hidden = hidden;
+        }
+        self.asm.explode = explode;
+        self.asm.explode_goal = goal;
+        self.asm.explode_lines = lines;
+        self.asm.global_opacity = global;
+        self.asm.others_transparent = others;
+        self.update_visibility();
+        self.apply_transforms();
+        self.select(Some(ins));
+        self.reveal_in_tree = true;
+        self.highlight_dirty = true;
+        self.instances_dirty = true;
+        true
+    }
+
     fn view_state(&self) -> ViewState {
         ViewState {
             user: self.asm.user.clone(),

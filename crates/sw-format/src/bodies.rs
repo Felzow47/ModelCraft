@@ -245,6 +245,106 @@ fn split_single_with(scene: &mut Scene, split: fn(&TriMesh) -> Option<Vec<TriMes
     n
 }
 
+/// Remove face `f` from `m` in place and return it as a mesh of its own (one face, its own
+/// vertices and boundary edges). `m` keeps its vertices; only the face's triangles leave it.
+/// None when `m` has fewer than two faces or `f` is out of range / empty.
+pub fn take_face(m: &mut TriMesh, f: usize) -> Option<TriMesh> {
+    let nf = m.face_start.len();
+    if nf < 2 || f >= nf || m.indices.is_empty() {
+        return None;
+    }
+    let r = m.face_triangles(f);
+    let (a, b) = (r.start as usize * 3, (r.end as usize * 3).min(m.indices.len()));
+    if a >= b {
+        return None;
+    }
+    let nv = m.positions.len();
+    let mut o = TriMesh { texture: m.texture.clone(), ..TriMesh::default() };
+    let mut remap: HashMap<u32, u32> = HashMap::new();
+    for &v in &m.indices[a..b] {
+        let v = v.min(nv.saturating_sub(1) as u32);
+        let k = *remap.entry(v).or_insert_with(|| {
+            let vi = v as usize;
+            o.positions.push(m.positions[vi]);
+            o.normals.push(m.normals.get(vi).copied().unwrap_or([0.0, 0.0, 1.0]));
+            if !m.uvs.is_empty() {
+                o.uvs.push(m.uv(vi));
+            }
+            (o.positions.len() - 1) as u32
+        });
+        o.indices.push(k);
+    }
+    for e in m.edges.chunks_exact(2) {
+        if let (Some(&x), Some(&y)) = (remap.get(&e[0]), remap.get(&e[1])) {
+            o.edges.push(x);
+            o.edges.push(y);
+        }
+    }
+    o.face_start = vec![0];
+    o.face_count = 1;
+    o.recompute_bbox();
+    // the rest: drop the face's triangles, shift the later faces
+    let ntri = ((b - a) / 3) as u32;
+    m.indices.drain(a..b);
+    m.face_start.remove(f);
+    for s in m.face_start.iter_mut().skip(f) {
+        *s -= ntri;
+    }
+    m.face_count = m.face_start.len().max(if m.indices.is_empty() { 0 } else { 1 });
+    Some(o)
+}
+
+/// Viewer-only "detach": move face `f` of component `ci`'s mesh into a new child component
+/// ("<label> <f+1>") inserted after `ci`'s subtree, so it can be moved on its own while the
+/// rest of the body stays put. A mesh shared with other components is copied first so they
+/// keep the whole body. Returns the new component's index.
+pub fn detach_face(scene: &mut Scene, ci: usize, f: usize, label: &str) -> Option<usize> {
+    let mi = scene.components.get(ci)?.mesh?;
+    if scene.meshes.get(mi)?.mesh.face_start.len() < 2 {
+        return None;
+    }
+    let shared = scene.components.iter().enumerate().any(|(k, c)| k != ci && c.mesh == Some(mi));
+    let mi = if shared {
+        let copy = SceneMesh { mesh: scene.meshes[mi].mesh.clone(), ..scene.meshes[mi].clone_meta() };
+        scene.meshes.push(copy);
+        scene.components[ci].mesh = Some(scene.meshes.len() - 1);
+        scene.meshes.len() - 1
+    } else {
+        mi
+    };
+    let piece = take_face(&mut scene.meshes[mi].mesh, f)?;
+    scene.meshes[mi].mesh.recompute_bbox();
+    let base = scene.meshes[mi].clone_meta();
+    scene.meshes.push(SceneMesh { mesh: piece, ..base });
+    let new_mesh = scene.meshes.len() - 1;
+    let parent = scene.components[ci].clone();
+    let mut ins = ci + 1;
+    while ins < scene.components.len() && scene.components[ins].depth > parent.depth {
+        ins += 1;
+    }
+    for c in scene.components.iter_mut() {
+        if let Some(p) = c.parent.as_mut() {
+            if *p >= ins {
+                *p += 1;
+            }
+        }
+    }
+    let kid = SceneComponent {
+        name: format!("{label} {}", f + 1),
+        path: parent.path.clone(),
+        depth: parent.depth + 1,
+        parent: Some(ci),
+        is_assembly: false,
+        world: parent.world,
+        mesh: Some(new_mesh),
+        suppressed: false,
+        hidden: false,
+        color: None,
+    };
+    scene.components.insert(ins, kid);
+    Some(ins)
+}
+
 /// Bodies per part above which an assembly part is left whole (keeps big trees readable).
 pub const MAX_BODIES_PER_ASM_PART: usize = 32;
 
@@ -334,6 +434,31 @@ impl SceneMesh {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn take_face_splits_rest_and_piece() {
+        let mut m = TriMesh::default();
+        m.positions = vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [5., 0., 0.], [6., 0., 0.], [5., 1., 0.], [9., 9., 9.]];
+        m.normals = vec![[0., 0., 1.]; 7];
+        m.indices = vec![0, 1, 2, 3, 4, 5, 3, 5, 6];
+        m.face_start = vec![0, 1];
+        m.face_count = 2;
+        m.edges = vec![0, 1, 3, 4, 1, 3];
+        let p = take_face(&mut m, 1).unwrap();
+        assert_eq!(m.indices, vec![0, 1, 2]);
+        assert_eq!(m.face_start, vec![0]);
+        assert_eq!(p.positions.len(), 4);
+        assert_eq!(p.indices.len(), 6);
+        assert_eq!(p.edges, vec![0, 1]);
+        assert_eq!(p.bbox_max, [9., 9., 9.]);
+        // first face out of two faces
+        let mut m2 = TriMesh { indices: vec![0, 1, 2, 3, 4, 5], face_start: vec![0, 1], positions: vec![[0.; 3]; 6], ..TriMesh::default() };
+        let p2 = take_face(&mut m2, 0).unwrap();
+        assert_eq!(p2.indices, vec![0, 1, 2]);
+        assert_eq!(m2.indices, vec![3, 4, 5]);
+        assert_eq!(m2.face_start, vec![0]);
+        assert!(take_face(&mut m2, 0).is_none());
+    }
 
     #[test]
     fn assembly_parts_split_per_instance() {

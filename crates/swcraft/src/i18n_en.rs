@@ -10,6 +10,7 @@ pub static EN: &[(&str, &str)] = &[
     ("Tourner : tirez un anneau X/Y/Z (Ctrl = pas de 15°) ou glissez la pièce pour la faire pivoter", "Rotate: drag an X/Y/Z ring (Ctrl = 15° steps) or drag the part to turn it"),
     ("Déplacer : glissez une pièce, ou sélectionnez-la puis tirez une flèche", "Move: drag a part, or select it and pull an arrow"),
     ("Déplacer : tirez une flèche, l'anneau ou le centre ; glissez une pièce pour la bouger librement", "Move: pull an arrow, a ring or the centre; drag a part to move it freely"),
+    ("Face détachée : elle se déplace seule, le reste de la pièce ne bouge pas (affichage uniquement)", "Face detached: it moves on its own, the rest of the part stays put (display only)"),
     ("Rien à annuler", "Nothing to undo"),
     ("Rien à rétablir", "Nothing to redo"),
     ("Curseur 3D : Alt+clic ou Alt+glisser sur le modèle pour déplacer le pivot", "3D cursor: Alt+click or Alt+drag on the model to move the pivot"),

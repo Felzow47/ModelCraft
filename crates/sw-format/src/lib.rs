@@ -17,6 +17,7 @@ pub mod ctl;
 pub mod dl;
 pub mod mesh;
 pub mod meshdata;
+pub mod gfxstrips;
 pub mod pointcloud;
 pub mod preview;
 
@@ -526,6 +527,12 @@ fn build_meshdata_mesh(c: &Container, opts: &LoadOptions, warnings: &mut Vec<Str
     if bodies.bad > 0 {
         warnings.push(format!("{} facette(s) de corps maillé ignorée(s) (indices invalides)", bodies.bad));
     }
+    bodies_to_mesh(&bodies, opts, warnings).map(Some)
+}
+
+/// Weld, smooth and split a [`meshdata::MeshBodies`] soup into a display mesh, body by body.
+fn bodies_to_mesh(bodies: &meshdata::MeshBodies, opts: &LoadOptions, warnings: &mut Vec<String>) -> Result<mesh::TriMesh> {
+    let ctl = &opts.ctl;
     let edges = opts.edges && bodies.positions.len() <= mesh::EDGE_VERTEX_LIMIT;
     if opts.edges && !edges {
         warnings.push(format!("Maillage très dense ({} M sommets) : arêtes non calculées", bodies.positions.len() / 1_000_000));
@@ -549,7 +556,32 @@ fn build_meshdata_mesh(c: &Container, opts: &LoadOptions, warnings: &mut Vec<Str
         m.append(body);
     }
     m.finish();
-    Ok(Some(m))
+    Ok(m)
+}
+
+/// Graphics bodies kept as triangle strips in `Contents/Config-N-ResolvedFeatures` (older
+/// files with an imported STL as a graphics body, see [`gfxstrips`]).
+fn build_feature_strips_mesh(c: &Container, opts: &LoadOptions, warnings: &mut Vec<String>) -> Result<Option<mesh::TriMesh>> {
+    let ctl = &opts.ctl;
+    let mut streams: Vec<&container::StreamInfo> =
+        c.streams().iter().filter(|s| s.name.starts_with("Contents/Config-") && s.name.ends_with("-ResolvedFeatures") && s.stored_size >= 4096).collect();
+    if streams.is_empty() {
+        return Ok(None);
+    }
+    let config = |n: &str| n["Contents/Config-".len()..].split('-').next().and_then(|x| x.parse::<u32>().ok()).unwrap_or(u32::MAX);
+    streams.sort_by_key(|s| config(&s.name));
+    for s in streams {
+        let d = c.read_info_ctl(s, ctl, (0.03, 0.4))?;
+        ctl.check()?;
+        ctl.report(0.45, "Lecture des corps graphiques…");
+        let bodies = gfxstrips::decode(&d);
+        drop(d);
+        if bodies.triangles.is_empty() {
+            continue;
+        }
+        return bodies_to_mesh(&bodies, opts, warnings).map(Some);
+    }
+    Ok(None)
 }
 
 /// ScanTo3D point cloud (`ThirdPty/SWNGREStream`) shown as splats.
@@ -626,6 +658,30 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
             Ok(None) => {}
             Err(Error::Cancelled) => return Err(Error::Cancelled),
             Err(e) => warnings.push(format!("Corps maillés illisibles ({e})")),
+        }
+    }
+    // Graphics bodies (imported STL...) are kept in ResolvedFeatures even when DisplayLists
+    // holds the B-rep faces of the same part (e.g. 9 k B-rep triangles + 4 M graphics ones):
+    // add them when the feature data is big and holds more triangles than the display lists.
+    let dl_tris: usize = blocks.iter().map(|(_, m)| m.triangle_count()).sum();
+    let big_features = c.streams().iter().any(|s| s.name.starts_with("Contents/Config-") && s.name.ends_with("-ResolvedFeatures") && s.stored_size >= 16 << 20);
+    if kind == DocKind::Part && (blocks.is_empty() || big_features) {
+        let t = Instant::now();
+        match build_feature_strips_mesh(&c, opts, &mut warnings) {
+            Ok(Some(m)) if blocks.is_empty() => {
+                blocks.push((None, m));
+                from_meshdata = true;
+                timings.decode += t.elapsed();
+            }
+            Ok(Some(m)) if m.triangle_count() > dl_tris => {
+                warnings.push(format!("Corps graphiques ajoutés : {} triangles (en plus des {} des DisplayLists)", m.triangle_count(), dl_tris));
+                blocks[0].1.append(m);
+                timings.decode += t.elapsed();
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => {}
+            Err(Error::Cancelled) => return Err(Error::Cancelled),
+            Err(e) => warnings.push(format!("Corps graphiques illisibles ({e})")),
         }
     }
     let mut from_cloud = false;
