@@ -466,7 +466,16 @@ pub fn toast(app: &mut App, ctx: &egui::Context) {
     app.toast = Some((msg.clone(), age));
     let t = Tokens::get(ctx);
     let screen = ctx.content_rect();
-    egui::Area::new(egui::Id::new("toast")).order(egui::Order::Tooltip).pivot(Align2::CENTER_BOTTOM).fixed_pos(egui::pos2(screen.center().x, screen.bottom() - 44.0)).interactable(false).show(ctx, |ui| {
+    // Default: bottom-centre. If the Pivot bar (Move/Rotate) was drawn this frame, sit above it
+    // with a clear gap so it is never covered.
+    let mut bottom = screen.bottom() - 44.0;
+    let pass = ctx.cumulative_pass_nr();
+    if let Some((bar, p)) = ctx.data(|d| d.get_temp::<(egui::Rect, u64)>(egui::Id::new(crate::viewer::PIVOT_BAR_RECT))) {
+        if p == pass && bar.is_positive() {
+            bottom = bottom.min(bar.top() - 12.0);
+        }
+    }
+    egui::Area::new(egui::Id::new("toast")).order(egui::Order::Tooltip).pivot(Align2::CENTER_BOTTOM).fixed_pos(egui::pos2(screen.center().x, bottom)).interactable(false).show(ctx, |ui| {
         egui::Frame::new().fill(t.card).stroke(Stroke::new(1.0, t.border)).corner_radius(CornerRadius::same(18)).inner_margin(egui::Margin::symmetric(16, 9)).shadow(egui::Shadow { offset: [0, 4], blur: 16, spread: 0, color: t.shadow }).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.add(icons::image("check", 15.0, t.accent));

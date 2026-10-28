@@ -1275,7 +1275,7 @@ fn pivot_bar(ui: &mut egui::Ui, rect: Rect, doc: &mut Document, cmds: &mut Cmds)
     let b = 26.0;
     let w = 300.0;
     let pos = egui::pos2(rect.center().x - w * 0.5, rect.bottom() - b - 30.0);
-    egui::Area::new(ui.id().with(("pivot-bar", doc.id))).fixed_pos(pos).order(egui::Order::Middle).show(ui.ctx(), |ui| {
+    let shown = egui::Area::new(ui.id().with(("pivot-bar", doc.id))).fixed_pos(pos).order(egui::Order::Middle).show(ui.ctx(), |ui| {
         egui::Frame::new()
             .fill(t.card.gamma_multiply(0.96))
             .stroke(Stroke::new(1.0, t.border))
@@ -1304,7 +1304,14 @@ fn pivot_bar(ui: &mut egui::Ui, rect: Rect, doc: &mut Document, cmds: &mut Cmds)
                 });
             });
     });
+    // Let the toast know where the bar is this frame so it can stay clear of it.
+    let ctx = ui.ctx();
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new(PIVOT_BAR_RECT), (shown.response.rect, pass)));
 }
+
+/// Memory key for the on-screen rect of the pivot bar (rect, pass number).
+pub const PIVOT_BAR_RECT: &str = "pivot-bar-rect";
 
 /// Floating tool strip at the top of the viewport.
 fn toolbar(ui: &mut egui::Ui, rect: Rect, doc: &mut Document, st: &Settings, cmds: &mut Cmds) {

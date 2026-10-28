@@ -712,6 +712,10 @@ impl App {
             // the selection card shows the author's original file path: keep it out of shots
             self.settings.show_info = false;
         }
+        if show == "pivot" {
+            // a toast together with the Pivot bar: both must stay visible
+            self.toast(tr("Curseur 3D : Alt+clic ou Alt+glisser sur le modèle pour déplacer le pivot"));
+        }
         let dev = self.rs.device.clone();
         let st = self.settings.clone();
         let Some(d) = self.doc_mut() else { return };
