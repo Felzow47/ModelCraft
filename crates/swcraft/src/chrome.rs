@@ -276,7 +276,7 @@ fn family(id: &str) -> &'static str {
         "view.orbit_left" | "view.orbit_right" | "view.orbit_up" | "view.orbit_down" => "o",
         "view.ortho" | "view.edges" | "view.bbox" | "view.section" | "view.grid" | "view.axes" | "view.viewcube" | "view.free_orbit_roll" => "c",
         "view.explode" => "e",
-        "view.tree" | "view.info" | "view.theme" | "view.fullscreen" => "d",
+        "view.tree" | "view.info" | "view.browser_full" | "view.theme" | "view.fullscreen" => "d",
         "tool.select" | "tool.pan" | "tool.distance" | "tool.edge" | "tool.diameter" | "tool.angle" => "a",
         "tool.clear" => "b",
         "asm.move" | "asm.rotate" | "asm.reset_sel" | "asm.reset_all" | "asm.face_detach" => "c",
@@ -291,7 +291,7 @@ pub fn needs_doc(id: &str) -> bool {
     !(id.starts_with("help.")
         || matches!(
             id,
-            "file.open" | "file.home" | "file.quit" | "edit.settings" | "view.theme" | "view.fullscreen" | "view.edges" | "view.grid" | "view.axes" | "view.viewcube" | "view.free_orbit_roll" | "asm.face_detach" | "view.tree" | "view.info" | "tool.assoc" | "tool.settings_folder"
+            "file.open" | "file.home" | "file.quit" | "edit.settings" | "view.theme" | "view.fullscreen" | "view.edges" | "view.grid" | "view.axes" | "view.viewcube" | "view.free_orbit_roll" | "asm.face_detach" | "view.tree" | "view.info" | "view.browser_full" | "tool.assoc" | "tool.settings_folder"
         ))
 }
 
@@ -310,6 +310,7 @@ pub fn checked(app: &App, id: &str) -> Option<bool> {
         "asm.face_detach" => s.face_detach,
         "view.tree" => s.show_tree,
         "view.info" => s.show_info,
+        "view.browser_full" => s.browser_full,
         "tool.select" => d.is_some_and(|d| d.measure.tool == Tool::Select && !d.pan_tool && !d.gizmo),
         "tool.pan" => d.is_some_and(|d| d.pan_tool),
         "tool.distance" => d.is_some_and(|d| d.measure.tool == Tool::Distance),
@@ -414,7 +415,10 @@ pub fn document_view(app: &mut App, ui: &mut egui::Ui, i: usize) {
             .size_range(180.0..=520.0)
             .resizable(true)
             .frame(egui::Frame::NONE.fill(t.panel).inner_margin(egui::Margin::symmetric(10, 6)).stroke(Stroke::new(1.0, t.divider)))
-            .show_inside(ui, |ui| viewer::tree_panel(ui, &mut app.docs[i], &mut cmds));
+            .show_inside(ui, |ui| {
+                let full = app.settings.browser_full;
+                viewer::tree_panel(ui, &mut app.docs[i], &mut cmds, full)
+            });
     }
     if app.settings.show_info {
         egui::Panel::right("info")

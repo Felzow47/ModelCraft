@@ -184,3 +184,26 @@ Nom ». Filtres : égal / différent seulement (« pas sur des feuilles » pris 
 **Reste inconnu.** Aucune légende ni paramètre de projet dans les échantillons (valeurs
 attendues dans `ParamValueSetAString` avec des id positifs) ; libellés des valeurs
 ElementId autres que les phases ; relations de filtre autres qu'égal/différent.
+
+### V6.1 : familles, groupes, liens Revit, mode simplifié
+
+- Familles chargeables : `FamilySurrogate` (`m_name`, `m_categoryId` catégorie intégrée,
+  `m_elemId` = élément `Family`) et `FamSymSurrogate` (`m_name` du type, `m_famSurrogateId`).
+  Les familles in situ (`Family.m_inPlace`) sont exclues ; une même famille peut avoir plusieurs
+  substituts (fusionnés). Les noms de catégories ne sont pas stockés (localisés par l'interface) :
+  table des catégories intégrées courantes, annotations regroupées sous « Symboles d'annotation »,
+  le reste sous « Autres familles ». Les familles système (murs, canalisations…) ne sont pas encore
+  listées.
+- Groupes : `ElementGroupType` (nom dans `SymbolInfo`), détail si `m_viewType != 0` ou attaché
+  (`m_attachedParentId`, rangé sous son groupe de modèle). Hypothèse à confirmer sur un modèle
+  avec groupes de détail.
+- Liens Revit : `RvtLinkSymbol` (nom `SymbolInfo.m_name`, liens imbriqués exclus via
+  `m_parentSymbolId`), `RvtLinkInstance` (`m_name` = numéro d'instance, type via
+  `InstanceInfo.m_symbolId`). État au dernier enregistrement : flux `TransmissionData`
+  (u32 + XML UTF-16, `ExternalFileReference` de type « Revit Link », `LastSavedLoadState`
+  Loaded / Unloaded / NotFound…). Lien non chargé = icône rouge.
+- Décodeur : types `0x09` (GUID, 16 octets), `0x0d` (XYZ, 24 octets) et tableaux fixes d'objets
+  `0e 10`.
+- Interface : bouton près de l'arbre pour basculer entre le navigateur complet (comme Revit) et la
+  vue simplifiée (vues, légendes, nomenclatures, feuilles) ; préférence `browser_full` enregistrée
+  dans settings.json.

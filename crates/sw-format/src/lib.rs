@@ -197,6 +197,19 @@ pub enum BrowserKind {
     Legend,
     Schedule,
     Sheet,
+    /// "Liens Revit" section, a linked model loaded at the last save, one that was not
+    /// (unloaded or not found), and a placed instance of a link.
+    Links,
+    Link,
+    /// "Familles" section (category folders use `Folder`), a loadable family, one of its types.
+    Families,
+    Family,
+    FamilyType,
+    /// "Groupes" section ("Détail" / "Modèle" use `Folder`), a group type.
+    Groups,
+    Group,
+    LinkUnloaded,
+    LinkInstance,
     Other,
 }
 

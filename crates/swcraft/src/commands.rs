@@ -77,6 +77,7 @@ pub static COMMANDS: &[Command] = &[
     Command { id: "view.viewcube", label: "Cube de vue", icon: "box", shortcut: None, group: "Affichage" },
     Command { id: "view.explode", label: "Vue éclatée…", icon: "boxes", shortcut: ks(S, Key::V), group: "Affichage" },
     Command { id: "view.tree", label: "Arbre de création", icon: "list-tree", shortcut: ks(N, Key::T), group: "Affichage" },
+    Command { id: "view.browser_full", label: "Navigateur de projet complet (comme Revit)", icon: "list-tree", shortcut: None, group: "Affichage" },
     Command { id: "view.info", label: "Panneau d'informations", icon: "panel-right", shortcut: ks(N, Key::P), group: "Affichage" },
     Command { id: "view.theme", label: "Basculer thème clair / sombre", icon: "moon", shortcut: None, group: "Affichage" },
     Command { id: "view.fullscreen", label: "Plein écran", icon: "maximize", shortcut: ks(N, Key::F11), group: "Affichage" },

@@ -170,6 +170,9 @@ pub struct Settings {
     pub base_color: [u8; 3],
     pub show_tree: bool,
     pub show_info: bool,
+    /// Project browser of Revit files: everything like Revit (views, sheets, families, groups,
+    /// links) or the simplified view (views, legends, schedules and sheets only).
+    pub browser_full: bool,
     pub recent: Vec<RecentFile>,
     pub pinned: Vec<String>,
     /// Extensions to register for "Open with" (Windows); the others are unregistered.
@@ -220,6 +223,7 @@ impl Default for Settings {
             base_color: [0xA8, 0xB4, 0xC6],
             show_tree: true,
             show_info: true,
+            browser_full: true,
             recent: Vec::new(),
             pinned: Vec::new(),
             assoc_exts: crate::platform::ASSOC_EXTS.iter().map(|e| e.to_string()).collect(),

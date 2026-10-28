@@ -131,7 +131,10 @@ impl Schema {
         false
     }
 
-    fn name(&self, tag: u16) -> &str {
+    pub fn tags_list(&self) -> Vec<u16> {
+        self.classes.keys().copied().collect()
+    }
+    pub fn name(&self, tag: u16) -> &str {
         self.classes.get(&tag).map(|c| c.name.as_str()).unwrap_or("")
     }
 }
@@ -259,7 +262,15 @@ impl<'a, 's> Dec<'a, 's> {
         }
         let s = self.s;
         for (name, ty) in s.chains.get(&tag)? {
-            p = self.val(*ty, p, out, name, depth)?;
+            match self.val(*ty, p, out, name, depth) {
+                Some(q) => p = q,
+                None => {
+                    if std::env::var_os("RVT_BROWSER_DEBUG").is_some() {
+                        eprintln!("fail {} {name} {:02x} {:02x} {}", s.name(tag), ty.b0, ty.b1, ty.tag);
+                    }
+                    return None;
+                }
+            }
         }
         Some(p)
     }
@@ -281,6 +292,19 @@ impl<'a, 's> Dec<'a, 's> {
                     }
                 }
                 3 => Some(p + 4),
+                // fixed array of by-value objects
+                0x10 => {
+                    let mut p = p;
+                    for _ in 0..ty.n.min(64) {
+                        if ty.tag == self.s.id_tag {
+                            p += self.w;
+                        } else {
+                            let mut o = Map::new();
+                            p = self.fields(ty.tag, p, &mut o, depth + 1)?;
+                        }
+                    }
+                    Some(p)
+                }
                 0x51 => {
                     let n = u32_at(d, p)?;
                     if n > 100_000 {
@@ -344,6 +368,9 @@ impl<'a, 's> Dec<'a, 's> {
             return Some(p + 4 + 2 * n);
         }
         let sz = match ty.b0 {
+            9 => 16,
+            // XYZ
+            0x0d => 24,
             7 | 6 | 0x0b => 8,
             4 | 5 => 4,
             3 => 2,
@@ -493,9 +520,49 @@ pub struct Org {
     pub sort_asc: bool,
 }
 
+/// A linked Revit model (`RvtLinkSymbol`), its state at the last save (`TransmissionData`) and
+/// the names of its placed instances (`RvtLinkInstance`).
+#[derive(Debug, Clone, Default)]
+pub struct Link {
+    pub id: i64,
+    pub name: String,
+    /// `LastSavedLoadState` of `TransmissionData` ("Loaded", "Unloaded", "NotFound"…), empty
+    /// when not listed.
+    pub state: String,
+    pub path_name: String,
+    pub instances: Vec<String>,
+}
+
+/// A loadable family (`FamilySurrogate`): its name and built-in category id.
+#[derive(Debug, Clone, Default)]
+pub struct Fam {
+    pub surrogate: i64,
+    pub family: i64,
+    pub name: String,
+    pub category: i64,
+}
+
+/// A group type (`ElementGroupType`): detail when it belongs to a view type, attached detail
+/// groups point to their model group.
+#[derive(Debug, Clone, Default)]
+pub struct Group {
+    pub id: i64,
+    pub name: String,
+    pub detail: bool,
+    pub attached_to: i64,
+}
+
 /// What the browser is built from.
 #[derive(Debug, Default)]
 pub struct Model {
+    pub families: Vec<Fam>,
+    /// Family types (`FamSymSurrogate`) as (family surrogate id, name).
+    pub family_types: Vec<(i64, String)>,
+    pub in_place: HashSet<i64>,
+    pub groups: Vec<Group>,
+    pub links: Vec<Link>,
+    /// Link instances as (symbol id, name) until they are attached to their link.
+    pub link_instances: Vec<(i64, String)>,
     pub views: Vec<View>,
     pub types: HashMap<i64, ViewType>,
     pub phases: HashMap<i64, String>,
@@ -511,7 +578,44 @@ impl Model {
                 continue;
             }
             let cls = s.name(e.tag);
-            if s.isa(e.tag, "DBViewType") {
+            if cls == "FamilySurrogate" {
+                if !self.families.iter().any(|f| f.surrogate == e.id) {
+                    self.families.push(Fam {
+                        surrogate: e.id,
+                        family: int(&e.f, "m_elemId").unwrap_or(-1),
+                        name: text(&e.f, "m_name").unwrap_or_default(),
+                        category: int(&e.f, "m_categoryId").unwrap_or(-1),
+                    });
+                }
+            } else if cls == "FamSymSurrogate" {
+                if let Some(f) = int(&e.f, "m_famSurrogateId") {
+                    self.family_types.push((f, text(&e.f, "m_name").unwrap_or_default()));
+                }
+            } else if cls == "Family" {
+                if int(&e.f, "m_inPlace") == Some(1) {
+                    self.in_place.insert(e.id);
+                }
+            } else if cls == "ElementGroupType" {
+                if !self.groups.iter().any(|g| g.id == e.id) {
+                    let attached = int(&e.f, "m_attachedParentId").unwrap_or(-1);
+                    self.groups.push(Group {
+                        id: e.id,
+                        name: e.deferred("SymbolInfo").and_then(|m| text(m, "m_name")).unwrap_or_default(),
+                        detail: int(&e.f, "m_viewType").unwrap_or(0) != 0 || attached > 0,
+                        attached_to: if attached > 0 { attached } else { -1 },
+                    });
+                }
+            } else if cls == "RvtLinkSymbol" {
+                if int(&e.f, "m_parentSymbolId").unwrap_or(-1) == -1 && !self.links.iter().any(|l| l.id == e.id) {
+                    let name = e.deferred("SymbolInfo").and_then(|m| text(m, "m_name")).unwrap_or_default();
+                    self.links.push(Link { id: e.id, name, ..Default::default() });
+                }
+            } else if cls == "RvtLinkInstance" {
+                let sym = e.deferred("RvtLinkInstInfo").or_else(|| e.deferred("InstanceInfo")).and_then(|m| int(m, "m_symbolId")).unwrap_or(-1);
+                if int(&e.f, "m_parentInstanceId").unwrap_or(-1) == -1 {
+                    self.link_instances.push((sym, text(&e.f, "m_name").unwrap_or_default()));
+                }
+            } else if s.isa(e.tag, "DBViewType") {
                 let name = e.deferred("SymbolInfo").and_then(|m| text(m, "m_name")).unwrap_or_default();
                 self.types.insert(e.id, ViewType { family: int(&e.f, "m_systemFamilyIdx").unwrap_or(-1), name });
             } else if s.isa(e.tag, "BrowserOrganization") {
@@ -608,7 +712,7 @@ pub fn read_model<F: Read + std::io::Seek>(cf: &mut cfb::CompoundFile<F>, names:
     drop(fmt);
     let mut want = vec![false; 65536];
     for &t in schema.classes.keys() {
-        if ["DBView", "DBViewType", "BrowserOrganization", "ProjectPhase"].iter().any(|b| schema.isa(t, b)) {
+        if ["DBView", "DBViewType", "BrowserOrganization", "ProjectPhase", "RvtLinkSymbol", "RvtLinkInstance", "FamilySurrogate", "FamSymSurrogate", "Family", "ElementGroupType"].iter().any(|b| schema.isa(t, b)) {
             want[t as usize] = true;
         }
     }
@@ -628,7 +732,66 @@ pub fn read_model<F: Read + std::io::Seek>(cf: &mut cfb::CompoundFile<F>, names:
     if let Some(g) = rvt_model::read_stream(cf, "/Global/Latest", 256 << 20, 256 << 20, |_| true) {
         m.tracking(&schema, &g.data, width);
     }
+    let mut td = Vec::new();
+    if cf.entry("/TransmissionData").is_ok_and(|e| e.len() < (16 << 20)) {
+        if let Ok(mut st) = cf.open_stream("/TransmissionData") {
+            let _ = st.read_to_end(&mut td);
+        }
+    }
+    m.attach_links(&td);
     Some(m)
+}
+
+/// `TransmissionData`: a u32 then a UTF-16 XML document with one `<ExternalFileReference>` per
+/// external file (`ElementId`, `ExternalFileReferenceType` "Revit Link", `LastSavedPath`,
+/// `LastSavedLoadState`…).
+pub fn transmission_refs(b: &[u8]) -> Vec<HashMap<String, String>> {
+    let u: Vec<u16> = b.get(4..).unwrap_or(&[]).chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+    let x = String::from_utf16_lossy(&u);
+    let mut out = Vec::new();
+    for block in x.split("<ExternalFileReference>").skip(1) {
+        let block = block.split("</ExternalFileReference>").next().unwrap_or("");
+        let mut m = HashMap::new();
+        let mut rest = block;
+        while let Some(a) = rest.find('<') {
+            let Some(b) = rest[a..].find('>') else { break };
+            let tag = &rest[a + 1..a + b];
+            rest = &rest[a + b + 1..];
+            if tag.starts_with('/') || tag.ends_with('/') {
+                continue;
+            }
+            if let Some(end) = rest.find(&format!("</{tag}>")) {
+                let v = rest[..end].replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'");
+                m.insert(tag.to_string(), v);
+                rest = &rest[end + tag.len() + 3..];
+            }
+        }
+        out.push(m);
+    }
+    out
+}
+
+impl Model {
+    fn attach_links(&mut self, td: &[u8]) {
+        let refs = transmission_refs(td);
+        for r in refs.iter().filter(|r| r.get("ExternalFileReferenceType").is_some_and(|t| t.contains("Revit"))) {
+            let id: i64 = r.get("ElementId").and_then(|v| v.trim().parse().ok()).unwrap_or(i64::MIN);
+            let path = r.get("LastSavedPath").or(r.get("DesiredPath")).cloned().unwrap_or_default();
+            let file = path.rsplit(['\\', '/']).next().unwrap_or("").to_string();
+            let state = r.get("LastSavedLoadState").cloned().unwrap_or_default();
+            if let Some(l) = self.links.iter_mut().find(|l| l.id == id) {
+                l.state = state;
+                l.path_name = file;
+            } else {
+                self.links.push(Link { id, name: String::new(), state, path_name: file, instances: Vec::new() });
+            }
+        }
+        for (sym, name) in std::mem::take(&mut self.link_instances) {
+            if let Some(l) = self.links.iter_mut().find(|l| l.id == sym) {
+                l.instances.push(name);
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------- tree
@@ -682,6 +845,63 @@ pub const LABELS_EN: &[(&str, &str)] = &[
     ("Vues 3D", "3D Views"),
     ("Coupes", "Sections"),
     ("Rendus", "Renderings"),
+    ("Liens Revit", "Revit Links"),
+    ("Familles", "Families"),
+    ("Groupes", "Groups"),
+    ("Détail", "Detail"),
+    ("Modèle", "Model"),
+    ("Autres familles", "Other Families"),
+    ("Symboles d'annotation", "Annotation Symbols"),
+    ("Murs", "Walls"),
+    ("Fenêtres", "Windows"),
+    ("Portes", "Doors"),
+    ("Sols", "Floors"),
+    ("Toits", "Roofs"),
+    ("Plafonds", "Ceilings"),
+    ("Mobilier", "Furniture"),
+    ("Poteaux", "Columns"),
+    ("Escaliers", "Stairs"),
+    ("Garde-corps", "Railings"),
+    ("Balustres", "Balusters"),
+    ("Modèles génériques", "Generic Models"),
+    ("Panneaux de murs-rideaux", "Curtain Panels"),
+    ("Meneaux de murs-rideaux", "Curtain Wall Mullions"),
+    ("Rampes", "Ramps"),
+    ("Cartouches", "Title Blocks"),
+    ("Supports", "Supports"),
+    ("Meubles de rangement", "Casework"),
+    ("Equipement électrique", "Electrical Equipment"),
+    ("Installations électriques", "Electrical Fixtures"),
+    ("Systèmes de mobilier", "Furniture Systems"),
+    ("Luminaires", "Lighting Fixtures"),
+    ("Equipement de génie climatique", "Mechanical Equipment"),
+    ("Installations de plomberie", "Plumbing Fixtures"),
+    ("Parking", "Parking"),
+    ("Site", "Site"),
+    ("Fondations", "Structural Foundations"),
+    ("Ossature", "Structural Framing"),
+    ("Poteaux porteurs", "Structural Columns"),
+    ("Equipement spécialisé", "Specialty Equipment"),
+    ("Plantes", "Planting"),
+    ("Environnement", "Entourage"),
+    ("Composants de détail", "Detail Items"),
+    ("Profils", "Profiles"),
+    ("Volume", "Mass"),
+    ("Raccords de gaine", "Duct Fittings"),
+    ("Bouches d'aération", "Air Terminals"),
+    ("Accessoires de gaine", "Duct Accessories"),
+    ("Raccords de canalisation", "Pipe Fittings"),
+    ("Accessoires de canalisation", "Pipe Accessories"),
+    ("Appareils téléphoniques", "Telephone Devices"),
+    ("Appareils d'appel infirmière", "Nurse Call Devices"),
+    ("Appareils de sécurité", "Security Devices"),
+    ("Appareils de communication", "Communication Devices"),
+    ("Appareils de données", "Data Devices"),
+    ("Dispositifs d'alarme incendie", "Fire Alarm Devices"),
+    ("Appareils d'éclairage", "Lighting Devices"),
+    ("Sprinklers", "Sprinklers"),
+    ("Raccords de chemin de câbles", "Cable Tray Fittings"),
+    ("Raccords de conduit", "Conduit Fittings"),
     ("Vues", "Views"),
     ("(pas sur des feuilles)", "(not on sheets)"),
     ("(préfixe de feuille)", "(Sheet Prefix)"),
@@ -1011,7 +1231,148 @@ pub fn build(m: &Model) -> Vec<BrowserNode> {
     }
     let sheet_leaf = |v: &View| (if v.sheet_number.is_empty() { v.name.clone() } else { format!("{} - {}", v.sheet_number, v.name) }, K::Sheet);
     c.section(title("Feuilles", osh), K::Sheets, &sheets, osh, sheet_leaf).flatten(0, &mut out);
+    families(m, &mut out);
+    groups(m, &mut out);
+    links(m, &mut out);
     out
+}
+
+/// Built-in category of a loadable family, French plural as in the French Revit browser.
+/// Annotation families (tags, heads, generic annotations…) share "Symboles d'annotation".
+pub fn category_label(id: i64) -> &'static str {
+    match id {
+        -2000011 => "Murs",
+        -2000014 => "Fenêtres",
+        -2000023 => "Portes",
+        -2000032 => "Sols",
+        -2000035 => "Toits",
+        -2000038 => "Plafonds",
+        -2000080 => "Mobilier",
+        -2000100 => "Poteaux",
+        -2000120 => "Escaliers",
+        -2000126 => "Garde-corps",
+        -2000127 => "Balustres",
+        -2000151 => "Modèles génériques",
+        -2000170 => "Panneaux de murs-rideaux",
+        -2000171 => "Meneaux de murs-rideaux",
+        -2000180 => "Rampes",
+        -2000280 => "Cartouches",
+        -2000948 => "Supports",
+        -2001000 => "Meubles de rangement",
+        -2001040 => "Equipement électrique",
+        -2001060 => "Installations électriques",
+        -2001100 => "Systèmes de mobilier",
+        -2001120 => "Luminaires",
+        -2001140 => "Equipement de génie climatique",
+        -2001160 => "Installations de plomberie",
+        -2001180 => "Parking",
+        -2001260 => "Site",
+        -2001300 => "Fondations",
+        -2001320 => "Ossature",
+        -2001330 => "Poteaux porteurs",
+        -2001350 => "Equipement spécialisé",
+        -2001360 => "Plantes",
+        -2001370 => "Environnement",
+        -2002000 => "Composants de détail",
+        -2003000 => "Profils",
+        -2003400 => "Volume",
+        -2008010 => "Raccords de gaine",
+        -2008013 => "Bouches d'aération",
+        -2008016 => "Accessoires de gaine",
+        -2008049 => "Raccords de canalisation",
+        -2008055 => "Accessoires de canalisation",
+        -2008075 => "Appareils téléphoniques",
+        -2008077 => "Appareils d'appel infirmière",
+        -2008079 => "Appareils de sécurité",
+        -2008081 => "Appareils de communication",
+        -2008083 => "Appareils de données",
+        -2008085 => "Dispositifs d'alarme incendie",
+        -2008087 => "Appareils d'éclairage",
+        -2008099 => "Sprinklers",
+        -2008126 => "Raccords de chemin de câbles",
+        -2008128 => "Raccords de conduit",
+        -2000150 | -2000197 | -2000400..=-2000300 | -2000600..=-2000401 | -2005999..=-2005000 | -2006999..=-2006000 | -2001269 => "Symboles d'annotation",
+        _ => "Autres familles",
+    }
+}
+
+/// "Familles": category > loadable family > types (in-place families are not listed).
+fn families(m: &Model, out: &mut Vec<BrowserNode>) {
+    // "Autres familles" (categories not in the table) last
+    let mut cats: std::collections::BTreeMap<(bool, Vec<(u8, u64, String)>), (&str, Vec<&Fam>)> = Default::default();
+    for f in m.families.iter().filter(|f| !m.in_place.contains(&f.family) && !f.name.is_empty()) {
+        let l = category_label(f.category);
+        cats.entry((l == "Autres familles", sort_key(l))).or_insert((l, Vec::new())).1.push(f);
+    }
+    if cats.is_empty() {
+        return;
+    }
+    out.push(BrowserNode { label: "Familles".into(), depth: 0, kind: K::Families });
+    for (_, (label, mut fams)) in cats {
+        out.push(BrowserNode { label: label.into(), depth: 1, kind: K::Folder });
+        fams.sort_by_key(|f| sort_key(&f.name));
+        // the same family can have several surrogates: one row, types merged
+        fams.dedup_by(|a, b| a.name == b.name);
+        for f in fams {
+            out.push(BrowserNode { label: f.name.clone(), depth: 2, kind: K::Family });
+            let ids: Vec<i64> = m.families.iter().filter(|g| g.name == f.name && category_label(g.category) == label).map(|g| g.surrogate).collect();
+            let mut types: Vec<&str> = m.family_types.iter().filter(|(s, n)| ids.contains(s) && !n.is_empty()).map(|(_, n)| n.as_str()).collect();
+            types.sort_by_key(|n| sort_key(n));
+            types.dedup();
+            for t in types {
+                out.push(BrowserNode { label: t.into(), depth: 3, kind: K::FamilyType });
+            }
+        }
+    }
+}
+
+fn sorted_groups(mut v: Vec<&Group>) -> Vec<&Group> {
+    v.sort_by_key(|g| sort_key(&g.name));
+    v
+}
+
+/// "Groupes": "Détail" and "Modèle" (attached detail groups under their model group).
+fn groups(m: &Model, out: &mut Vec<BrowserNode>) {
+    if m.views.is_empty() {
+        return;
+    }
+    let named: Vec<&Group> = m.groups.iter().filter(|g| !g.name.is_empty()).collect();
+    out.push(BrowserNode { label: "Groupes".into(), depth: 0, kind: K::Groups });
+    out.push(BrowserNode { label: "Détail".into(), depth: 1, kind: K::Folder });
+    for g in sorted_groups(named.iter().copied().filter(|g| g.detail && !named.iter().any(|p| p.id == g.attached_to)).collect()) {
+        out.push(BrowserNode { label: g.name.clone(), depth: 2, kind: K::Group });
+    }
+    out.push(BrowserNode { label: "Modèle".into(), depth: 1, kind: K::Folder });
+    for g in sorted_groups(named.iter().copied().filter(|g| !g.detail).collect()) {
+        out.push(BrowserNode { label: g.name.clone(), depth: 2, kind: K::Group });
+        for a in sorted_groups(named.iter().copied().filter(|a| a.attached_to == g.id).collect()) {
+            out.push(BrowserNode { label: a.name.clone(), depth: 3, kind: K::Group });
+        }
+    }
+}
+
+/// "Liens Revit": each linked model (red when it was not loaded at the last save) with its
+/// placed instances below.
+fn links(m: &Model, out: &mut Vec<BrowserNode>) {
+    let mut items: Vec<(String, &Link)> = m
+        .links
+        .iter()
+        .map(|l| (if !l.name.trim().is_empty() { l.name.clone() } else if !l.path_name.is_empty() { l.path_name.clone() } else { EMPTY.into() }, l))
+        .collect();
+    if items.is_empty() {
+        return;
+    }
+    items.sort_by_key(|(n, _)| sort_key(n));
+    out.push(BrowserNode { label: "Liens Revit".into(), depth: 0, kind: K::Links });
+    for (name, l) in items {
+        let loaded = l.state.is_empty() || l.state.eq_ignore_ascii_case("Loaded");
+        out.push(BrowserNode { label: name.clone(), depth: 1, kind: if loaded { K::Link } else { K::LinkUnloaded } });
+        let mut inst: Vec<String> = l.instances.iter().map(|i| if i.trim().is_empty() { name.clone() } else { format!("{name} : {i}") }).collect();
+        inst.sort_by_key(|n| sort_key(n));
+        for i in inst {
+            out.push(BrowserNode { label: i, depth: 2, kind: K::LinkInstance });
+        }
+    }
 }
 
 
@@ -1030,6 +1391,44 @@ mod tests {
 
     fn lines(rows: &[BrowserNode]) -> Vec<String> {
         rows.iter().map(|r| format!("{}{}", "  ".repeat(r.depth as usize), r.label)).collect()
+    }
+
+    #[test]
+    fn transmission_data_links() {
+        let x = "<?xml version=\"1.0\"?><TransmissionData><ExternalFileReference><ElementId>42</ElementId><ExternalFileReferenceType>Revit Link</ExternalFileReferenceType><LastSavedPath>..\\B\\Lien A.rvt</LastSavedPath><LastSavedLoadState>NotFound</LastSavedLoadState></ExternalFileReference><ExternalFileReference><ElementId>7</ElementId><ExternalFileReferenceType>Keynote Table</ExternalFileReferenceType></ExternalFileReference></TransmissionData>";
+        let mut b = (x.encode_utf16().count() as u32).to_le_bytes().to_vec();
+        b.extend(x.encode_utf16().flat_map(|c| c.to_le_bytes()));
+        assert_eq!(transmission_refs(&b).len(), 2);
+        let mut m = Model { links: vec![Link { id: 42, name: "Lien A.rvt".into(), ..Default::default() }], link_instances: vec![(42, "1".into())], ..Default::default() };
+        m.attach_links(&b);
+        let mut out = Vec::new();
+        links(&m, &mut out);
+        assert_eq!(out.iter().map(|r| (r.label.as_str(), r.depth, r.kind)).collect::<Vec<_>>(), [("Liens Revit", 0, K::Links), ("Lien A.rvt", 1, K::LinkUnloaded), ("Lien A.rvt : 1", 2, K::LinkInstance)]);
+        // no link: no section
+        let mut out = Vec::new();
+        links(&Model::default(), &mut out);
+        assert!(out.is_empty());
+    }
+
+    /// Families, groups and links of the public samples (rst_2025 links the rac sample, not
+    /// loaded when it was saved).
+    #[test]
+    fn sample_families_groups_links() {
+        let Some(m) = model("rac_2018.rvt") else { return };
+        let l = lines(&build(&m));
+        let at = |s: &str| l.iter().position(|x| x == s).unwrap_or_else(|| panic!("{s} missing"));
+        let f = at("Familles");
+        assert!(at("  Installations de plomberie") > f);
+        let shower = at("    M_Shower Stall-2D");
+        assert_eq!(&l[shower + 1..shower + 3], ["      M_Shower Stall-2D", "      small"]);
+        assert_eq!(l.iter().filter(|x| *x == "    M_Pile-Steel Pipe").count(), 1);
+        let g = at("Groupes");
+        assert_eq!(&l[g..g + 7], ["Groupes", "  Détail", "  Modèle", "    Array Group 1", "    Array Group 2", "    Array Group 3", "    Array Group 4"]);
+        let Some(m) = model("rst_2025.rvt") else { return };
+        let rows = build(&m);
+        let k = rows.iter().position(|r| r.kind == K::Links).unwrap();
+        assert_eq!(rows[k + 1].kind, K::LinkUnloaded);
+        assert_eq!(rows[k + 2].label, format!("{} : 4", rows[k + 1].label));
     }
 
     #[test]

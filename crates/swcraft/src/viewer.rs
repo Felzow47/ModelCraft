@@ -30,7 +30,7 @@ fn col_f(c: Color32) -> [f32; 3] {
 
 // ---------------------------------------------------------------- tree
 
-pub fn tree_panel(ui: &mut egui::Ui, doc: &mut Document, cmds: &mut Cmds) {
+pub fn tree_panel(ui: &mut egui::Ui, doc: &mut Document, cmds: &mut Cmds, browser_full: bool) {
     let t = Tokens::get(ui.ctx());
     ui.add_space(6.0);
     let has_browser = doc.scene.as_ref().is_some_and(|s| !s.browser.is_empty());
@@ -44,6 +44,16 @@ pub fn tree_panel(ui: &mut egui::Ui, doc: &mut Document, cmds: &mut Cmds) {
             let sc = crate::commands::shortcut_text(ui.ctx(), "view.tree");
             if icons::button(ui, "panel-left-close", 22.0, false, &format!("{}  ({sc})", tr("Replier le panneau"))).clicked() {
                 cmds.push("view.tree");
+            }
+            if doc.show_browser {
+                let tip = if browser_full {
+                    tr("Navigateur complet (comme Revit) : cliquer pour la vue simplifiée")
+                } else {
+                    tr("Vue simplifiée (vues, feuilles, nomenclatures) : cliquer pour le navigateur complet")
+                };
+                if icons::button(ui, if browser_full { "list-tree" } else { "list" }, 22.0, false, tip).clicked() {
+                    cmds.push("view.browser_full");
+                }
             }
         });
     });
@@ -69,7 +79,7 @@ pub fn tree_panel(ui: &mut egui::Ui, doc: &mut Document, cmds: &mut Cmds) {
         return;
     };
     if doc.show_browser {
-        browser_panel(ui, doc);
+        browser_panel(ui, doc, browser_full);
         return;
     }
     let filter = doc.tree_filter.to_lowercase();
@@ -292,13 +302,19 @@ fn browser_icon(k: sw_format::BrowserKind, open: bool) -> &'static str {
         K::Detail => "zoom-in",
         K::Drafting => "pen-line",
         K::Rendering => "image",
+        K::Links | K::Link | K::LinkInstance => "link",
+        K::Families => "shapes",
+        K::Family => "component",
+        K::FamilyType => "box",
+        K::Groups | K::Group => "group",
+        K::LinkUnloaded => "unlink",
         K::Other => "app-window",
     }
 }
 
 fn browser_label(label: &str, k: sw_format::BrowserKind) -> String {
     use sw_format::BrowserKind as K;
-    let section = matches!(k, K::Views | K::Legends | K::Schedules | K::Sheets | K::Folder);
+    let section = matches!(k, K::Views | K::Legends | K::Schedules | K::Sheets | K::Links | K::Families | K::Groups | K::Folder);
     if section && crate::i18n::current() == crate::i18n::Lang::En {
         craft_formats::rvt_browser::label_en(label)
     } else {
@@ -308,16 +324,31 @@ fn browser_label(label: &str, k: sw_format::BrowserKind) -> String {
 
 /// The document browser (Revit "Navigateur de projet"): views in their folders, legends,
 /// schedules and sheets, read-only.
-fn browser_panel(ui: &mut egui::Ui, doc: &mut Document) {
+fn browser_panel(ui: &mut egui::Ui, doc: &mut Document, full: bool) {
+    use sw_format::BrowserKind as K;
     let t = Tokens::get(ui.ctx());
     let Some(scene) = &doc.scene else { return };
     let b = &scene.browser;
     let filter = doc.tree_filter.to_lowercase();
     let has_kids = |i: usize| b.get(i + 1).is_some_and(|n| n.depth > b[i].depth);
+    // simplified view: only views, legends, schedules and sheets (no families, groups, links)
+    let mut shown = vec![true; b.len()];
+    if !full {
+        let mut hide = false;
+        for (i, r) in b.iter().enumerate() {
+            if r.depth == 0 {
+                hide = matches!(r.kind, K::Families | K::Groups | K::Links);
+            }
+            shown[i] = !hide;
+        }
+    }
     let mut rows: Vec<usize> = Vec::new();
     if filter.is_empty() {
         let mut skip: Option<u16> = None;
         for (i, r) in b.iter().enumerate() {
+            if !shown[i] {
+                continue;
+            }
             if let Some(d) = skip {
                 if r.depth > d {
                     continue;
@@ -330,7 +361,7 @@ fn browser_panel(ui: &mut egui::Ui, doc: &mut Document) {
             }
         }
     } else {
-        rows = (0..b.len()).filter(|&i| !has_kids(i) && b[i].label.to_lowercase().contains(&filter)).collect();
+        rows = (0..b.len()).filter(|&i| shown[i] && !has_kids(i) && b[i].label.to_lowercase().contains(&filter)).collect();
     }
     let row_h = 24.0;
     let mut toggle = None;
@@ -354,12 +385,18 @@ fn browser_panel(ui: &mut egui::Ui, doc: &mut Document) {
                 let cr = Rect::from_center_size(egui::pos2(x0 + 7.0, rect.center().y), vec2(16.0, 16.0));
                 icons::paint(ui, cr, if open { "chevron-down" } else { "chevron-right" }, 14.0, t.text_muted);
             }
-            let col = if selected { t.accent_text } else if r.depth == 0 { t.text } else { t.icon };
+            let col = if r.kind == sw_format::BrowserKind::LinkUnloaded { Color32::from_rgb(0xe5, 0x48, 0x4d) } else if selected { t.accent_text } else if r.depth == 0 { t.text } else { t.icon };
             icons::paint(ui, Rect::from_center_size(egui::pos2(x0 + 25.0, rect.center().y), vec2(16.0, 16.0)), browser_icon(r.kind, open && kids), 15.0, col);
             let font = if r.depth == 0 || selected { theme::medium(13.0) } else { theme::regular(13.0) };
             let label = browser_label(&r.label, r.kind);
             widgets::row_text(ui, egui::pos2(x0 + 38.0, rect.center().y), label.clone(), font, t.text, rect.right() - x0 - 44.0);
-            let resp = if label.chars().count() > 26 { resp.on_hover_text(&label) } else { resp };
+            let resp = if r.kind == sw_format::BrowserKind::LinkUnloaded {
+                resp.on_hover_text(format!("{label}\n{}", tr("Non chargé lors du dernier enregistrement (déchargé ou introuvable)")))
+            } else if label.chars().count() > 26 {
+                resp.on_hover_text(&label)
+            } else {
+                resp
+            };
             if resp.clicked() {
                 if kids {
                     toggle = Some(i);

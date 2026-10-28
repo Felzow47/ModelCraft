@@ -529,6 +529,10 @@ impl App {
                 st.show_tree = !st.show_tree;
                 self.settings_dirty = true;
             }
+            "view.browser_full" => {
+                st.browser_full = !st.browser_full;
+                self.settings_dirty = true;
+            }
             "view.info" => {
                 st.show_info = !st.show_info;
                 self.settings_dirty = true;
