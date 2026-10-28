@@ -237,20 +237,22 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
                 .into(),
         );
     } else {
-        let why = match &boxes {
-            Err(e) => e.clone(),
-            Ok(_) => "aucun élément placé avec une boîte".into(),
-        };
-        s.warnings.push(format!(
-            "Géométrie Revit non lue ({why}) : seuls l'aperçu et les informations du projet sont affichés. Pour la 3D : dans Revit, Fichier › Exporter › IFC, puis ouvrez le fichier .ifc obtenu dans ModelCraft."
-        ));
+        s.warnings.push(
+            match &boxes {
+                Ok(_) => NO_ELEMENTS,
+                Err(_) => NO_ELEMENTS_FORMAT,
+            }
+            .into(),
+        );
     }
     s.properties = props;
-    if s.preview.is_none() && n == 0 {
-        s.warnings.push("Aucune vignette enregistrée dans ce fichier Revit".into());
-    }
     Ok(s)
 }
+
+/// Warning when the file holds no placed element with a box (translated by the viewer).
+pub const NO_ELEMENTS: &str = "Aucun élément 3D placé dans ce fichier";
+/// Same when the element records are not recognised (Revit 2008 and similar old formats).
+pub const NO_ELEMENTS_FORMAT: &str = "Aucun élément 3D placé lisible dans ce fichier (format Revit trop ancien ou non reconnu)";
 
 /// Stored size above which a partition is not read (memory bound).
 const MAX_PARTITION: u64 = 2 << 30;

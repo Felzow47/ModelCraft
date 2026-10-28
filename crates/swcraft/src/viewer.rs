@@ -2107,7 +2107,7 @@ pub fn info_panel(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, cmds: &m
         if !s.warnings.is_empty() {
             card(ui, tr("Avertissements"), &mut |ui| {
                 for w in s.warnings.iter().take(8) {
-                    ui.label(egui::RichText::new(w).font(theme::regular(11.5)).color(t.warning));
+                    ui.label(egui::RichText::new(crate::i18n::tr_str(w)).font(theme::regular(11.5)).color(t.warning));
                 }
             });
         }

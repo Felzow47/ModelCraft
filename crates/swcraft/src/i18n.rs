@@ -63,6 +63,14 @@ pub fn tr(fr: &'static str) -> &'static str {
     }
 }
 
+/// Translate a runtime string (e.g. a loader warning) when the table knows it.
+pub fn tr_str(fr: &str) -> String {
+    match current() {
+        Lang::Fr => fr.to_string(),
+        Lang::En => table().get(fr).copied().unwrap_or(fr).to_string(),
+    }
+}
+
 /// Translate then substitute `{key}` placeholders.
 pub fn trf(fr: &'static str, args: &[(&str, &str)]) -> String {
     let mut s = tr(fr).to_string();
