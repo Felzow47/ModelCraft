@@ -62,8 +62,8 @@ fn main() -> eframe::Result {
         let next = |args: &mut std::iter::Skip<std::env::ArgsOs>| args.next().and_then(|s| s.into_string().ok());
         match a.to_str() {
             Some("-h") | Some("--help") => usage(),
-            Some("--associate") => match platform::associate() {
-                Ok(n) => {
+            Some("--associate") => match platform::associate(&platform::ASSOC_EXTS.iter().map(|e| e.to_string()).collect::<Vec<_>>()) {
+                Ok((n, _)) => {
                     println!("{n} extensions associées à {}", branding::NAME);
                     std::process::exit(0)
                 }

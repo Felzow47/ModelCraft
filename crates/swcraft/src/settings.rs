@@ -166,6 +166,8 @@ pub struct Settings {
     pub show_info: bool,
     pub recent: Vec<RecentFile>,
     pub pinned: Vec<String>,
+    /// Extensions to register for "Open with" (Windows); the others are unregistered.
+    pub assoc_exts: Vec<String>,
 }
 
 fn version_zero() -> u32 {
@@ -212,6 +214,7 @@ impl Default for Settings {
             show_info: true,
             recent: Vec::new(),
             pinned: Vec::new(),
+            assoc_exts: crate::platform::ASSOC_EXTS.iter().map(|e| e.to_string()).collect(),
         }
     }
 }
@@ -296,13 +299,16 @@ impl Settings {
         }
         self.recent_max = self.recent_max.clamp(1, 50);
         self.recent.truncate(self.recent_max);
+        self.assoc_exts.retain(|e| crate::platform::ASSOC_EXTS.contains(&e.as_str()));
+        self.assoc_exts.dedup();
     }
 
     /// Everything back to defaults except the lists (recent files, pinned folders).
     pub fn reset_preferences(&mut self) {
         let recent = std::mem::take(&mut self.recent);
         let pinned = std::mem::take(&mut self.pinned);
-        *self = Settings { recent, pinned, ..Settings::default() };
+        let assoc_exts = std::mem::take(&mut self.assoc_exts);
+        *self = Settings { recent, pinned, assoc_exts, ..Settings::default() };
     }
 
     pub fn add_recent(&mut self, path: &Path) {

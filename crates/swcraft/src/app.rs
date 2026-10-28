@@ -565,8 +565,10 @@ impl App {
                 }
             }
             "tool.assoc" => {
-                let msg = match crate::platform::associate() {
-                    Ok(n) => trf("{n} extensions associées à ModelCraft (clic droit › Ouvrir avec)", &[("n", &n.to_string())]),
+                let sel = self.settings.assoc_exts.clone();
+                let msg = match crate::platform::associate(&sel) {
+                    Ok((n, 0)) => trf("{n} extensions associées à ModelCraft (clic droit › Ouvrir avec)", &[("n", &n.to_string())]),
+                    Ok((n, r)) => trf("{n} extensions associées à ModelCraft, {r} retirées (clic droit › Ouvrir avec)", &[("n", &n.to_string()), ("r", &r.to_string())]),
                     Err(e) => trf("Association impossible : {e}", &[("e", &e)]),
                 };
                 self.assoc_result = Some(msg.clone());

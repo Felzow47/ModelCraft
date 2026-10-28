@@ -71,6 +71,47 @@ fn row(ui: &mut egui::Ui, title: &str, desc: &str, control: impl FnOnce(&mut egu
     ui.add_space(6.0);
 }
 
+/// One checkbox per extension, grouped by family, with all / none per group.
+fn assoc_picker(ui: &mut egui::Ui, sel: &mut Vec<String>) {
+    let t = Tokens::get(ui.ctx());
+    for (group, exts) in crate::platform::ASSOC_GROUPS {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(10.0, 4.0);
+            let all = exts.iter().all(|e| sel.iter().any(|s| s == e));
+            let mut g = all;
+            if ui.checkbox(&mut g, egui::RichText::new(tr(group)).font(theme::medium(12.5)).color(t.text)).on_hover_text(tr("Tout cocher / tout décocher")).changed() {
+                sel.retain(|s| !exts.contains(&s.as_str()));
+                if g {
+                    sel.extend(exts.iter().map(|e| e.to_string()));
+                }
+            }
+            ui.label(egui::RichText::new("·").color(t.text_muted));
+            for e in *exts {
+                let mut on = sel.iter().any(|s| s == e);
+                if ui.checkbox(&mut on, egui::RichText::new(e.to_uppercase()).font(theme::regular(12.0)).color(t.text)).changed() {
+                    sel.retain(|s| s != e);
+                    if on {
+                        sel.push(e.to_string());
+                    }
+                }
+            }
+        });
+    }
+    ui.horizontal(|ui| {
+        if widgets::ghost_button(ui, "check", tr("Tout cocher")).clicked() {
+            *sel = crate::platform::ASSOC_EXTS.iter().map(|e| e.to_string()).collect();
+        }
+        if widgets::ghost_button(ui, "x", tr("Tout décocher")).clicked() {
+            sel.clear();
+        }
+        ui.label(egui::RichText::new(trf("{n} / {t} formats cochés", &[("n", &sel.len().to_string()), ("t", &crate::platform::ASSOC_EXTS.len().to_string())])).font(theme::regular(11.5)).color(t.text_muted));
+    });
+    ui.add_space(4.0);
+    let r = ui.available_rect_before_wrap();
+    ui.painter().hline(r.x_range(), r.top(), Stroke::new(1.0, t.divider));
+    ui.add_space(6.0);
+}
+
 fn combo<T: PartialEq + Copy>(ui: &mut egui::Ui, id: &str, value: &mut T, options: &[(T, &str)]) -> bool {
     let cur = options.iter().find(|(v, _)| v == value).map(|(_, l)| *l).unwrap_or("");
     let mut changed = false;
@@ -180,11 +221,12 @@ fn page(app: &mut App, ui: &mut egui::Ui, cat: SettingsCat) {
             row(ui, tr("Fichiers récents"), tr("Nombre de fichiers affichés sur l'accueil."), |ui| {
                 ui.add(egui::Slider::new(&mut s.recent_max, 3..=30));
             });
-            row(ui, tr("Associations de fichiers"), tr("Ajoute ModelCraft à « Ouvrir avec » pour SLDPRT, SLDASM, STEP, IGES, IFC, FBX, glTF, STL, OBJ, 3MF… (utilisateur courant, sans droits administrateur)."), |ui| {
+            row(ui, tr("Associations de fichiers"), tr("Ajoute ModelCraft à « Ouvrir avec » pour les formats cochés ci-dessous et le retire des autres (utilisateur courant, sans droits administrateur)."), |ui| {
                 if widgets::icon_pill(ui, "link", tr("Associer"), false).clicked() {
                     app.cmds.push("tool.assoc");
                 }
             });
+            assoc_picker(ui, &mut s.assoc_exts);
             if let Some(m) = &app.assoc_result {
                 ui.label(egui::RichText::new(m).color(Tokens::get(ui.ctx()).text_muted));
             }
@@ -296,11 +338,12 @@ fn page(app: &mut App, ui: &mut egui::Ui, cat: SettingsCat) {
                     s.pinned.clear();
                 }
             });
-            row(ui, tr("Associations de fichiers"), tr("Ajoute ModelCraft à « Ouvrir avec » (utilisateur courant)."), |ui| {
+            row(ui, tr("Associations de fichiers"), tr("Ajoute ModelCraft à « Ouvrir avec » pour les formats cochés (utilisateur courant)."), |ui| {
                 if widgets::icon_pill(ui, "link", tr("Associer"), false).clicked() {
                     app.cmds.push("tool.assoc");
                 }
             });
+            assoc_picker(ui, &mut s.assoc_exts);
         }
     }
 }
