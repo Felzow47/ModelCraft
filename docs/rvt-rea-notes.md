@@ -234,3 +234,42 @@ ElementId autres que les phases ; relations de filtre autres qu'égal/différent
 - Pas encore fait : contenu 2D des feuilles (lignes du cartouche, fenêtres, textes), cadrage
   sur la zone de la vue (zone cadrée, plage de vue), filtrage des éléments par vue, orientation
   réelle des coupes / élévations et des vues 3D enregistrées.
+
+## V7 : formes reconstruites (implémenté, `rvt_geom.rs` + `rvt_shape.rs`)
+
+Lecture objet par objet des éléments (décodeur générique piloté par `/Formats/Latest`), puis
+reconstruction paramétrique propre (aucune B-rep n'est stockée : `SnapshotData` / `GElement` vides).
+
+Encodage complété (vérifié par égalité taille déclarée / taille consommée) :
+- type `b0 b1 00 00` : si `b1 & 0xf0 == 0x10`, un `u32 n` suit (tableau fixe : `10` valeurs,
+  `13` n pointeurs bruts de 4 octets, `11`/`12` n pointeurs possédés) ; `50` ensemble / vecteur
+  (`51` pointeurs possédés, `53` pointeurs bruts : `u32` compte + n × 4) ; `0d` sous-descripteur
+  `[u32 1][0x20][type élément]`. Exemple : les arêtes (`GEdgeBase`, `0e 13` + n) manquaient au schéma.
+- pointeur possédé : `u32 v` ; 0 = nul (4 octets) ; sinon `u16` classe (6 octets) ; `0xffffffff` =
+  nouvel objet différé (file FIFO) ; petit `v` = identifiant local (première mention : corps en file,
+  ensuite : référence) ; `v = 1` document, `v = 2` l'élément lui-même. Pointeur brut (`0e 03`) : 4 octets.
+
+Géométrie lue (pieds, repère projet) :
+- **Mur** (`SWall`) : `VWallDriver.m_pCrv` (`GLine` : `m_origin`, `m_dirVec`, `m_endParams`) ;
+  profil modifié `VWallExtrusionHelper.m_pCurveLoops` (plan vertical de la ligne de base) ; faces de
+  référence `m_pRefFaces` → `Plane` (`m_origin`, `m_xVec`, `m_yVec`, enveloppe `[umin,vmin,umax,vmax]`)
+  qui donnent épaisseur, bas, haut et extrémités ; `WallCutoutGStep` / `WallEmbedWallGStep.m_instId`
+  = inserts qui découpent (ouverture = boîte de l'insert projetée). Les raccords ne sont pas stockés
+  avec le mur : le long d'un axe, la boîte de l'élément les donne.
+- **Sol / plafond / dalle** : `m_bottom` / `m_top` (sols), contours `*ExtrusionHelper.m_pCurveLoops`
+  horizontaux ; sinon plans de référence horizontaux.
+- **Canalisation / gaine / chemin de câbles** (`RbsSingleCurve` et dérivées) : `m_pCurveDriver` →
+  `RbsCurveDriver.m_pCrv` (axe), `m_dWidthOrDiameter`, `m_dHeight`, `m_vNormal` (sens de la hauteur),
+  `*DesignPropertyManager.m_sOverallSize`.
+- **Extrusion de famille** (`ExtrusionElem`) : `m_famId` (document famille), `m_cutting` (vide),
+  `m_paramSet` (`ParamValueSetDouble`) : `-1001800` début, `-1001801` fin ;
+  `ExtrusionElemExtrusionHelper.m_pCurveLoops` ; plan d'esquisse `VarSketch.m_pPlane`.
+- **Instance** (`FamilyInstance`) : `m_pInstanceInfo` → `InstanceInfo.m_Trf` (`m_3x3`, colonnes =
+  images de X, Y, Z ; `m_or`) et `m_symbolId` ; `FamilySymbol.m_famId` = document famille intégré
+  (sinon `m_familyId` / `m_partitionSurrogateId` : famille chargée dont la géométrie n'est pas dans
+  le projet, seule la boîte reste). Contrôle : chaque forme placée doit rester dans la boîte de
+  l'élément (sinon boîte).
+
+Validation (échantillons publics + fichier sous NDA, localement) : sur 5 660 formes reconstruites du
+fichier MEP sous NDA, 4 s'écartent de plus de 5 cm de la boîte Revit ; `M_Chair-Desk.rfa` : 4/4.
+Pas encore : murs courbes, toits, lissages / balayages / révolutions, raccords MEP (familles chargées).

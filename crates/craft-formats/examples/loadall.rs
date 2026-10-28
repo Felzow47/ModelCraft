@@ -21,6 +21,9 @@ fn main() {
         let name = f.display();
         match r {
             Ok(Ok(s)) => {
+                if std::env::var_os("LOADALL_GROUPS").is_some() {
+                    println!("{:?}", s.components.iter().filter(|c| c.depth == 1).map(|c| c.name.clone()).collect::<Vec<_>>());
+                }
                 let tris: usize = s.meshes.iter().map(|m| m.mesh.triangle_count()).sum();
                 let mut lo = [f32::MAX; 3];
                 let mut hi = [f32::MIN; 3];

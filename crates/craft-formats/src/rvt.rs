@@ -226,16 +226,35 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
     let boxes = element_boxes(&mut cf, &names, family);
     s.timings.decode = t0.elapsed();
     ctl.check().map_err(|e| e.to_string())?;
-    let n = match &boxes {
-        Ok(b) => build_boxes(&mut s, b, family),
-        Err(_) => 0,
+    // element shapes rebuilt from their parameters (walls, floors, family solids…), read with
+    // the project browser in the same pass over the partitions
+    let mut shapes = crate::rvt_shape::Shapes::default();
+    let t1 = std::time::Instant::now();
+    if !family {
+        if let Some(m) = crate::rvt_browser::read_model_with(&mut cf, &names, MAX_PARTITION, &mut |sc, d, w| shapes.partition(sc, d, w)) {
+            s.browser = crate::rvt_browser::build(&m);
+        }
+    } else if let Some(f) = rvt_model::read_stream(&mut cf, "/Formats/Latest", 64 << 20, 64 << 20, |_| true).filter(|f| f.verified > 0) {
+        let sc = crate::rvt_browser::Schema::parse(&f.data);
+        for (n, _) in names.iter().filter(|(n, _)| n.starts_with("Partitions/")) {
+            let Some(inf) = rvt_model::read_stream(&mut cf, &format!("/{n}"), MAX_PARTITION, rvt_model::MAX_INFLATED, |_| true) else { continue };
+            let w = rvt_model::walk_chain(&inf.data).id_width;
+            shapes.partition(&sc, &inf.data, if w == 0 { 4 } else { w });
+        }
+    }
+    ctl.check().map_err(|e| e.to_string())?;
+    let meshes = match &boxes {
+        Ok(b) => shapes.finish(&b.iter().filter(|b| b.id != 0).map(|b| (b.id, (b.min, b.max))).collect(), family),
+        Err(_) => Default::default(),
+    };
+    s.timings.decode += t1.elapsed();
+    let (n, shaped) = match &boxes {
+        Ok(b) => build_boxes(&mut s, b, &meshes, family),
+        Err(_) => (0, 0),
     };
     if n > 0 {
-        props.push(("Éléments 3D".into(), format!("{n} (boîtes englobantes)")));
-        s.warnings.push(
-            "Revit : chaque élément est affiché par sa boîte englobante, colorée par catégorie (pas encore sa forme exacte). Pour la géométrie complète : dans Revit, Fichier › Exporter › IFC, puis ouvrez le .ifc dans ModelCraft."
-                .into(),
-        );
+        props.push(("Éléments 3D".into(), format!("{n} dont {shaped} en forme reconstruite, {} en boîte englobante", n - shaped)));
+        s.warnings.push(if shaped == n { WARN_SHAPES } else { WARN_SHAPES_PARTIAL }.into());
     } else {
         s.warnings.push(
             match &boxes {
@@ -245,17 +264,14 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
             .into(),
         );
     }
-    if !family {
-        let t1 = std::time::Instant::now();
-        if let Some(m) = crate::rvt_browser::read_model(&mut cf, &names, MAX_PARTITION) {
-            s.browser = crate::rvt_browser::build(&m);
-        }
-        s.timings.decode += t1.elapsed();
-    }
     s.properties = props;
     Ok(s)
 }
 
+/// Warning when every element has its rebuilt shape (translated by the viewer).
+pub const WARN_SHAPES: &str = "Revit : formes reconstruites à partir des paramètres des éléments ; les raccords et ouvertures peuvent différer légèrement de Revit.";
+/// Warning when some elements stay boxes (translated by the viewer).
+pub const WARN_SHAPES_PARTIAL: &str = "Revit : les murs droits, sols, plafonds et solides extrudés des familles incluses sont affichés avec leur forme reconstruite ; les autres éléments (familles chargées sans géométrie lisible dans le projet, toits, murs courbes, balayages…) restent des boîtes englobantes colorées par catégorie. Pour la géométrie complète : dans Revit, Fichier › Exporter › IFC, puis ouvrez le .ifc dans ModelCraft.";
 /// Warning when the file holds no placed element with a box (translated by the viewer).
 pub const NO_ELEMENTS: &str = "Aucun élément 3D placé dans ce fichier";
 /// Same when the element records are not recognised (Revit 2008 and similar old formats).
@@ -304,9 +320,10 @@ const PER_ELEMENT_MAX: usize = 150_000;
 /// Zones per axis when merging (very large models only).
 const ZONES: f64 = 16.0;
 
-/// One group component per category with its elements (or zones) below; returns the number
-/// of boxes.
-fn build_boxes(s: &mut Scene, boxes: &[rvt_model::ElemBox], family: bool) -> usize {
+/// One group component per category with its elements (or zones) below; an element with a
+/// rebuilt shape in `shapes` (by id) gets it, the others their box. Returns the number of
+/// elements and how many have their shape.
+fn build_boxes(s: &mut Scene, boxes: &[rvt_model::ElemBox], shapes: &std::collections::HashMap<i64, crate::rvt_shape::Mesh>, family: bool) -> (usize, usize) {
     let t = std::time::Instant::now();
     type Cat<'a> = (Vec<&'a rvt_model::ElemBox>, [f32; 4]);
     let mut by: std::collections::BTreeMap<&'static str, Cat> = Default::default();
@@ -318,8 +335,9 @@ fn build_boxes(s: &mut Scene, boxes: &[rvt_model::ElemBox], family: bool) -> usi
     let root = s.components.len();
     if n == 0 {
         s.timings.mesh = t.elapsed();
-        return 0;
+        return (0, 0);
     }
+    let mut shaped = 0;
     s.components.push(crate::component(&crate::stem(&s.path), 0, None, true, None));
     let per_element = n <= PER_ELEMENT_MAX;
     // zone grid for the merged mode
@@ -336,13 +354,23 @@ fn build_boxes(s: &mut Scene, boxes: &[rvt_model::ElemBox], family: bool) -> usi
         s.components.push(crate::component(&format!("{name} ({})", list.len()), 1, Some(root), true, None));
         if per_element {
             // unit cube [0,1]³ shared by the whole category
-            let unit = rvt_model::ElemBox { category: 0, min: [0.0; 3], max: [1.0; 3] };
+            let unit = rvt_model::ElemBox { id: 0, category: 0, min: [0.0; 3], max: [1.0; 3] };
             let (mut pos, mut tri) = (Vec::new(), Vec::new());
             rvt_model::push_box(&unit, &mut pos, &mut tri);
             let mesh = sw_format::mesh::build_from_triangles(&pos, &tri, 30.0, true);
             s.meshes.push(sw_format::SceneMesh { name: name.to_string(), mesh, source: sw_format::MeshSource::Embedded, color: Some(color) });
             let mi = s.meshes.len() - 1;
             for (k, b) in list.iter().enumerate() {
+                if let Some(m) = shapes.get(&b.id).filter(|m| !m.tri.is_empty()) {
+                    // its own mesh, already in place
+                    let mesh = sw_format::mesh::build_from_triangles(&m.pos, &m.tri, 30.0, true);
+                    s.meshes.push(sw_format::SceneMesh { name: name.to_string(), mesh, source: sw_format::MeshSource::Embedded, color: Some(color) });
+                    let mut c = crate::component(&format!("{name} {}", k + 1), 2, Some(group), false, Some(s.meshes.len() - 1));
+                    c.world = [1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.];
+                    s.components.push(c);
+                    shaped += 1;
+                    continue;
+                }
                 let (o, sz) = rvt_model::box_extent(b);
                 let mut c = crate::component(&format!("{name} {}", k + 1), 2, Some(group), false, Some(mi));
                 c.world = [sz[0], 0., 0., 0., 0., sz[1], 0., 0., 0., 0., sz[2], 0., o[0], o[1], o[2], 1.];
@@ -353,7 +381,14 @@ fn build_boxes(s: &mut Scene, boxes: &[rvt_model::ElemBox], family: bool) -> usi
             for b in &list {
                 let key: [i32; 3] = std::array::from_fn(|a| (((b.min[a] + b.max[a]) * 0.5 - lo[a]) / cell[a]).floor().clamp(0.0, ZONES - 1.0) as i32);
                 let z = zones.entry(key).or_default();
-                rvt_model::push_box(b, &mut z.0, &mut z.1);
+                if let Some(m) = shapes.get(&b.id).filter(|m| !m.tri.is_empty()) {
+                    let base = z.0.len() as u32;
+                    z.0.extend_from_slice(&m.pos);
+                    z.1.extend(m.tri.iter().map(|t| [t[0] + base, t[1] + base, t[2] + base]));
+                    shaped += 1;
+                } else {
+                    rvt_model::push_box(b, &mut z.0, &mut z.1);
+                }
                 z.2 += 1;
             }
             for (k, (_, (pos, tri, count))) in zones.into_iter().enumerate() {
@@ -365,7 +400,7 @@ fn build_boxes(s: &mut Scene, boxes: &[rvt_model::ElemBox], family: bool) -> usi
     }
     s.timings.mesh = t.elapsed();
     s.up_z = true;
-    n
+    (n, shaped)
 }
 
 #[cfg(test)]
@@ -400,13 +435,17 @@ mod tests {
             let p = dir.join(n);
             p.exists().then(|| load(&p, &crate::Options::default()).expect(n))
         };
-        // boxes drawn: one per element component (a unit cube), or 12 triangles each in a zone
-        let count = |s: &Scene| s.components.iter().filter_map(|c| s.meshes.get(c.mesh?)).map(|m| m.mesh.triangle_count() / 12).sum::<usize>();
+        // elements drawn: one component each (its shape or a unit cube)
+        let count = |s: &Scene| s.components.iter().filter(|c| c.depth == 2 && c.mesh.is_some()).count();
+        // how many with a rebuilt shape (property "N dont M en forme reconstruite…")
+        let shaped = |s: &Scene| s.properties.iter().find(|(k, _)| k == "Éléments 3D").and_then(|(_, v)| v.split(" dont ").nth(1)?.split(' ').next()?.parse::<usize>().ok()).unwrap_or(0);
         if let Some(s) = get("DynamoSample_2025.rvt") {
             let n = count(&s);
             eprintln!("DynamoSample_2025: {n} boxes, {:?}", s.components.iter().filter(|c| c.depth < 2).map(|c| c.name.clone()).collect::<Vec<_>>());
             assert!(n > 100, "{n}");
             assert!(s.components.iter().any(|c| c.name.starts_with("Murs")));
+            // straight walls and floors rebuilt from their parameters
+            assert!(shaped(&s) >= 40, "{}", shaped(&s));
             // a building a few tens of metres wide
             let (lo, hi) = s.components.iter().filter(|c| c.mesh.is_some()).fold(([f32::MAX; 3], [f32::MIN; 3]), |(l, h), c| {
                 let w = glam::Mat4::from_cols_array(&c.world);

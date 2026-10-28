@@ -18,27 +18,30 @@ use sw_format::{BrowserKind as K, BrowserNode};
 // ---------------------------------------------------------------- schema
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Ty {
-    b0: u8,
-    b1: u8,
-    n: u32,
-    tag: u16,
+pub(crate) struct Ty {
+    pub(crate) b0: u8,
+    pub(crate) b1: u8,
+    pub(crate) n: u32,
+    pub(crate) tag: u16,
+    /// Compound value types (`0x0d`): the element type (`b0`, count) given after the field.
+    pub(crate) e0: u8,
+    pub(crate) en: u32,
 }
 
 #[derive(Debug)]
-struct Class {
-    name: String,
-    parent: u16,
-    fields: Vec<(String, Ty)>,
+pub(crate) struct Class {
+    pub(crate) name: String,
+    pub(crate) parent: u16,
+    pub(crate) fields: Vec<(String, Ty)>,
 }
 
 /// The class table of `/Formats/Latest`.
 pub struct Schema {
-    classes: HashMap<u16, Class>,
+    pub(crate) classes: HashMap<u16, Class>,
     by_name: HashMap<String, u16>,
     /// Flattened field list of each class, base class first.
-    chains: HashMap<u16, Vec<(String, Ty)>>,
-    id_tag: u16,
+    pub(crate) chains: HashMap<u16, Vec<(String, Ty)>>,
+    pub(crate) id_tag: u16,
 }
 
 fn u16_at(d: &[u8], p: usize) -> Option<u16> {
@@ -140,6 +143,13 @@ impl Schema {
         v.sort();
         v
     }
+    /// Full field chain of a class (base first) as `(name, "b0 b1 n tag-name")`, for probes.
+    pub fn describe(&self, tag: u16) -> Vec<(String, String)> {
+        self.chains.get(&tag).map(|c| c.iter().map(|(n, t)| (n.clone(), format!("{:02x} {:02x} {} [{:02x}x{}] {}", t.b0, t.b1, t.n, t.e0, t.en, if t.tag != 0 { self.name(t.tag) } else { "" }))).collect()).unwrap_or_default()
+    }
+    pub fn tag_of(&self, name: &str) -> Option<u16> {
+        self.by_name.get(name).copied()
+    }
     pub fn name(&self, tag: u16) -> &str {
         self.classes.get(&tag).map(|c| c.name.as_str()).unwrap_or("")
     }
@@ -188,10 +198,18 @@ fn parse_def(d: &[u8], i: usize, depth: u32) -> Option<(Class, usize)> {
 fn parse_type(d: &[u8], mut p: usize, depth: u32) -> Option<(Ty, usize)> {
     let (b0, b1) = (*d.get(p)?, *d.get(p + 1)?);
     p += 4;
-    let mut ty = Ty { b0, b1, n: 0, tag: 0 };
-    if b1 == 0x10 {
+    let mut ty = Ty { b0, b1, n: 0, tag: 0, e0: 7, en: 3 };
+    // `1x`: fixed array of n (`10` values, `13` raw pointers…)
+    if b1 & 0xf0 == 0x10 {
         ty.n = u32_at(d, p)?;
         p += 4;
+    }
+    // `0d` (XYZ-like): `[u32 len][name][element type]`, e.g. `01 00 00 00 20` + `07 10 00 00 03 00 00 00`
+    if b0 == 0x0d && u32_at(d, p) == Some(1) && d.get(p + 4) == Some(&0x20) {
+        let (e, q) = parse_type(d, p + 5, depth + 1)?;
+        ty.e0 = e.b0;
+        ty.en = if e.b1 == 0x10 { e.n } else { 1 };
+        p = q;
     }
     if b0 == 0x0e && matches!(b1, 0x00 | 0x50 | 0x10) {
         let mut t = u16_at(d, p)?;
@@ -206,6 +224,17 @@ fn parse_type(d: &[u8], mut p: usize, depth: u32) -> Option<(Ty, usize)> {
 }
 
 // ---------------------------------------------------------------- decoder
+
+pub(crate) fn prim_size(b0: u8) -> Option<usize> {
+    Some(match b0 {
+        9 => 16,
+        7 | 6 | 0x0b => 8,
+        4 | 5 => 4,
+        3 => 2,
+        1 | 2 => 1,
+        _ => return None,
+    })
+}
 
 /// A decoded value. Field names borrow the schema.
 #[derive(Debug, Clone)]
@@ -251,6 +280,8 @@ struct Dec<'a, 's> {
     d: &'a [u8],
     w: usize,
     pending: Vec<u16>,
+    /// Explicit local object ids already queued (`[u32 id][u16 tag]` pointers).
+    seen: HashSet<u32>,
 }
 
 /// Most deferred objects decoded after an element's body (the parameter sets come first).
@@ -285,19 +316,37 @@ impl<'a, 's> Dec<'a, 's> {
         let d = self.d;
         if ty.b0 == 0x0e {
             return match ty.b1 {
-                // owned pointer: ff ff ff ff + class tag (content deferred), null, or back-reference
+                // owned pointer: null (0), or `[u32][u16 class tag]`: ff ff ff ff (content
+                // deferred) or an explicit local object id (deferred on first mention, a
+                // reference afterwards; 1 and 2 are the document and the element itself)
                 1 | 2 => {
                     let v = u32_at(d, p)?;
-                    if v == 0xffff_ffff {
-                        self.pending.push(u16_at(d, p + 4)?);
+                    if v == 0 {
+                        return Some(p + 4);
+                    }
+                    let t = u16_at(d, p + 4)?;
+                    if !self.s.chains.contains_key(&t) {
+                        return None;
+                    }
+                    if v == 0xffff_ffff || (v > 2 && v < 0x100_0000 && self.seen.insert(v)) {
+                        self.pending.push(t);
                         Some(p + 6)
-                    } else if v < 0x10000 {
-                        Some(p + 4)
+                    } else if v < 0x100_0000 {
+                        Some(p + 6)
                     } else {
                         None
                     }
                 }
                 3 => Some(p + 4),
+                0x13 => Some(p + 4 * ty.n as usize),
+                0x53 => Some(p + 4 + 4 * u32_at(d, p)? as usize),
+                0x11 | 0x12 => {
+                    let mut p = p;
+                    for _ in 0..ty.n {
+                        p = self.val(Ty { b0: 0x0e, b1: 1, n: 0, tag: 0, e0: 7, en: 3 }, p, out, name, depth)?;
+                    }
+                    Some(p)
+                }
                 // fixed array of by-value objects
                 0x10 => {
                     let mut p = p;
@@ -311,14 +360,14 @@ impl<'a, 's> Dec<'a, 's> {
                     }
                     Some(p)
                 }
-                0x51 => {
+                0x51 | 0x52 => {
                     let n = u32_at(d, p)?;
                     if n > 100_000 {
                         return None;
                     }
                     let mut p = p + 4;
                     for _ in 0..n {
-                        p = self.val(Ty { b0: 0x0e, b1: 1, n: 0, tag: 0 }, p, out, name, depth)?;
+                        p = self.val(Ty { b0: 0x0e, b1: 1, n: 0, tag: 0, e0: 7, en: 3 }, p, out, name, depth)?;
                     }
                     Some(p)
                 }
@@ -375,8 +424,8 @@ impl<'a, 's> Dec<'a, 's> {
         }
         let sz = match ty.b0 {
             9 => 16,
-            // XYZ
-            0x0d => 24,
+            // XYZ (or another compound of `en` elements of type `e0`)
+            0x0d => prim_size(ty.e0)? * ty.en.max(1) as usize,
             7 | 6 | 0x0b => 8,
             4 | 5 => 4,
             3 => 2,
@@ -415,6 +464,7 @@ impl<'a, 's> Dec<'a, 's> {
     /// order until the first one that does not decode.
     fn obj(&mut self, tag: u16, p: usize) -> Option<Elem<'s>> {
         self.pending.clear();
+        self.seen.clear();
         let mut f = Map::new();
         let mut p = self.fields(tag, p, &mut f, 0)?;
         let mut def = Vec::new();
@@ -457,7 +507,7 @@ impl<'s> Elem<'s> {
 /// Every element of a class in `want` in a partition: header `[id][u32][u32 size][u16 tag]`,
 /// body right after the tag; kept when its decoded `m_id` equals the header id.
 pub fn scan<'s>(s: &'s Schema, d: &[u8], w: usize, want: &[bool]) -> Vec<Elem<'s>> {
-    let mut dec = Dec { s, d, w, pending: Vec::new() };
+    let mut dec = Dec { s, d, w, pending: Vec::new(), seen: HashSet::new() };
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     if d.len() < 16 + w {
@@ -687,7 +737,7 @@ impl Model {
     /// organizations found in the partitions.
     fn tracking(&mut self, s: &Schema, g: &[u8], w: usize) {
         let Some(tag) = s.tag("BrowserOrganizationTracking") else { return };
-        let mut dec = Dec { s, d: g, w, pending: Vec::new() };
+        let mut dec = Dec { s, d: g, w, pending: Vec::new(), seen: HashSet::new() };
         for p in 0..g.len().saturating_sub(8) {
             if u32_at(g, p) != Some(1) {
                 continue;
@@ -717,6 +767,12 @@ impl Model {
 
 /// Reads the browser model of a Revit file (`None` when the schema is unreadable).
 pub fn read_model<F: Read + std::io::Seek>(cf: &mut cfb::CompoundFile<F>, names: &[(String, u64)], max_partition: u64) -> Option<Model> {
+    read_model_with(cf, names, max_partition, &mut |_, _, _| {})
+}
+
+/// [`read_model`], also handing every inflated partition (schema, data, id width) to `each`
+/// (one inflation for several readers).
+pub fn read_model_with<F: Read + std::io::Seek>(cf: &mut cfb::CompoundFile<F>, names: &[(String, u64)], max_partition: u64, each: &mut dyn FnMut(&Schema, &[u8], usize)) -> Option<Model> {
     let fmt = rvt_model::read_stream(cf, "/Formats/Latest", 64 << 20, 64 << 20, |_| true)?;
     if fmt.verified == 0 {
         return None;
@@ -738,6 +794,8 @@ pub fn read_model<F: Read + std::io::Seek>(cf: &mut cfb::CompoundFile<F>, names:
         width = width.max(w);
         let elems = scan(&schema, &inf.data, w, &want);
         m.absorb(&schema, &elems);
+        drop(elems);
+        each(&schema, &inf.data, w);
     }
     if width == 0 {
         return None;

@@ -302,12 +302,16 @@ moteur : `WGPU_BACKEND=dx12|vulkan|gl`.
 ## Limites connues (V4)
 
 - **eDrawings `.easm`** : seule la vignette est affichée (géométrie HSF non décodée).
-- **Revit `.rvt` / `.rfa`** : depuis la V5, chaque élément placé (murs, sols, toits, portes, fenêtres,
-  murs-rideaux, poteaux, mobilier, réseaux…) est affiché par sa **boîte englobante**, colorée par
-  catégorie, lue dans les flux `Partitions/*` (fichiers Revit 2018 à 2026, en travail partagé ou non,
-  ouverts en lecture seule sans verrou ni synchronisation ; voir `docs/rvt-rea-notes.md`). Pas encore
-  la forme exacte (la B-rep Revit n'est pas décodée) ; les fichiers d'avant 2018 ne sont pas vérifiés. Pour la géométrie complète : exporter
-  en **IFC** depuis Revit, puis l'ouvrir dans ModelCraft.
+- **Revit `.rvt` / `.rfa`** : depuis la V7, les **murs droits** (profil modifié compris, ouvertures
+  rectangulaires des portes et fenêtres), **sols, plafonds, dalles**, **canalisations, gaines, chemins de
+  câbles** et les **solides extrudés des familles incluses** (fichiers `.rfa`, familles intégrées au
+  projet) sont affichés avec leur **forme reconstruite** à partir des paramètres stockés (la B-rep
+  Revit n'est pas enregistrée dans le fichier). Les autres éléments (familles chargées sans géométrie
+  dans le projet : raccords, mobilier, portes…, toits, murs courbes, balayages, lissages, révolutions)
+  restent des **boîtes englobantes** colorées par catégorie (fichiers Revit 2018 à 2026, en travail
+  partagé ou non, ouverts en lecture seule sans verrou ni synchronisation ; voir
+  `docs/rvt-rea-notes.md`). Pour la géométrie complète : exporter en **IFC** depuis Revit, puis
+  l'ouvrir dans ModelCraft.
 - **Parasolid `.x_t`** : non supporté (aucun lecteur libre) ; exporter en STEP. Les fichiers SolidWorks
   sans maillage d'affichage contiennent pourtant leur B-rep Parasolid (flux `Config-N-Partition`,
   « TRANSMIT FILE » binaire) : un lecteur indépendant du format XT (documenté publiquement par

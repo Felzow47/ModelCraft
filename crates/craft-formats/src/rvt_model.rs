@@ -297,6 +297,8 @@ pub fn walk_chain(p: &[u8]) -> Chain {
 /// One placed element's box, in metres.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ElemBox {
+    /// Id of the element record holding the box (0: unknown).
+    pub id: i64,
     pub category: i64,
     pub min: [f64; 3],
     pub max: [f64; 3],
@@ -358,7 +360,12 @@ pub fn scan_boxes(p: &[u8], chain: &Chain, outline: u16, max_boxes: usize) -> Sc
         if !seen.insert((cat, v.map(f64::to_bits))) {
             continue;
         }
-        s.boxes.push(ElemBox { category: cat, min: [v[0] * FEET, v[1] * FEET, v[2] * FEET], max: [v[3] * FEET, v[4] * FEET, v[5] * FEET] });
+        // the record holding the frame: the last one starting before it
+        let id = match chain.records.partition_point(|r| r.0 <= j) {
+            0 => 0,
+            k => chain.records[k - 1].1 as i64,
+        };
+        s.boxes.push(ElemBox { id, category: cat, min: [v[0] * FEET, v[1] * FEET, v[2] * FEET], max: [v[3] * FEET, v[4] * FEET, v[5] * FEET] });
         if s.boxes.len() >= max_boxes {
             break;
         }
