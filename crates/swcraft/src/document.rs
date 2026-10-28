@@ -596,11 +596,12 @@ impl Document {
             st.vertices += m.positions.len();
             st.faces += m.face_count;
             let w = self.display[i];
-            // uniform scale of the instance (CAD transforms are rigid, mirrored at most)
-            let sc = w.transform_vector3(Vec3::X).length() as f64;
+            // volume scales by the determinant (exact, also for the sized unit cubes of Revit
+            // boxes); area by its 2/3 power (exact for uniform scales, CAD transforms are rigid)
+            let det = (glam::Mat3::from_mat4(w).determinant().abs()) as f64;
             let (v, a) = self.mesh_va[mi];
-            st.volume += v.abs() * sc * sc * sc;
-            st.area += a * sc * sc;
+            st.volume += v.abs() * det;
+            st.area += a * det.powf(2.0 / 3.0);
             for k in 0..8 {
                 let p = Vec3::new(
                     if k & 1 == 0 { m.bbox_min[0] } else { m.bbox_max[0] },

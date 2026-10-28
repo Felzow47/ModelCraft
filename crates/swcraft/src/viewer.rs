@@ -547,8 +547,13 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
     }
     {
         // explode trails: thin, half transparent, the accent hue (not a harsh yellow)
-        let col = if t.dark() { [0.62, 0.78, 1.0, 0.55] } else { [0.18, 0.32, 0.62, 0.6] };
-        for (a, b) in doc.explode_lines() {
+        let mut col = if t.dark() { [0.62, 0.78, 1.0, 0.55] } else { [0.18, 0.32, 0.62, 0.6] };
+        let trails = doc.explode_lines();
+        // thousands of elements (a building): fainter trails, so they do not hide the model
+        if trails.len() > 400 {
+            col[3] *= (400.0 / trails.len() as f32).sqrt().max(0.25);
+        }
+        for (a, b) in trails {
             lines.push(LineVertex { pos: a.to_array(), col });
             lines.push(LineVertex { pos: b.to_array(), col });
         }

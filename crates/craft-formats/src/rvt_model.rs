@@ -455,7 +455,8 @@ pub fn category(cat: i64) -> Option<(&'static str, [f32; 4])> {
 
 /// Box of one element as 12 triangles appended to `pos` / `tri`. A direction with no extent
 /// gets 1 cm so a plate stays visible.
-pub fn push_box(b: &ElemBox, pos: &mut Vec<[f32; 3]>, tri: &mut Vec<[u32; 3]>) {
+/// Corners of the box as drawn: a side thinner than 1 cm is widened to 1 cm.
+fn drawn(b: &ElemBox) -> ([f64; 3], [f64; 3]) {
     let mut lo = b.min;
     let mut hi = b.max;
     for a in 0..3 {
@@ -465,6 +466,17 @@ pub fn push_box(b: &ElemBox, pos: &mut Vec<[f32; 3]>, tri: &mut Vec<[u32; 3]>) {
             hi[a] = m + 0.005;
         }
     }
+    (lo, hi)
+}
+
+/// Origin (min corner) and size of the box as drawn, for a unit cube placed by a matrix.
+pub fn box_extent(b: &ElemBox) -> ([f32; 3], [f32; 3]) {
+    let (lo, hi) = drawn(b);
+    (lo.map(|v| v as f32), std::array::from_fn(|a| (hi[a] - lo[a]) as f32))
+}
+
+pub fn push_box(b: &ElemBox, pos: &mut Vec<[f32; 3]>, tri: &mut Vec<[u32; 3]>) {
+    let (lo, hi) = drawn(b);
     let base = pos.len() as u32;
     for k in 0..8u32 {
         pos.push([

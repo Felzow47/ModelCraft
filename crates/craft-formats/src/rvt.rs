@@ -289,27 +289,72 @@ pub fn element_boxes<F: Read + std::io::Seek>(cf: &mut cfb::CompoundFile<F>, nam
     Ok(out)
 }
 
-/// One mesh and one component per category; returns the number of boxes.
+/// Up to this many boxes, every element is its own component (one shared unit cube per
+/// category, placed and sized by its matrix: one instanced draw per category), so selection,
+/// hiding and the exploded view work element by element. Above, the boxes are merged by
+/// category and by zone of the model.
+const PER_ELEMENT_MAX: usize = 150_000;
+/// Zones per axis when merging (very large models only).
+const ZONES: f64 = 16.0;
+
+/// One group component per category with its elements (or zones) below; returns the number
+/// of boxes.
 fn build_boxes(s: &mut Scene, boxes: &[rvt_model::ElemBox], family: bool) -> usize {
     let t = std::time::Instant::now();
-    let mut by: std::collections::BTreeMap<&'static str, (Vec<[f32; 3]>, Vec<[u32; 3]>, [f32; 4], usize)> = Default::default();
+    type Cat<'a> = (Vec<&'a rvt_model::ElemBox>, [f32; 4]);
+    let mut by: std::collections::BTreeMap<&'static str, Cat> = Default::default();
     for b in boxes {
         let Some((name, color)) = rvt_model::category_in(b.category, family) else { continue };
-        let e = by.entry(name).or_insert_with(|| (Vec::new(), Vec::new(), color, 0));
-        rvt_model::push_box(b, &mut e.0, &mut e.1);
-        e.3 += 1;
+        by.entry(name).or_insert_with(|| (Vec::new(), color)).0.push(b);
     }
-    let mut n = 0;
+    let n: usize = by.values().map(|c| c.0.len()).sum();
     let root = s.components.len();
-    s.components.push(crate::component(&crate::stem(&s.path), 0, None, true, None));
-    for (name, (pos, tri, color, count)) in by {
-        let mesh = sw_format::mesh::build_from_triangles(&pos, &tri, 30.0, true);
-        s.meshes.push(sw_format::SceneMesh { name: name.to_string(), mesh, source: sw_format::MeshSource::Embedded, color: Some(color) });
-        s.components.push(crate::component(&format!("{name} ({count})"), 1, Some(root), false, Some(s.meshes.len() - 1)));
-        n += count;
-    }
     if n == 0 {
-        s.components.truncate(root);
+        s.timings.mesh = t.elapsed();
+        return 0;
+    }
+    s.components.push(crate::component(&crate::stem(&s.path), 0, None, true, None));
+    let per_element = n <= PER_ELEMENT_MAX;
+    // zone grid for the merged mode
+    let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    for b in by.values().flat_map(|c| c.0.iter()) {
+        for a in 0..3 {
+            lo[a] = lo[a].min((b.min[a] + b.max[a]) * 0.5);
+            hi[a] = hi[a].max((b.min[a] + b.max[a]) * 0.5);
+        }
+    }
+    let cell: [f64; 3] = std::array::from_fn(|a| ((hi[a] - lo[a]) / ZONES).max(1e-6));
+    for (name, (list, color)) in by {
+        let group = s.components.len();
+        s.components.push(crate::component(&format!("{name} ({})", list.len()), 1, Some(root), true, None));
+        if per_element {
+            // unit cube [0,1]³ shared by the whole category
+            let unit = rvt_model::ElemBox { category: 0, min: [0.0; 3], max: [1.0; 3] };
+            let (mut pos, mut tri) = (Vec::new(), Vec::new());
+            rvt_model::push_box(&unit, &mut pos, &mut tri);
+            let mesh = sw_format::mesh::build_from_triangles(&pos, &tri, 30.0, true);
+            s.meshes.push(sw_format::SceneMesh { name: name.to_string(), mesh, source: sw_format::MeshSource::Embedded, color: Some(color) });
+            let mi = s.meshes.len() - 1;
+            for (k, b) in list.iter().enumerate() {
+                let (o, sz) = rvt_model::box_extent(b);
+                let mut c = crate::component(&format!("{name} {}", k + 1), 2, Some(group), false, Some(mi));
+                c.world = [sz[0], 0., 0., 0., 0., sz[1], 0., 0., 0., 0., sz[2], 0., o[0], o[1], o[2], 1.];
+                s.components.push(c);
+            }
+        } else {
+            let mut zones: std::collections::BTreeMap<[i32; 3], (Vec<[f32; 3]>, Vec<[u32; 3]>, usize)> = Default::default();
+            for b in &list {
+                let key: [i32; 3] = std::array::from_fn(|a| (((b.min[a] + b.max[a]) * 0.5 - lo[a]) / cell[a]).floor().clamp(0.0, ZONES - 1.0) as i32);
+                let z = zones.entry(key).or_default();
+                rvt_model::push_box(b, &mut z.0, &mut z.1);
+                z.2 += 1;
+            }
+            for (k, (_, (pos, tri, count))) in zones.into_iter().enumerate() {
+                let mesh = sw_format::mesh::build_from_triangles(&pos, &tri, 30.0, true);
+                s.meshes.push(sw_format::SceneMesh { name: name.to_string(), mesh, source: sw_format::MeshSource::Embedded, color: Some(color) });
+                s.components.push(crate::component(&format!("{name} - zone {} ({count})", k + 1), 2, Some(group), false, Some(s.meshes.len() - 1)));
+            }
+        }
     }
     s.timings.mesh = t.elapsed();
     s.up_z = true;
@@ -348,15 +393,19 @@ mod tests {
             let p = dir.join(n);
             p.exists().then(|| load(&p, &crate::Options::default()).expect(n))
         };
-        let count = |s: &Scene| s.meshes.iter().map(|m| m.mesh.triangle_count() / 12).sum::<usize>();
+        // boxes drawn: one per element component (a unit cube), or 12 triangles each in a zone
+        let count = |s: &Scene| s.components.iter().filter_map(|c| s.meshes.get(c.mesh?)).map(|m| m.mesh.triangle_count() / 12).sum::<usize>();
         if let Some(s) = get("DynamoSample_2025.rvt") {
             let n = count(&s);
-            eprintln!("DynamoSample_2025: {n} boxes, {:?}", s.components.iter().map(|c| c.name.clone()).collect::<Vec<_>>());
+            eprintln!("DynamoSample_2025: {n} boxes, {:?}", s.components.iter().filter(|c| c.depth < 2).map(|c| c.name.clone()).collect::<Vec<_>>());
             assert!(n > 100, "{n}");
             assert!(s.components.iter().any(|c| c.name.starts_with("Murs")));
             // a building a few tens of metres wide
-            let (lo, hi) = s.meshes.iter().fold(([f32::MAX; 3], [f32::MIN; 3]), |(l, h), m| {
-                (std::array::from_fn(|i| l[i].min(m.mesh.bbox_min[i])), std::array::from_fn(|i| h[i].max(m.mesh.bbox_max[i])))
+            let (lo, hi) = s.components.iter().filter(|c| c.mesh.is_some()).fold(([f32::MAX; 3], [f32::MIN; 3]), |(l, h), c| {
+                let w = glam::Mat4::from_cols_array(&c.world);
+                let m = &s.meshes[c.mesh.unwrap()].mesh;
+                let (a, b) = (w.transform_point3(m.bbox_min.into()), w.transform_point3(m.bbox_max.into()));
+                (std::array::from_fn(|i| l[i].min(a[i]).min(b[i])), std::array::from_fn(|i| h[i].max(a[i]).max(b[i])))
             });
             assert!((0..3).all(|i| hi[i] - lo[i] < 200.0), "{lo:?} {hi:?}");
         }
@@ -369,7 +418,7 @@ mod tests {
         for (n, min) in [("ad/rst_2018.rvt", 500), ("ad/rac_2018.rvt", 300), ("ad/rst_2023.rvt", 500), ("ad/rac_2021.rvt", 300), ("ad/rst_2025.rvt", 500)] {
             if let Some(s) = get(n) {
                 let k = count(&s);
-                eprintln!("{n}: {k} boxes, {:?}", s.components.iter().map(|c| c.name.clone()).collect::<Vec<_>>());
+                eprintln!("{n}: {k} boxes, {:?}", s.components.iter().filter(|c| c.depth < 2).map(|c| c.name.clone()).collect::<Vec<_>>());
                 assert!(k >= min, "{n}: {k}");
                 assert!(s.properties.iter().any(|(k, _)| k == "Revit"), "{n}");
             }

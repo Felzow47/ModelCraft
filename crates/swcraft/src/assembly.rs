@@ -35,6 +35,31 @@ pub const OTHERS_OPACITY: f32 = 0.18;
 pub const EXPLODE_SPREAD: f32 = 1.0;
 /// …plus this fraction of the model's half-diagonal, so pieces near the centre still move out.
 pub const EXPLODE_PUSH: f32 = 0.6;
+/// Up to this many pieces the push is full; above, it shrinks as 1/count.
+pub const EXPLODE_PUSH_PIECES: f32 = 6.0;
+/// From this many pieces on, the explosion centre is the per-axis median of the piece
+/// centres (stray far-away elements, common in Revit models, do not drag it off the model).
+const MEDIAN_FROM: usize = 16;
+
+/// Point the pieces fly away from: the mean of their centres (few pieces: with two pieces that
+/// share almost the same box centre, like a U-bolt in its bracket, the box centre can sit to
+/// one side of both and send them the same way; around the mean they always go opposite ways),
+/// the per-axis median for many.
+fn explode_centre(c: &[Vec3]) -> Vec3 {
+    if c.is_empty() {
+        return Vec3::ZERO;
+    }
+    if c.len() < MEDIAN_FROM {
+        return c.iter().sum::<Vec3>() / c.len() as f32;
+    }
+    let med = |f: fn(&Vec3) -> f32| {
+        let mut v: Vec<f32> = c.iter().map(f).collect();
+        let m = v.len() / 2;
+        let (_, x, _) = v.select_nth_unstable_by(m, f32::total_cmp);
+        *x
+    };
+    Vec3::new(med(|p| p.x), med(|p| p.y), med(|p| p.z))
+}
 
 impl Assembly {
     pub fn empty() -> Assembly {
@@ -106,11 +131,15 @@ impl Assembly {
         let mut world_off = vec![Vec3::ZERO; n];
         if scene_ok && pieces.len() >= 2 {
             let np = pieces.len();
-            // Reference point: the mean of the piece centres, not the box centre. With two
-            // pieces that share almost the same box centre (a U-bolt in its bracket) the box
-            // centre can sit to one side of both and send them the same way; around the mean
-            // they always go opposite ways.
-            let sc = pieces.iter().map(|&i| own_center[i]).sum::<Vec3>() / np as f32;
+            let sc = explode_centre(&pieces.iter().map(|&i| own_center[i]).collect::<Vec<_>>());
+            // A few pieces (a bracket and its bolts) also get a fixed push so they clearly part;
+            // with many (a building's elements) the push fades out and the spread does the work:
+            // every gap grows in proportion, nothing is thrown onto a hollow shell.
+            let fade = (EXPLODE_PUSH_PIECES / np as f32).min(1.0);
+            let push = sr * EXPLODE_PUSH * fade;
+            // the own-size term is capped too: a site slab or a long main under a building's
+            // thousand elements must not be thrown off by half its own length
+            let support_cap = sr * fade.max(0.05);
             for (k, &i) in pieces.iter().enumerate() {
                 let c = own_center[i];
                 let d = c - sc;
@@ -129,7 +158,7 @@ impl Assembly {
                 // interlocked pieces (a bolt through a bracket) come fully out of each other
                 let h = (own_hi[i] - own_lo[i]) * 0.5;
                 let support = dir.x.abs() * h.x + dir.y.abs() * h.y + dir.z.abs() * h.z;
-                world_off[i] = d * EXPLODE_SPREAD + dir * (sr * EXPLODE_PUSH + support.min(sr));
+                world_off[i] = d * EXPLODE_SPREAD + dir * (push + support.min(support_cap));
             }
         }
         // local offset = own world offset minus the nearest ancestor's (rigid translations add up)
@@ -353,5 +382,62 @@ mod explode_tests {
             let disp = (s1[j] - s0[j]).normalize();
             assert!(disp.dot(asm.world_off[pieces[j]].normalize()) > 0.999);
         }
+    }
+
+    /// A building's worth of elements (a 10×10×4 grid under category groups): at 100 % every
+    /// element is further from the centre than before, neighbours part (each gap grows), and
+    /// the explosion is a spread, not a throw onto a hollow shell around an empty middle.
+    #[test]
+    fn many_elements_spread_out() {
+        let mut centres = Vec::new();
+        for x in 0..10 {
+            for y in 0..10 {
+                for z in 0..4 {
+                    centres.push([x as f32, y as f32 * 0.5, z as f32 * 3.0]);
+                }
+            }
+        }
+        let meshes: Vec<SceneMesh> = centres.iter().map(|c| SceneMesh { name: "m".into(), mesh: tri_at(*c), source: sw_format::MeshSource::Embedded, color: None }).collect();
+        let id = [1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.];
+        let mut components = vec![SceneComponent { name: "root".into(), path: String::new(), depth: 0, parent: None, is_assembly: true, world: id, mesh: None, suppressed: false, hidden: false, color: None }];
+        for g in 0..2 {
+            components.push(SceneComponent { name: format!("cat{g}"), path: String::new(), depth: 1, parent: Some(0), is_assembly: true, world: id, mesh: None, suppressed: false, hidden: false, color: None });
+        }
+        for k in 0..centres.len() {
+            components.push(SceneComponent { name: format!("e{k}"), path: String::new(), depth: 2, parent: Some(1 + k % 2), is_assembly: false, world: id, mesh: Some(k), suppressed: false, hidden: false, color: None });
+        }
+        let n = components.len();
+        let scene = sw_format::Scene { meshes, components, path: Default::default(), kind: sw_format::DocKind::Assembly, container: sw_format::ContainerKind::Other("t"), stream_count: 0, preview: None, warnings: vec![], properties: vec![], timings: Default::default(), up_z: false };
+        let mut asm = Assembly::new(&scene, vec![Mat4::IDENTITY; n]);
+        let pos = |asm: &Assembly| {
+            let (_, acc) = asm.compute();
+            (3..n).map(|i| acc[i].transform_point3(asm.own_center[i])).collect::<Vec<_>>()
+        };
+        let p0 = pos(&asm);
+        asm.explode = 1.0;
+        let p1 = pos(&asm);
+        let sc = explode_centre(&p0);
+        // nearest element to the centre stays near it: no hollow shell
+        let near = (0..p0.len()).min_by(|&a, &b| (p0[a] - sc).length().total_cmp(&(p0[b] - sc).length())).unwrap();
+        assert!((p1[near] - sc).length() < 2.0, "the middle was emptied");
+        // every pair of neighbours ends further apart, along the model's own layout
+        for a in 0..p0.len() {
+            assert!((p1[a] - sc).length() >= (p0[a] - sc).length() - 1e-4);
+            for b in a + 1..p0.len() {
+                let (d0, d1) = ((p0[a] - p0[b]).length(), (p1[a] - p1[b]).length());
+                if d0 < 1.01 {
+                    assert!(d1 > d0 * 1.5, "neighbours {a} {b} did not part: {d0} -> {d1}");
+                }
+            }
+        }
+    }
+
+    /// A stray element far away does not move the explosion centre off the model.
+    #[test]
+    fn centre_ignores_strays() {
+        let mut c: Vec<Vec3> = (0..40).map(|k| Vec3::new(k as f32 % 5.0, 0.0, (k / 5) as f32)).collect();
+        c.push(Vec3::new(5000.0, 0.0, 0.0));
+        let m = explode_centre(&c);
+        assert!(m.x < 5.0 && m.z < 8.0);
     }
 }
