@@ -207,3 +207,7 @@ ElementId autres que les phases ; relations de filtre autres qu'égal/différent
 - Interface : bouton près de l'arbre pour basculer entre le navigateur complet (comme Revit) et la
   vue simplifiée (vues, légendes, nomenclatures, feuilles) ; préférence `browser_full` enregistrée
   dans settings.json.
+- Catégories : identifiants vérifiés contre la liste publique `BuiltInCategory` de l'API Revit
+  (valeurs stables entre versions). Toutes les catégories d'étiquettes, têtes, symboles, repères,
+  titres de vue et conditions d'appui sont rangées sous « Symboles d'annotation ». Sur le parc local,
+  il ne reste plus de catégorie inconnue parmi celles relevées.

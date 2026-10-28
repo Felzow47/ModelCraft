@@ -892,6 +892,17 @@ pub const LABELS_EN: &[(&str, &str)] = &[
     ("Accessoires de gaine", "Duct Accessories"),
     ("Raccords de canalisation", "Pipe Fittings"),
     ("Accessoires de canalisation", "Pipe Accessories"),
+    ("Extrémités de garde-corps", "Railing Terminations"),
+    ("Equipement de restauration", "Food Service Equipment"),
+    ("Circulation verticale", "Vertical Circulation"),
+    ("Profils de division", "Division Profiles"),
+    ("Formes d'armature", "Rebar Shapes"),
+    ("Assemblages structurels", "Structural Connections"),
+    ("Coupleurs", "Rebar Couplers"),
+    ("Aménagements paysagers", "Hardscape"),
+    ("Raidisseurs structurels", "Structural Stiffeners"),
+    ("Equipement de plomberie", "Plumbing Equipment"),
+    ("Treillis", "Structural Trusses"),
     ("Appareils téléphoniques", "Telephone Devices"),
     ("Appareils d'appel infirmière", "Nurse Call Devices"),
     ("Appareils de sécurité", "Security Devices"),
@@ -1238,6 +1249,33 @@ pub fn build(m: &Model) -> Vec<BrowserNode> {
 }
 
 /// Built-in category of a loadable family, French plural as in the French Revit browser.
+/// Built-in annotation categories (tags, heads, symbols, tick marks, view titles,
+/// boundary conditions), sorted ascending. Ids from the public Revit API BuiltInCategory list.
+const ANNOTATION_CATEGORIES: &[i64] = &[
+    -2009663, -2009656, -2009655, -2009654, -2009653, -2009652, -2009651, -2009650, -2009649, -2009608,
+    -2009064, -2009063, -2009061, -2009059, -2009058, -2009057, -2009056, -2009055, -2009040, -2009033,
+    -2009028, -2009023, -2009022, -2009021, -2009020, -2009011, -2009010, -2009005, -2008236, -2008235,
+    -2008233, -2008229, -2008213, -2008209, -2008204, -2008194, -2008155, -2008154, -2008153, -2008133,
+    -2008131, -2008129, -2008127, -2008115, -2008100, -2008088, -2008086, -2008084, -2008082, -2008080,
+    -2008078, -2008076, -2008074, -2008061, -2008060, -2008057, -2008056, -2008048, -2008047, -2008038,
+    -2008017, -2008014, -2008004, -2008003, -2006282, -2006281, -2006279, -2006278, -2006276, -2006273,
+    -2006266, -2006264, -2006243, -2006230, -2006226, -2006222, -2006220, -2006211, -2006210, -2006209,
+    -2006208, -2006178, -2006177, -2006176, -2006175, -2006174, -2006173, -2006172, -2006171, -2006170,
+    -2006100, -2006080, -2006045, -2006040, -2006020, -2005307, -2005306, -2005305, -2005304, -2005303,
+    -2005302, -2005301, -2005255, -2005254, -2005253, -2005252, -2005251, -2005250, -2005130, -2005111,
+    -2005110, -2005102, -2005101, -2005100, -2005033, -2005032, -2005031, -2005030, -2005029, -2005028,
+    -2005027, -2005026, -2005025, -2005024, -2005023, -2005022, -2005021, -2005020, -2005019, -2005018,
+    -2005017, -2005016, -2005015, -2005014, -2005013, -2005012, -2005011, -2005010, -2005009, -2005008,
+    -2005007, -2005006, -2005004, -2005003, -2005002, -2005001, -2005000, -2003410, -2003405, -2001355,
+    -2001335, -2001269, -2001267, -2001221, -2001116, -2001114, -2001111, -2001110, -2001103, -2001102,
+    -2001094, -2001078, -2001074, -2001073, -2001072, -2001071, -2001070, -2001069, -2001068, -2001067,
+    -2001066, -2001065, -2001064, -2001063, -2001062, -2001061, -2001057, -2001054, -2001051, -2001048,
+    -2001045, -2001042, -2001038, -2001015, -2001007, -2000989, -2000988, -2000986, -2000984, -2000958,
+    -2000957, -2000956, -2000955, -2000943, -2000942, -2000941, -2000940, -2000930, -2000917, -2000834,
+    -2000538, -2000515, -2000485, -2000480, -2000460, -2000450, -2000400, -2000270, -2000268, -2000266,
+    -2000197, -2000150, -2000133,
+];
+
 /// Annotation families (tags, heads, generic annotations…) share "Symboles d'annotation".
 pub fn category_label(id: i64) -> &'static str {
     match id {
@@ -1291,7 +1329,18 @@ pub fn category_label(id: i64) -> &'static str {
         -2008099 => "Sprinklers",
         -2008126 => "Raccords de chemin de câbles",
         -2008128 => "Raccords de conduit",
-        -2000150 | -2000197 | -2000400..=-2000300 | -2000600..=-2000401 | -2005999..=-2005000 | -2006999..=-2006000 | -2001269 => "Symboles d'annotation",
+        -2000949 => "Extrémités de garde-corps",
+        -2001043 => "Equipement de restauration",
+        -2001052 => "Circulation verticale",
+        -2008165 => "Profils de division",
+        -2009013 => "Formes d'armature",
+        -2009030 => "Assemblages structurels",
+        -2009060 => "Coupleurs",
+        -2001036 => "Aménagements paysagers",
+        -2001354 => "Raidisseurs structurels",
+        -2008234 => "Equipement de plomberie",
+        -2009600 => "Treillis",
+        _ if ANNOTATION_CATEGORIES.binary_search(&id).is_ok() => "Symboles d'annotation",
         _ => "Autres familles",
     }
 }
@@ -1378,6 +1427,14 @@ fn links(m: &Model, out: &mut Vec<BrowserNode>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn annotation_categories_sorted() {
+        assert!(super::ANNOTATION_CATEGORIES.windows(2).all(|w| w[0] < w[1]));
+        assert_eq!(super::category_label(-2008047), "Symboles d'annotation");
+        assert_eq!(super::category_label(-2008055), "Accessoires de canalisation");
+        assert_eq!(super::category_label(-2001043), "Equipement de restauration");
+    }
+
     use super::*;
 
     fn model(name: &str) -> Option<Model> {
