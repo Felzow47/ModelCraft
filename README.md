@@ -1,7 +1,9 @@
 <<<<<<< HEAD
 # ModelCraft - la visionneuse 3D ultime (V4)
 
-<p align="center"><img src="screenshots/v2/logo.png" width="640" alt="Logo ModelCraft"></p>
+<p align="center"><img src="assets/logo/modelcraft_512.png" width="256" alt="Logo ModelCraft"></p>
+
+> **NDA** : aucune capture de modèles clients / échantillons de test n'est publiée dans ce dépôt.
 
 Visionneuse native, légère et instantanée pour **SolidWorks (`.SLDPRT` / `.SLDASM`), STEP, IGES,
 IFC, FBX, glTF/GLB, COLLADA, 3MF, PLY, STL, OBJ, VRML/X3D, USD, 3DS, 3DXML, eDrawings et Revit (aperçu)**, écrite en Rust (wgpu + egui). Un seul `.exe` (ou l'installateur
@@ -13,12 +15,6 @@ MIT/Apache - voir `NOTICE.md`). ModelCraft est un projet **indépendant**, non a
 > ModelCraft ne dépend **ni de SolidWorks ni d'eDrawings** : il lit directement le maillage
 > d'affichage enregistré dans les fichiers SolidWorks, et OpenCascade pour STEP/IGES.
 > Aucun code d'eDrawings n'a été utilisé.
-
-| Accueil | Assemblage + menu contextuel |
-|---|---|
-| ![Accueil](screenshots/v2/home_fr.png) | ![Arbre](screenshots/v2/ctx_tree.png) |
-| **Paramètres** | **Palette de commandes (Ctrl+K)** |
-| ![Paramètres](screenshots/v2/settings.png) | ![Palette](screenshots/v2/palette.png) |
 
 ## Formats
 
@@ -77,20 +73,6 @@ MIT/Apache - voir `NOTICE.md`). ModelCraft est un projet **indépendant**, non a
   SLDPRT/STEP d'un seul corps** (éclatement par faces, ≤ 1500 faces). Bouton dans la barre
   d'outils + panneau flottant 0-100 %, lignes d'éclatement discrètes.
 - Accueil : grille de formats qui s'adapte à la largeur (plus de texte caché sous « Ouvrir un fichier »).
-
-| Éclaté (assemblage) | Éclaté (pièce d'un seul corps) |
-|---|---|
-| ![Éclaté](screenshots/v4/v4_explode_a2.png) | ![Éclaté pièce](screenshots/v4/v4_explode_part.png) |
-| **Barre d'outils : sélection, panoramique, déplacer, tourner** | **Panneaux repliés** |
-| ![Tourner](screenshots/v4/v4_rotate.png) | ![Replié](screenshots/v4/v4_folded.png) |
-| **Cadrer la sélection (pavé .)** | **Accueil** |
-| ![Cadrer](screenshots/v4/v4_frame_selected.png) | ![Accueil](screenshots/v4/v4_home.png) |
-| **Éclaté : un étrier sort entièrement de sa bride** | **Outil Déplacer (manipulateur X/Y/Z)** |
-| ![Éclaté étrier](screenshots/v4/v4_explode_a1.png) | ![Déplacer](screenshots/v4/v4_move.png) |
-| **Vue plus claire** | **Outil Panoramique actif** |
-| ![Vue](screenshots/v4/v4_viewport.png) | ![Panoramique](screenshots/v4/v4_pan.png) |
-| **Aide › Raccourcis** | **Installateur : une case par extension** |
-| ![Raccourcis](screenshots/v4/v4_shortcuts.png) | ![Installateur](screenshots/v4/v4_installer.png) |
 
 **Formats et installation**
 - **Installateur Windows** (Inno Setup) : menu Démarrer, icône Bureau en option, liste
@@ -163,10 +145,6 @@ les 2 s, résultat (CHARGÉ / ÉCHEC / PANIQUE), statistiques du maillage. Par d
 - **Opacité** par composant et globale, mode transparent.
 - **Vue éclatée** (curseur 0-100 %, lignes d'éclatement).
 - Accessibles depuis le panneau *Assemblage*, le menu *Outils*, le clic droit et la palette Ctrl+K.
-
-| Vue éclatée | Transparence | Déplacement |
-|---|---|---|
-| ![Éclaté](screenshots/v3/a2_explode.png) | ![Transparent](screenshots/v3/a2_transparent.png) | ![Déplacer](screenshots/v3/a2_move.png) |
 
 ### Menus, palette, menus contextuels
 
