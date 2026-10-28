@@ -1,4 +1,4 @@
-# ModelCraft — mentions et attributions
+# ModelCraft - mentions et attributions
 
 ModelCraft est un projet **indépendant**. Il n'est ni un produit officiel de la suite ArtCraft
 ni affilié à l'ArtCraft Team, à Dassault Systèmes (SolidWorks, eDrawings, 3DXML) ou à Autodesk (3DS, Revit).
@@ -13,7 +13,7 @@ le conteneur OLE avec la bibliothèque `cfb` (MIT).
 
 | Élément | Origine | Licence |
 |---|---|---|
-| Disposition de l'interface (barre d'onglets, barre de modes, accueil, palette Ctrl+K, jetons de design, widgets) — `crates/swcraft/src/{theme,widgets,chrome,home,palette}.rs` | [PdfCraft](https://github.com/storytold/pdfcraft), © 2026 ArtCraft Team et contributeurs PdfCraft | MIT OR Apache-2.0 — `licenses/LICENSE-PdfCraft-MIT.txt` |
+| Disposition de l'interface (barre d'onglets, barre de modes, accueil, palette Ctrl+K, jetons de design, widgets) - `crates/swcraft/src/{theme,widgets,chrome,home,palette}.rs` | [PdfCraft](https://github.com/storytold/pdfcraft), © 2026 ArtCraft Team et contributeurs PdfCraft | MIT OR Apache-2.0 - `licenses/LICENSE-PdfCraft-MIT.txt` |
 
 ## Ressources tierces intégrées
 
@@ -22,10 +22,10 @@ le conteneur OLE avec la bibliothèque `cfb` (MIT).
 | Icônes [Lucide](https://lucide.dev) (`crates/swcraft/assets/icons/*.svg`) | ISC | `licenses/LICENSE-lucide.txt` |
 | Police Inter (`Inter-*.ttf`) | SIL OFL 1.1 | `licenses/OFL-Inter.txt` |
 | Police JetBrains Mono | SIL OFL 1.1 | `licenses/OFL-JetBrainsMono.txt` |
-| [Open CASCADE Technology](https://dev.opencascade.org) 7.8.1 — lecture STEP / IGES (fonctionnalité `occt`) | LGPL-2.1 avec exception OCCT | voir ci-dessous |
-| [Open Asset Import Library (assimp)](https://github.com/assimp/assimp) 6.0.2 — FBX, glTF, COLLADA, 3MF, PLY, AMF, X3D, DXF, USD… (fonctionnalité `assimp`, lien statique, importeur VRML désactivé car il embarque du code GPL) | BSD-3-Clause | `licenses/LICENSE-assimp-BSD3.txt` |
+| [Open CASCADE Technology](https://dev.opencascade.org) 7.8.1 - lecture STEP / IGES (fonctionnalité `occt`) | LGPL-2.1 avec exception OCCT | voir ci-dessous |
+| [Open Asset Import Library (assimp)](https://github.com/assimp/assimp) 6.0.2 - FBX, glTF, COLLADA, 3MF, PLY, AMF, X3D, DXF, USD… (fonctionnalité `assimp`, lien statique, importeur VRML désactivé car il embarque du code GPL) | BSD-3-Clause | `licenses/LICENSE-assimp-BSD3.txt` |
 | ↳ composants inclus dans assimp : tinyusdz (Apache-2.0), pugixml, rapidjson, Open3DGC (MIT), poly2tri (BSD-3), clipper (Boost), openddl-parser (MIT), utf8cpp (BSL-1.0), earcut.hpp (ISC), stb (domaine public / MIT), zlib + minizip (zlib) | voir chaque projet | `licenses/LICENSE-tinyusdz-Apache2.txt`, `licenses/LICENSE-assimp-BSD3.txt` |
-| [web-ifc](https://github.com/ThatOpen/engine_web-ifc) (That Open Company), commit `6b33ddf`, **non modifié** — lecture IFC 2x3 / 4 / 4x3 (fonctionnalité `ifc`, lien statique) | MPL-2.0 | `licenses/LICENSE-web-ifc-MPL2.txt` |
+| [web-ifc](https://github.com/ThatOpen/engine_web-ifc) (That Open Company), commit `6b33ddf`, **non modifié** - lecture IFC 2x3 / 4 / 4x3 (fonctionnalité `ifc`, lien statique) | MPL-2.0 | `licenses/LICENSE-web-ifc-MPL2.txt` |
 | ↳ dépendances de web-ifc : CDT (MPL-2.0), glm (MIT), tinynurbs (BSD-3), earcut.hpp (ISC), fast_float (MIT), spdlog + fmt (MIT), stduuid (MIT), unordered_dense (MIT) | voir chaque projet | `licenses/LICENSE-{CDT-MPL2,glm-MIT,tinynurbs-BSD3,earcut-ISC,fast_float-MIT,spdlog-MIT,stduuid-MIT,unordered_dense-MIT}.txt` |
 
 ### Open CASCADE (LGPL-2.1)

@@ -940,7 +940,7 @@ impl eframe::App for App {
         }
         // title
         let title = match self.doc() {
-            Some(d) => format!("{} — {}", d.title, crate::branding::NAME),
+            Some(d) => format!("{} - {}", d.title, crate::branding::NAME),
             None => crate::branding::NAME.to_string(),
         };
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));

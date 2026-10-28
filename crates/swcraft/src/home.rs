@@ -73,7 +73,7 @@ fn header(_app: &mut App, ui: &mut egui::Ui, t: &Tokens) {
                     ui.label(egui::RichText::new(tr("Bienvenue dans ")).font(theme::semibold(24.0)));
                     widgets::wordmark(ui, 24.0);
                 });
-                ui.label(egui::RichText::new(tr("La visionneuse 3D ultime — SolidWorks, STEP, IGES, IFC, FBX, glTF, STL, OBJ, 3MF et plus, sans licence ni installation.")).color(t.text_muted).font(theme::regular(14.0)));
+                ui.label(egui::RichText::new(tr("La visionneuse 3D ultime - SolidWorks, STEP, IGES, IFC, FBX, glTF, STL, OBJ, 3MF et plus, sans licence ni installation.")).color(t.text_muted).font(theme::regular(14.0)));
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 14.0;

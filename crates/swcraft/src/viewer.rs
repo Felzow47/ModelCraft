@@ -1616,7 +1616,7 @@ fn explode_panel(ui: &mut egui::Ui, rect: Rect, doc: &mut Document) {
     }
 }
 
-/// Explosion amount slider (0–100 %).
+/// Explosion amount slider (0-100 %).
 fn explode_row(ui: &mut egui::Ui, doc: &mut Document) {
     let t = Tokens::get(ui.ctx());
     let mut v = doc.asm.explode_goal;
@@ -1869,7 +1869,7 @@ pub fn info_panel(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, cmds: &m
                         let w = doc.display[f.comp];
                         let (_, area, _) = measure::face_props(&sm.mesh, tris.clone(), w);
                         ui.separator();
-                        kv(ui, tr("Face — surface"), st.fmt_area(area as f64));
+                        kv(ui, tr("Face - surface"), st.fmt_area(area as f64));
                         if let Some(cyl) = measure::fit_cylinder(&sm.mesh, tris, w) {
                             kv(ui, if cyl.inward { tr("Perçage Ø") } else { tr("Cylindre Ø") }, st.fmt_len(2.0 * cyl.radius as f64));
                         }

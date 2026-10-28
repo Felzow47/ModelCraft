@@ -1,6 +1,6 @@
 //! `--diag <file>`: headless diagnostic load. Writes the container layout (streams with stored
 //! and decompressed sizes), each loading stage with timings and memory use, the resulting mesh
-//! sizes and the peak memory to a text file — flushed line by line, so the log is useful even if
+//! sizes and the peak memory to a text file - flushed line by line, so the log is useful even if
 //! the process is killed or crashes midway.
 
 use std::io::Write;
@@ -76,7 +76,7 @@ pub fn run(file: &Path, out: Option<PathBuf>) -> i32 {
     let ok_file = f.is_some();
     let log = Arc::new(Mutex::new(Log { f, t0: Instant::now() }));
     let say = |s: &str| log.lock().unwrap().line(s);
-    say(&format!("{} {} — diagnostic de chargement", crate::branding::NAME, crate::branding::VERSION));
+    say(&format!("{} {} - diagnostic de chargement", crate::branding::NAME, crate::branding::VERSION));
     say(&format!("système : {} {}", std::env::consts::OS, std::env::consts::ARCH));
     say(&format!("fichier : {}", file.display()));
     say(&format!("rapport : {}", out.display()));
@@ -101,7 +101,7 @@ pub fn run(file: &Path, out: Option<PathBuf>) -> i32 {
     let t = Instant::now();
     match sw_format::Container::open(file) {
         Ok(c) => {
-            say(&format!("conteneur : {:?}, {} flux, ouvert en {:.2} s — {}", c.kind(), c.streams().len(), t.elapsed().as_secs_f64(), mem_text()));
+            say(&format!("conteneur : {:?}, {} flux, ouvert en {:.2} s - {}", c.kind(), c.streams().len(), t.elapsed().as_secs_f64(), mem_text()));
             let mut v: Vec<_> = c.streams().iter().collect();
             v.sort_by_key(|s| std::cmp::Reverse(s.stored_size));
             for s in v.iter().take(60) {
@@ -128,7 +128,7 @@ pub fn run(file: &Path, out: Option<PathBuf>) -> i32 {
                 if n % 8 == 0 {
                     let (s, f, d, t) = stage.lock().unwrap().clone();
                     let bytes = if t > 0 { format!(", {} / {}", mb(d), mb(t)) } else { String::new() };
-                    log.lock().unwrap().line(&format!("… {:>3.0} % {s}{bytes} — {}", f * 100.0, mem_text()));
+                    log.lock().unwrap().line(&format!("… {:>3.0} % {s}{bytes} - {}", f * 100.0, mem_text()));
                 }
             }
         })
@@ -142,7 +142,7 @@ pub fn run(file: &Path, out: Option<PathBuf>) -> i32 {
                 st.2 = 0;
                 st.3 = 0;
                 drop(st);
-                log.lock().unwrap().line(&format!("étape {:>3.0} % : {s} — {}", f * 100.0, mem_text()));
+                log.lock().unwrap().line(&format!("étape {:>3.0} % : {s} - {}", f * 100.0, mem_text()));
                 stage.lock().unwrap().1 = f;
             } else {
                 st.1 = f;
@@ -163,7 +163,7 @@ pub fn run(file: &Path, out: Option<PathBuf>) -> i32 {
     crate::crash::set_current_file(None);
     let code = match res {
         Ok(Ok(scene)) => {
-            say(&format!("CHARGÉ en {:.2} s — {}", t.elapsed().as_secs_f64(), mem_text()));
+            say(&format!("CHARGÉ en {:.2} s - {}", t.elapsed().as_secs_f64(), mem_text()));
             let tm = &scene.timings;
             say(&format!(
                 "temps : ouverture {:.2} s, lecture {:.2} s, analyse {:.2} s, maillage {:.2} s, externes {:.2} s, total {:.2} s",
@@ -216,16 +216,16 @@ pub fn run(file: &Path, out: Option<PathBuf>) -> i32 {
             0
         }
         Ok(Err(e)) => {
-            say(&format!("ÉCHEC après {:.2} s : {e} — {}", t.elapsed().as_secs_f64(), mem_text()));
+            say(&format!("ÉCHEC après {:.2} s : {e} - {}", t.elapsed().as_secs_f64(), mem_text()));
             1
         }
         Err(p) => {
             let msg = p.downcast_ref::<String>().cloned().or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default();
-            say(&format!("PANIQUE après {:.2} s : {msg} — {}", t.elapsed().as_secs_f64(), mem_text()));
+            say(&format!("PANIQUE après {:.2} s : {msg} - {}", t.elapsed().as_secs_f64(), mem_text()));
             3
         }
     };
-    say(&format!("fin — {}", mem_text()));
+    say(&format!("fin - {}", mem_text()));
     if !ok_file {
         eprintln!("(rapport non écrit : {} inaccessible)", out.display());
     }

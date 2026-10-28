@@ -1,4 +1,4 @@
-//! ModelCraft — the ultimate native 3D viewer (SolidWorks, STEP, IGES, IFC, FBX, glTF, STL, OBJ, 3MF, 3DS, 3DXML…).
+//! ModelCraft - the ultimate native 3D viewer (SolidWorks, STEP, IGES, IFC, FBX, glTF, STL, OBJ, 3MF, 3DS, 3DXML…).
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
@@ -33,7 +33,7 @@ use std::path::PathBuf;
 
 fn usage() -> ! {
     eprintln!(
-        "{} {} — visionneuse 3D\n\nUsage: modelcraft [fichiers…] [--lang fr|en] [--theme dark|light] [--screenshot out.png] [--view iso|front|top|right|back|bottom|left]\n       [--size LxH] [--no-edges] [--show settings|settings-display|about|shortcuts|formats|palette|measure|section|bbox|tree] [--ephemeral]\n       modelcraft --diag <fichier> [--diag-out rapport.txt]   (chargement sans fenêtre, journal détaillé)\n       modelcraft --associate   (associe les extensions 3D pour l'utilisateur courant, Windows)",
+        "{} {} - visionneuse 3D\n\nUsage: modelcraft [fichiers…] [--lang fr|en] [--theme dark|light] [--screenshot out.png] [--view iso|front|top|right|back|bottom|left]\n       [--size LxH] [--no-edges] [--show settings|settings-display|about|shortcuts|formats|palette|measure|section|bbox|tree] [--ephemeral]\n       modelcraft --diag <fichier> [--diag-out rapport.txt]   (chargement sans fenêtre, journal détaillé)\n       modelcraft --associate   (associe les extensions 3D pour l'utilisateur courant, Windows)",
         branding::NAME,
         branding::VERSION
     );

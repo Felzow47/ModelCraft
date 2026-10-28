@@ -1,6 +1,6 @@
 [package]
 name = "swcraft"
-description = "ModelCraft — visionneuse 3D rapide (SolidWorks, STEP, IGES, STL, OBJ, 3DS, 3DXML)"
+description = "ModelCraft - visionneuse 3D rapide (SolidWorks, STEP, IGES, STL, OBJ, 3DS, 3DXML)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

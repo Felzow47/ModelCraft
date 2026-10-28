@@ -1,4 +1,4 @@
-//! swcraft-scan — strictly read-only batch check of a folder of 3D / CAD files.
+//! swcraft-scan - strictly read-only batch check of a folder of 3D / CAD files.
 //!
 //! Walks a folder (never writes into it), tries to load every supported file
 //! (SolidWorks, STEP/IGES, STL, OBJ, 3DS, 3DXML, eDrawings…) exactly like the
@@ -98,7 +98,7 @@ const BIG_FILE: u64 = 64 << 20;
 
 fn usage() -> ! {
     eprintln!(
-        "swcraft-scan {} — vérification en LECTURE SEULE d'un dossier de modèles 3D
+        "swcraft-scan {} - vérification en LECTURE SEULE d'un dossier de modèles 3D
 
 Usage: {exe} <dossier> [--csv rapport.csv] [--json rapport.json] [--log progression.log] [--threads N]
           [--max-size 1G] [--timeout 120] [--isolate auto|all|none] [--mem-limit 8G] [--no-external] [--quiet]
@@ -256,7 +256,7 @@ fn stamp() -> String {
 }
 
 fn ask_folder() -> Option<PathBuf> {
-    println!("{} {} — vérification en lecture seule d'un dossier de modèles 3D", exe_name(), env!("CARGO_PKG_VERSION"));
+    println!("{} {} - vérification en lecture seule d'un dossier de modèles 3D", exe_name(), env!("CARGO_PKG_VERSION"));
     println!("(rien n'est jamais écrit dans le dossier analysé ; le rapport est enregistré à côté de ce programme)");
     println!();
     loop {
@@ -696,7 +696,7 @@ fn main() {
     let mut walk_errors = Vec::new();
     walk(&args.root, &mut files, &mut walk_errors);
     let n = files.len();
-    eprintln!("{} fichiers 3D trouvés en {:.1} s — analyse sur {} threads…", n, t0.elapsed().as_secs_f64(), args.threads);
+    eprintln!("{} fichiers 3D trouvés en {:.1} s - analyse sur {} threads…", n, t0.elapsed().as_secs_f64(), args.threads);
     if let Some(p) = &log_path {
         eprintln!("Journal de progression : {}", p.display());
     }
@@ -705,7 +705,7 @@ fn main() {
     }
     if let Some(l) = &log {
         if let Ok(mut f) = l.lock() {
-            let _ = writeln!(f, "# {} {} — {} — {} fichiers", exe_name(), env!("CARGO_PKG_VERSION"), args.root.display(), n);
+            let _ = writeln!(f, "# {} {} - {} - {} fichiers", exe_name(), env!("CARGO_PKG_VERSION"), args.root.display(), n);
             let _ = f.flush();
         }
     }
@@ -758,7 +758,7 @@ fn main() {
                     row.status.as_str(),
                     row.ms,
                     row.path.display(),
-                    if matches!(row.status, Status::Error | Status::Crash | Status::Timeout | Status::TooLarge) { format!("  — {}", row.message) } else { String::new() }
+                    if matches!(row.status, Status::Error | Status::Crash | Status::Timeout | Status::TooLarge) { format!("  - {}", row.message) } else { String::new() }
                 );
             } else {
                 done.fetch_add(1, Ordering::SeqCst);

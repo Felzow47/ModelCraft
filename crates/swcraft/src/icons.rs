@@ -1,5 +1,5 @@
 //! Lucide icons (ISC, assets/icons/LICENSE-lucide.txt), recoloured to white so they can be
-//! tinted per use and rasterised by egui_extras at the on-screen size — the PdfCraft approach.
+//! tinted per use and rasterised by egui_extras at the on-screen size - the PdfCraft approach.
 
 use crate::theme::{self, Tokens};
 use egui::{Color32, Rect, Response, Sense, Stroke, Vec2};

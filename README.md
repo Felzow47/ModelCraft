@@ -1,4 +1,4 @@
-# ModelCraft — la visionneuse 3D ultime (V4)
+# ModelCraft - la visionneuse 3D ultime (V4)
 
 <p align="center"><img src="screenshots/v2/logo.png" width="640" alt="Logo ModelCraft"></p>
 
@@ -7,7 +7,7 @@ IFC, FBX, glTF/GLB, COLLADA, 3MF, PLY, STL, OBJ, VRML/X3D, USD, 3DS, 3DXML, eDra
 `ModelCraft-Setup-0.4.0.exe`), sans licence, hors ligne.
 
 Interface dans l'esprit de la suite ArtCraft (disposition reprise de PdfCraft, sous licence
-MIT/Apache — voir `NOTICE.md`). ModelCraft est un projet **indépendant**, non affilié.
+MIT/Apache - voir `NOTICE.md`). ModelCraft est un projet **indépendant**, non affilié.
 
 > ModelCraft ne dépend **ni de SolidWorks ni d'eDrawings** : il lit directement le maillage
 > d'affichage enregistré dans les fichiers SolidWorks, et OpenCascade pour STEP/IGES.
@@ -43,7 +43,7 @@ MIT/Apache — voir `NOTICE.md`). ModelCraft est un projet **indépendant**, non
 | DXF | `.dxf` | ⚠️ partiel | faces 3D et maillages seulement (pas les dessins 2D ni les solides ACIS) |
 | Blender | `.blend` | ⚠️ partiel | anciens fichiers 2.7x seulement (assimp). **Blender 2.8+ : Fichier › Exporter › Wavefront (.obj) avec matériaux, glTF 2.0 ou FBX**, puis ouvrir l'export |
 | Autres (assimp) | `.x` `.lwo` `.ac` `.ase` `.ms3d` `.md2`… | ⚠️ | via assimp |
-| Parasolid | `.x_t` `.x_b` | ❌ | message clair : aucun lecteur libre — exporter en STEP |
+| Parasolid | `.x_t` `.x_b` | ❌ | message clair : aucun lecteur libre - exporter en STEP |
 | DWG / SketchUp / Rhino | `.dwg` `.skp` `.3dm` | ❌ | message clair : LibreDWG est GPL, SDK SketchUp propriétaire ; exporter en DXF/IFC, DAE/glTF, STEP/OBJ |
 
 ### Nouveautés V4
@@ -74,7 +74,7 @@ MIT/Apache — voir `NOTICE.md`). ModelCraft est un projet **indépendant**, non
   direction ne s'inverse jamais quand le curseur monte, et à 100 % deux pièces imbriquées
   (étrier dans sa bride) sortent entièrement l'une de l'autre ; fonctionne aussi sur une **pièce
   SLDPRT/STEP d'un seul corps** (éclatement par faces, ≤ 1500 faces). Bouton dans la barre
-  d'outils + panneau flottant 0–100 %, lignes d'éclatement discrètes.
+  d'outils + panneau flottant 0-100 %, lignes d'éclatement discrètes.
 - Accueil : grille de formats qui s'adapte à la largeur (plus de texte caché sous « Ouvrir un fichier »).
 
 | Éclaté (assemblage) | Éclaté (pièce d'un seul corps) |
@@ -97,10 +97,10 @@ MIT/Apache — voir `NOTICE.md`). ModelCraft est un projet **indépendant**, non
 - OBJ + `.mtl` : opacité, **textures plaquées avec leurs UV** (`map_Kd`, découpe par l'alpha), normales et arêtes vives de Blender, n-gones concaves triangulés sans déformation (ear clipping), couleurs `Kd` de Blender converties linéaire → sRGB. Une texture citée par un chemin absolu d'un autre PC (`F:/…/texture.png`) est retrouvée à côté du `.obj`/`.mtl`.
 
 - **Plateau tournant** par défaut (comme Blender : l'axe vertical reste vertical, la vue ne penche jamais) ; *Paramètres › Navigation › Rotation* : Plateau tournant ou Libre (trackball, sans blocage aux pôles). Les anciens réglages « Libre » passent une fois au plateau tournant (V4.1). Boutons « pivoter de 90° » sur le cube de vue.
-- **Vue éclatée** : bouton de la barre d'outils, menu Affichage, menu contextuel et Ctrl+K ; panneau flottant (curseur 0–100 %, valeur, animer, réinitialiser). Fonctionne aussi sur une pièce à plusieurs corps (séparation automatique des corps) et sur chaque pièce d'un assemblage ; message si rien n'est éclatable.
+- **Vue éclatée** : bouton de la barre d'outils, menu Affichage, menu contextuel et Ctrl+K ; panneau flottant (curseur 0-100 %, valeur, animer, réinitialiser). Fonctionne aussi sur une pièce à plusieurs corps (séparation automatique des corps) et sur chaque pièce d'un assemblage ; message si rien n'est éclatable.
 - **Opacité de la sélection** appliquée uniquement aux composants / corps sélectionnés.
 - **Nombres lisibles** : séparateurs de milliers et unités automatiques (`6 115 613,46 mm²` → `6,12 m²`), désactivables (*Paramètres › Unités automatiques*), respectent le nombre de décimales.
-- **Composants d'assemblage introuvables** : recherche élargie, sans tenir compte de la casse — chemin d'origine, arborescence du projet déplacée (dossiers d'origine recréés à côté de l'assemblage), puis tout le dossier du projet (2 niveaux au-dessus, recherche bornée).
+- **Composants d'assemblage introuvables** : recherche élargie, sans tenir compte de la casse - chemin d'origine, arborescence du projet déplacée (dossiers d'origine recréés à côté de l'assemblage), puis tout le dossier du projet (2 niveaux au-dessus, recherche bornée).
 - **Revit** : le message propose l'export IFC (Fichier › Exporter › IFC), désormais lisible par ModelCraft.
 
 ## Utilisation (Windows)
@@ -122,7 +122,7 @@ OBJ, FBX, glTF… décochés car souvent déjà ouverts par un autre logiciel). 
   copier le chemin / épingler le dossier / retirer).
 - **Associer les extensions** : *Paramètres → Général → Associations de fichiers → Associer*
   (ou `modelcraft.exe --associate`). Ajoute ModelCraft à « Ouvrir avec » pour SLDPRT, SLDASM,
-  STEP, IGES, STL, OBJ, 3DS, 3DXML, EASM, RVT, RFA — utilisateur courant (HKCU), sans droits admin.
+  STEP, IGES, STL, OBJ, 3DS, 3DXML, EASM, RVT, RFA - utilisateur courant (HKCU), sans droits admin.
 - Chargement en arrière-plan dans une **fenêtre de progression** : nom et taille du fichier,
   étape, octets lus / total, temps écoulé, bouton **Annuler**.
 
@@ -135,7 +135,7 @@ Le chargeur SolidWorks est **en flux et à mémoire bornée** :
   décompressé ni la liste des faces en mémoire ;
 - un **budget de sommets** est calculé selon la mémoire disponible (2 M à 40 M) ; au-delà, le
   maillage est **simplifié pour l'affichage** (regroupement de sommets sur grille) et un
-  avertissement l'indique — le fichier n'est jamais modifié ;
+  avertissement l'indique - le fichier n'est jamais modifié ;
 - les allocations sont faillibles : en cas de manque de mémoire, message clair au lieu d'un plantage.
 
 Mesures (fichier synthétique de 836 Mo, 60 M sommets, 1,4 Go décompressés) : chargé en ~17 s,
@@ -160,7 +160,7 @@ les 2 s, résultat (CHARGÉ / ÉCHEC / PANIQUE), statistiques du maillage. Par d
 
 - **Déplacer** un composant avec le manipulateur (flèches X/Y/Z), réinitialiser.
 - **Opacité** par composant et globale, mode transparent.
-- **Vue éclatée** (curseur 0–100 %, lignes d'éclatement).
+- **Vue éclatée** (curseur 0-100 %, lignes d'éclatement).
 - Accessibles depuis le panneau *Assemblage*, le menu *Outils*, le clic droit et la palette Ctrl+K.
 
 | Vue éclatée | Transparence | Déplacement |
@@ -208,7 +208,7 @@ Sélection de faces et de composants avec surbrillance ; le panneau de droite li
 | Paramètres · palette · plein écran | `Ctrl+,` · `Ctrl+K` · `F11` |
 
 Styles de navigation : Blender (défaut), SolidWorks, CAO (AutoCAD/Inventor). Avec
-« Raccourcis Blender » désactivé, les anciens raccourcis reviennent (`0`–`6` = vues, `G` = grille,
+« Raccourcis Blender » désactivé, les anciens raccourcis reviennent (`0`-`6` = vues, `G` = grille,
 `R` = diamètre).
 
 ### Paramètres (`%APPDATA%\ModelCraft\settings.json`)
@@ -324,7 +324,7 @@ moteur : `WGPU_BACKEND=dx12|vulkan|gl`.
 
 - **eDrawings `.easm`** : seule la vignette est affichée (géométrie HSF non décodée).
 - **Revit `.rvt`** : seuls la vignette (`RevitPreview4.0`, absente de beaucoup de fichiers) et les
-  informations (`BasicFileInfo`, `ProjectInformation`) sont lus — uniquement ces petits flux OLE,
+  informations (`BasicFileInfo`, `ProjectInformation`) sont lus - uniquement ces petits flux OLE,
   jamais le fichier entier (pic ~7 Mo même pour un RVT de 66 Mo). La géométrie Revit est stockée
   dans les flux `Partitions/*` sous forme d'une base d'objets Autodesk propriétaire, compressée
   par morceaux, **sans maillage enregistré** : la décoder reviendrait à réimplémenter le noyau
@@ -333,7 +333,7 @@ moteur : `WGPU_BACKEND=dx12|vulkan|gl`.
   sans maillage d'affichage contiennent pourtant leur B-rep Parasolid (flux `Config-N-Partition`,
   « TRANSMIT FILE » binaire) : un lecteur indépendant du format XT (documenté publiquement par
   Siemens) relié à OpenCascade est envisageable, mais c'est un chantier de plusieurs semaines.
-- **Flux `MeshData/Config-N-Mesh-*`** (SolidWorks récents, maillages très lourds) : non décodés —
+- **Flux `MeshData/Config-N-Mesh-*`** (SolidWorks récents, maillages très lourds) : non décodés -
   aucun fichier d'exemple contenant ce flux n'est disponible pour le développer et le vérifier.
   Les fichiers concernés sortent en `no_mesh` dans `swcraft-scan` ; un `--diag` sur l'un d'eux
   (liste des flux) permettra de s'y attaquer.

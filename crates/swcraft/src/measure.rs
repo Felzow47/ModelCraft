@@ -17,7 +17,7 @@ pub struct Hit {
     pub normal: Vec3,
 }
 
-/// Möller–Trumbore, two-sided. Returns the ray parameter.
+/// Möller-Trumbore, two-sided. Returns the ray parameter.
 pub fn ray_tri(o: Vec3, d: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Option<f32> {
     let e1 = b - a;
     let e2 = c - a;

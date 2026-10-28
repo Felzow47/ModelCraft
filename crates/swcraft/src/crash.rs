@@ -153,7 +153,7 @@ pub fn install() {
         let bt = std::backtrace::Backtrace::force_capture();
         let file = current_file().map(|p| p.display().to_string()).unwrap_or_else(|| "-".into());
         append(&format!(
-            "==== {} — {} {} — panic\r\nthread: {thread}\r\nmessage: {msg}\r\nlieu: {loc}\r\nfichier en cours : {file}\r\n{bt}\r\n\r\n",
+            "==== {} - {} {} - panic\r\nthread: {thread}\r\nmessage: {msg}\r\nlieu: {loc}\r\nfichier en cours : {file}\r\n{bt}\r\n\r\n",
             now_utc(),
             crate::branding::NAME,
             crate::branding::VERSION
@@ -167,7 +167,7 @@ pub fn install() {
 /// wgpu errors are logged instead of panicking (the default handler aborts the app).
 pub fn gpu_error(msg: String) {
     log::error!("GPU: {msg}");
-    append(&format!("==== {} — erreur GPU\r\n{msg}\r\nfichier en cours : {}\r\n\r\n", now_utc(), current_file().map(|p| p.display().to_string()).unwrap_or_else(|| "-".into())));
+    append(&format!("==== {} - erreur GPU\r\n{msg}\r\nfichier en cours : {}\r\n\r\n", now_utc(), current_file().map(|p| p.display().to_string()).unwrap_or_else(|| "-".into())));
     if let Ok(mut l) = GPU_LAST.lock() {
         *l = msg;
     }
@@ -204,7 +204,7 @@ mod win {
         let file = super::CURRENT_LINE.try_lock().map(|l| l.clone()).unwrap_or_default();
         let thread = std::thread::current().name().unwrap_or("?").to_string();
         super::append(&format!(
-            "==== {} — {} {} — plantage natif\r\ncode: 0x{code:08X} ({what})\r\nadresse: 0x{addr:X} (exe+0x{off:X})\r\nthread: {thread}\r\n{file}\r\n",
+            "==== {} - {} {} - plantage natif\r\ncode: 0x{code:08X} ({what})\r\nadresse: 0x{addr:X} (exe+0x{off:X})\r\nthread: {thread}\r\n{file}\r\n",
             super::now_utc(),
             crate::branding::NAME,
             crate::branding::VERSION

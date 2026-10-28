@@ -37,9 +37,9 @@ pub enum Error {
     Corrupt(String),
     #[error("chargement annulé")]
     Cancelled,
-    #[error("fichier trop volumineux — {0}")]
+    #[error("fichier trop volumineux - {0}")]
     TooLarge(String),
-    #[error("mémoire insuffisante — {0}")]
+    #[error("mémoire insuffisante - {0}")]
     OutOfMemory(String),
 }
 
