@@ -1,5 +1,5 @@
-//! Orbit camera. The orientation is a quaternion. The turntable mode (default) keeps +Y vertical,
-//! like Blender; the optional free (trackball) mode rotates without any limit or gimbal lock.
+//! Orbit camera. The orientation is a quaternion. The turntable mode (default) orbits around +Y
+//! like Blender and keeps any 90° roll from the view cube; the free (trackball) mode has no limit.
 
 use glam::{Mat3, Mat4, Quat, Vec2, Vec3};
 
@@ -96,24 +96,38 @@ impl Camera {
     pub fn orbit(&mut self, delta: Vec2, turntable: bool) {
         const K: f32 = 0.008;
         if turntable {
-            let q_yaw = Quat::from_axis_angle(Vec3::Y, -delta.x * K);
-            let f = self.forward_dir();
-            let pitch = f.y.clamp(-1.0, 1.0).asin();
+            // Split the orientation into a level (yaw, pitch) part and a roll around the viewing
+            // axis (set by the view cube's 90° buttons), orbit the level part, then put the roll
+            // back so the view keeps the orientation the user chose instead of snapping upright.
+            let (yaw, pitch, roll) = self.yaw_pitch_roll();
+            let (s, c) = roll.sin_cos();
+            // the drag is in screen space: express it in the un-rolled frame
+            let d = Vec2::new(delta.x * c + delta.y * s, -delta.x * s + delta.y * c);
             let lim = 89.9f32.to_radians();
-            let dp = (pitch + delta.y * K).clamp(-lim, lim) - pitch;
-            let q_pitch = Quat::from_axis_angle(self.right(), -dp);
-            self.rot = (q_yaw * q_pitch * self.rot).normalize();
-            // remove any roll so the horizon stays level
-            let f = self.forward_dir();
-            let yaw = f.x.atan2(f.z);
-            let pitch = f.y.clamp(-1.0, 1.0).asin();
-            if pitch.abs() < lim + 1e-3 {
-                self.rot = Self::orientation(yaw, pitch);
-            }
+            let yaw = yaw - d.x * K;
+            let pitch = if pitch.abs() > lim && d.y == 0.0 { pitch } else { (pitch + d.y * K).clamp(-lim, lim) };
+            self.rot = (Self::orientation(yaw, pitch) * Quat::from_rotation_z(roll)).normalize();
         } else {
             let q = Quat::from_axis_angle(self.up(), -delta.x * K) * Quat::from_axis_angle(self.right(), -delta.y * K);
             self.rot = (q * self.rot).normalize();
         }
+    }
+
+    /// Decompose the orientation as `orientation(yaw, pitch) * roll around local Z`. At the poles
+    /// (top / bottom views) roll and yaw are the same motion, so the roll is folded into the yaw.
+    pub fn yaw_pitch_roll(&self) -> (f32, f32, f32) {
+        let f = self.forward_dir();
+        let pitch = f.y.clamp(-1.0, 1.0).asin();
+        // only exact top / bottom views (orbit stops at 89.9°, so a drag never folds the roll)
+        if pitch.abs() > 89.95f32.to_radians() {
+            let u = self.up();
+            let yaw = if f.y > 0.0 { (-u.x).atan2(-u.z) } else { u.x.atan2(u.z) };
+            return (yaw, pitch.signum() * std::f32::consts::FRAC_PI_2, 0.0);
+        }
+        let yaw = f.x.atan2(f.z);
+        let rq = Self::orientation(yaw, pitch).inverse() * self.rot;
+        let roll = 2.0 * rq.z.atan2(rq.w);
+        (yaw, pitch, roll)
     }
 
     /// Roll around the viewing axis (degrees, positive = counter-clockwise on screen).
@@ -253,5 +267,45 @@ mod tests {
             f.orbit(Vec2::new(a.cos() * 9.0, a.sin() * 9.0), false);
         }
         assert!(f.right().y.abs() > 1e-3);
+    }
+
+    #[test]
+    fn turntable_keeps_view_cube_roll() {
+        let mut c = Camera::default();
+        c.roll(90.0);
+        let (_, _, r0) = c.yaw_pitch_roll();
+        assert!((r0 - 90f32.to_radians()).abs() < 1e-3, "roll {r0}");
+        for _ in 0..200 {
+            c.orbit(Vec2::new(11.0, -6.0), true);
+            let (_, _, r) = c.yaw_pitch_roll();
+            assert!((r - r0).abs() < 1e-3, "roll lost: {r}");
+        }
+        // a pan right after must not touch the orientation either
+        let before = c.rot;
+        c.pan(Vec2::new(30.0, 10.0), 600.0);
+        assert!(c.rot.angle_between(before) < 1e-6);
+    }
+
+    #[test]
+    fn turntable_unrolled_matches_level_orbit() {
+        let mut c = Camera::default();
+        c.orbit(Vec2::new(40.0, 25.0), true);
+        let (y, p, r) = c.yaw_pitch_roll();
+        assert!(r.abs() < 1e-4);
+        assert!((y - (45f32.to_radians() - 40.0 * 0.008)).abs() < 1e-4);
+        assert!((p - (35.264f32.to_radians() + 25.0 * 0.008)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn turntable_rolled_drag_follows_screen() {
+        // after a 90° roll, a horizontal screen drag behaves like a vertical one did before
+        let mut a = Camera::default();
+        a.roll(90.0);
+        a.orbit(Vec2::new(20.0, 0.0), true);
+        let (_, pa, _) = a.yaw_pitch_roll();
+        let mut b = Camera::default();
+        b.orbit(Vec2::new(0.0, -20.0), true);
+        let (_, pb, _) = b.yaw_pitch_roll();
+        assert!((pa - pb).abs() < 1e-4, "{pa} vs {pb}");
     }
 }
