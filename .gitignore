@@ -46,3 +46,6 @@
 *.rte
 *.rft
 /screenshots/v3/private_*.png
+
+# Captures (modèles de test sous NDA) — jamais versionner
+/screenshots/
