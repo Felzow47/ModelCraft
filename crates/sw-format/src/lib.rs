@@ -16,6 +16,7 @@ pub mod container;
 pub mod ctl;
 pub mod dl;
 pub mod mesh;
+pub mod meshdata;
 pub mod preview;
 
 pub use container::{Container, ContainerKind, StreamInfo};
@@ -496,6 +497,60 @@ fn build_dl_meshes(c: &Container, info: &container::StreamInfo, merge: bool, opt
     Ok(DlMeshes { blocks, stats })
 }
 
+/// Mesh bodies stored in `MeshData/Config-N-Mesh-*` streams (graphics/mesh bodies, often the
+/// only geometry of big imported scans or STL conversions). Only the first configuration
+/// that has mesh streams is read.
+fn build_meshdata_mesh(c: &Container, opts: &LoadOptions, warnings: &mut Vec<String>) -> Result<Option<mesh::TriMesh>> {
+    let ctl = &opts.ctl;
+    let mut streams: Vec<&container::StreamInfo> = c.streams().iter().filter(|s| s.name.starts_with("MeshData/Config-")).collect();
+    if streams.is_empty() {
+        return Ok(None);
+    }
+    let config = |n: &str| n["MeshData/Config-".len()..].split('-').next().and_then(|x| x.parse::<u32>().ok()).unwrap_or(u32::MAX);
+    let first = streams.iter().map(|s| config(&s.name)).min().unwrap_or(0);
+    streams.retain(|s| config(&s.name) == first);
+    let total: u64 = streams.iter().map(|s| s.stored_size).sum::<u64>().max(1);
+    let mut done = 0u64;
+    let mut dec = meshdata::Decoder::new();
+    for s in &streams {
+        let a = 0.03 + 0.62 * done as f32 / total as f32;
+        done += s.stored_size;
+        let b = 0.03 + 0.62 * done as f32 / total as f32;
+        c.stream_info(s, ctl, (a, b), "Lecture des corps maillés…", &mut |chunk| dec.feed(chunk))?;
+    }
+    let bodies = dec.finish()?;
+    if bodies.triangles.is_empty() {
+        return Ok(None);
+    }
+    if bodies.bad > 0 {
+        warnings.push(format!("{} facette(s) de corps maillé ignorée(s) (indices invalides)", bodies.bad));
+    }
+    let edges = opts.edges && bodies.positions.len() <= mesh::EDGE_VERTEX_LIMIT;
+    if opts.edges && !edges {
+        warnings.push(format!("Maillage très dense ({} M sommets) : arêtes non calculées", bodies.positions.len() / 1_000_000));
+    }
+    // Build body by body (bounded hash maps), smoothing normals inside each body.
+    let mut m = mesh::TriMesh::new_empty();
+    let nb = bodies.body_start.len();
+    for i in 0..nb {
+        ctl.check()?;
+        ctl.report(0.65 + 0.3 * i as f32 / nb.max(1) as f32, "Construction du maillage…");
+        let t0 = bodies.body_start[i] as usize;
+        let t1 = bodies.body_start.get(i + 1).map(|&x| x as usize).unwrap_or(bodies.triangles.len());
+        let tris = &bodies.triangles[t0..t1];
+        if tris.is_empty() {
+            continue;
+        }
+        let lo = tris.iter().flat_map(|t| t.iter()).copied().min().unwrap_or(0);
+        let hi = tris.iter().flat_map(|t| t.iter()).copied().max().unwrap_or(0);
+        let local: Vec<[u32; 3]> = tris.iter().map(|t| [t[0] - lo, t[1] - lo, t[2] - lo]).collect();
+        let body = mesh::build_from_triangles(&bodies.positions[lo as usize..=hi as usize], &local, 35.0, edges);
+        m.append(body);
+    }
+    m.finish();
+    Ok(Some(m))
+}
+
 /// Open a file and build a renderable scene.
 pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
     let ctl = &opts.ctl;
@@ -533,8 +588,24 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
         timings.decode = b.stats.pass1;
         timings.dl = Some(b.stats.clone());
     }
-    let blocks = built.map(|b| b.blocks).unwrap_or_default();
-    if !had_dl && warnings.is_empty() {
+    let mut blocks = built.map(|b| b.blocks).unwrap_or_default();
+    let mut from_meshdata = false;
+    if blocks.is_empty() && kind == DocKind::Part {
+        let t = Instant::now();
+        match build_meshdata_mesh(&c, opts, &mut warnings) {
+            Ok(Some(m)) => {
+                blocks.push((None, m));
+                from_meshdata = true;
+                timings.decode += t.elapsed();
+            }
+            Ok(None) => {}
+            Err(Error::Cancelled) => return Err(Error::Cancelled),
+            Err(e) => warnings.push(format!("Corps maillés illisibles ({e})")),
+        }
+    }
+    if from_meshdata {
+        // geometry found in MeshData: no "no mesh" warning
+    } else if !had_dl && warnings.is_empty() {
         warnings.push("Pas de flux DisplayLists (fichier enregistré sans données graphiques)".into());
     } else if had_dl && blocks.is_empty() && warnings.is_empty() {
         warnings.push("DisplayLists présent mais aucun maillage décodé".into());

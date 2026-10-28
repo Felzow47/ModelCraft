@@ -312,10 +312,10 @@ moteur : `WGPU_BACKEND=dx12|vulkan|gl`.
   sans maillage d'affichage contiennent pourtant leur B-rep Parasolid (flux `Config-N-Partition`,
   « TRANSMIT FILE » binaire) : un lecteur indépendant du format XT (documenté publiquement par
   Siemens) relié à OpenCascade est envisageable, mais c'est un chantier de plusieurs semaines.
-- **Flux `MeshData/Config-N-Mesh-*`** (SolidWorks récents, maillages très lourds) : non décodés -
-  aucun fichier d'exemple contenant ce flux n'est disponible pour le développer et le vérifier.
-  Les fichiers concernés sortent en `no_mesh` dans `swcraft-scan` ; un `--diag` sur l'un d'eux
-  (liste des flux) permettra de s'y attaquer.
+- **Flux `MeshData/Config-N-Mesh-*`** (corps maillés des SolidWorks récents, souvent les seuls
+  présents dans les très gros fichiers issus de scans ou d'imports STL) : décodés en flux continu quand
+  `DisplayLists` est vide (12,8 M triangles lus en ~8 s sur un SLDPRT de 447 Mo). Seule la première
+  configuration est lue et les couleurs par corps ne sont pas encore reprises.
 - **Blender `.blend`** : seuls les anciens fichiers 2.7x passent (via assimp) ; le format interne
   de Blender 2.8+ change à chaque version. Exporter en OBJ (+ `.mtl`), glTF ou FBX.
 - **DWG, SketchUp, Rhino** : non pris en charge (voir `NOTICE.md`).

@@ -566,6 +566,29 @@ impl TriMesh {
         self.face_count += 1;
     }
 
+    /// Append another mesh (its faces and edges keep their own numbering, shifted).
+    pub fn append(&mut self, o: TriMesh) {
+        if o.positions.is_empty() {
+            return;
+        }
+        let base = self.positions.len() as u32;
+        let tri_base = (self.indices.len() / 3) as u32;
+        for k in 0..3 {
+            self.bbox_min[k] = self.bbox_min[k].min(o.bbox_min[k]);
+            self.bbox_max[k] = self.bbox_max[k].max(o.bbox_max[k]);
+        }
+        self.positions.extend_from_slice(&o.positions);
+        if o.normals.len() == o.positions.len() {
+            self.normals.extend_from_slice(&o.normals);
+        } else {
+            self.normals.extend(std::iter::repeat_n([0.0, 0.0, 1.0], o.positions.len()));
+        }
+        self.indices.extend(o.indices.iter().map(|i| i + base));
+        self.edges.extend(o.edges.iter().map(|i| i + base));
+        self.face_start.extend(o.face_start.iter().map(|f| f + tri_base));
+        self.face_count += o.face_count;
+    }
+
     /// Fix up the bounding box of an empty mesh after the last `push_indexed_face`.
     pub fn finish(&mut self) {
         if self.positions.is_empty() {
