@@ -79,7 +79,7 @@ pub fn formats() -> Vec<FormatInfo> {
         FormatInfo { exts: &["x", "lwo", "lws", "ac", "ase", "ms3d", "cob", "smd", "md2", "md3", "md5mesh", "b3d", "nff", "xgl", "zgl", "ogex", "irrmesh", "irr"], name: "Autres formats 3D", support: asm_partial, note: "DirectX .x, LightWave, AC3D, ASE, MilkShape, Quake… (via assimp)." },
         FormatInfo { exts: &["3dxml"], name: "3D XML", support: Support::Partial, note: "Représentations maillées 3DXML (pas de B-rep CATIA)." },
         FormatInfo { exts: &["easm", "eprt"], name: "eDrawings", support: Support::Partial, note: "Aperçu et maillages lisibles uniquement." },
-        FormatInfo { exts: &["rvt", "rfa", "rte", "rft"], name: "Autodesk Revit", support: Support::Partial, note: "Boîtes 3D des éléments par catégorie (Revit 2024 et plus), vignette et informations du projet ; pas encore la forme exacte." },
+        FormatInfo { exts: &["rvt", "rfa", "rte", "rft"], name: "Autodesk Revit", support: Support::Partial, note: "Boîtes 3D des éléments par catégorie (Revit 2018 et plus), vignette et informations du projet ; pas encore la forme exacte." },
         FormatInfo { exts: &["x_t", "x_b"], name: "Parasolid", support: Support::None, note: "Format B-rep propriétaire ; exportez en STEP depuis SolidWorks." },
         FormatInfo { exts: &["dwg"], name: "AutoCAD DWG", support: Support::None, note: "Pas de lecteur libre compatible (LibreDWG est sous GPL) ; exportez en DXF, STEP ou IFC." },
         FormatInfo { exts: &["skp"], name: "SketchUp", support: Support::None, note: "Le SDK SketchUp est propriétaire ; exportez en COLLADA (.dae), glTF ou STL." },

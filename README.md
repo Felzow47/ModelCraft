@@ -28,7 +28,7 @@ MIT/Apache - voir `NOTICE.md`). ModelCraft est un projet **indépendant**, non a
 | 3DS | `.3ds` | ✅ | objets et matériaux (couleur diffuse) |
 | 3DXML | `.3dxml` | ✅ | représentations tessellées, assemblages |
 | eDrawings | `.easm` `.eprt` | ⚠️ partiel | vignette intégrée seulement (géométrie HSF non décodée) |
-| Autodesk Revit | `.rvt` `.rfa` `.rte` `.rft` | ⚠️ partiel | boîtes 3D des éléments colorées par catégorie (Revit 2024+), vignette + informations du fichier et du projet ; pas encore la forme exacte, voir *Limites* |
+| Autodesk Revit | `.rvt` `.rfa` `.rte` `.rft` | ⚠️ partiel | boîtes 3D des éléments colorées par catégorie (Revit 2018 à 2026), vignette + informations du fichier et du projet ; pas encore la forme exacte, voir *Limites* |
 | IFC (BIM) | `.ifc` `.ifczip` | ✅ complet | IFC2x3 / IFC4 / IFC4x3 via web-ifc : niveaux → éléments, couleurs, transparence (export IFC de Revit, ArchiCAD, Tekla…) |
 | FBX | `.fbx` | ✅ | binaire et ASCII via assimp : arbre, couleurs, axe vertical du fichier (pas d'animation) |
 | glTF 2.0 | `.gltf` `.glb` | ✅ | nœuds, transformations, couleurs PBR |
@@ -304,9 +304,9 @@ moteur : `WGPU_BACKEND=dx12|vulkan|gl`.
 - **eDrawings `.easm`** : seule la vignette est affichée (géométrie HSF non décodée).
 - **Revit `.rvt` / `.rfa`** : depuis la V5, chaque élément placé (murs, sols, toits, portes, fenêtres,
   murs-rideaux, poteaux, mobilier, réseaux…) est affiché par sa **boîte englobante**, colorée par
-  catégorie, lue dans les flux `Partitions/*` (fichiers Revit 2024 et plus ; voir
-  `docs/rvt-rea-notes.md`). Pas encore la forme exacte (la B-rep Revit n'est pas décodée), ni les
-  fichiers plus anciens (vignette et informations seulement). Pour la géométrie complète : exporter
+  catégorie, lue dans les flux `Partitions/*` (fichiers Revit 2018 à 2026, en travail partagé ou non,
+  ouverts en lecture seule sans verrou ni synchronisation ; voir `docs/rvt-rea-notes.md`). Pas encore
+  la forme exacte (la B-rep Revit n'est pas décodée) ; les fichiers d'avant 2018 ne sont pas vérifiés. Pour la géométrie complète : exporter
   en **IFC** depuis Revit, puis l'ouvrir dans ModelCraft.
 - **Parasolid `.x_t`** : non supporté (aucun lecteur libre) ; exporter en STEP. Les fichiers SolidWorks
   sans maillage d'affichage contiennent pourtant leur B-rep Parasolid (flux `Config-N-Partition`,

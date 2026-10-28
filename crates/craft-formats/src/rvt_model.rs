@@ -1,4 +1,4 @@
-//! Revit model data, first level: one axis-aligned box per placed element, by category.
+//! Revit model data (Revit 2018 to 2026, 32- and 64-bit element ids), first level: one axis-aligned box per placed element, by category.
 //!
 //! Written for ModelCraft from byte observations of Autodesk's sample files (no Autodesk code,
 //! SDK or disassembly; the idea of reading element boxes comes from BIMCraft's notes, see
@@ -10,13 +10,15 @@
 //!   CRC-32 and length ([`inflate_members`]).
 //! - `Formats/Latest` defines the class `Outline` inline as `[tag | 0x8000] 00 00 [len] Outline`
 //!   ([`schema_inline_tag`]).
-//! - A partition starts with a chain of element records: `u64` id, `u32` size, `u16` constant,
-//!   `u16` count, the body, and 16 bytes whose last `u32` repeats the size. The constant is the
-//!   same for every record of the file; plus 12 it is the tag found after the box ([`walk_chain`]).
-//! - From Revit 2024, an element frame (a record, or one nested in a record's body) holds its
-//!   `BuiltInCategory` (`i64`) at +0x12, its placement kind (`u32`) at +0x42, the marker
-//!   `[Outline tag u16] ff ff ff ff [tag u16]` at +0x50 and a box of six `f64` (feet:
-//!   min xyz, max xyz) at +0x58. The kind `0xffffef7f` marks a placed instance.
+//! - A partition starts with a chain of element records: id, `u32` size, `u16` constant,
+//!   `u16` count, the body, and a trailer whose last `u32` repeats the size. Ids are `u64` from
+//!   Revit 2024 (16-byte trailer) and `u32` before (12-byte trailer); [`walk_chain`] tries both.
+//!   The constant is the same for every record of the file.
+//! - An element frame (a record, or one nested in a record's body) holds the marker
+//!   `[Outline tag u16] ff ff ff ff [tag u16]` (the second tag is the same in the whole file),
+//!   followed by a box of six `f64` (feet: min xyz, max xyz). Before it: the placement kind
+//!   (`u32`) 14 bytes back, `0xffffef7f` for a placed instance, and the `BuiltInCategory`, an
+//!   `i64` 0x3e bytes back from 2024, an `i32` 0x26 bytes back before (ids are half as wide).
 //!
 //! Every read is bounds-checked and every buffer capped.
 
@@ -204,19 +206,50 @@ fn f64_at(b: &[u8], o: usize) -> Option<f64> {
 pub fn until_chain_end() -> impl FnMut(&[u8]) -> bool {
     let mut o = 0usize;
     let mut k: Option<u16> = None;
+    let mut w: Option<usize> = None;
     move |p: &[u8]| loop {
-        let (Some(size), Some(c)) = (u32_at(p, o + 8), u16_at(p, o + 12)) else { return true };
+        let width = match w {
+            Some(x) => x,
+            None => match id_width(p) {
+                Ok(x) => x,
+                Err(more) => return more,
+            },
+        };
+        w = Some(width);
+        let (Some(size), Some(c)) = (u32_at(p, o + width), u16_at(p, o + width + 4)) else { return true };
         let size = size as usize;
         if size < 16 || k.is_some_and(|x| x != c) {
             return false;
         }
-        let Some(tr) = u32_at(p, o + size + 12) else { return true };
+        let Some(tr) = u32_at(p, o + size + width + 4) else { return true };
         if tr as usize != size {
             return false;
         }
         k = Some(c);
-        o += size + 16;
+        o += size + width + 8;
     }
+}
+
+/// Width of the element ids (8 from Revit 2024, 4 before), from the first record's trailer.
+/// `Err(true)`: not enough data yet; `Err(false)`: no chain.
+fn id_width(p: &[u8]) -> Result<usize, bool> {
+    let mut short = false;
+    for w in [8usize, 4] {
+        let Some(size) = u32_at(p, w) else {
+            short = true;
+            continue;
+        };
+        let size = size as usize;
+        if size < 16 {
+            continue;
+        }
+        match u32_at(p, size + w + 4) {
+            Some(t) if t as usize == size => return Ok(w),
+            None => short = true,
+            _ => {}
+        }
+    }
+    Err(short)
 }
 
 /// The record chain at the start of a partition.
@@ -230,27 +263,32 @@ pub struct Chain {
     pub constant: Option<u16>,
     /// A header or trailer did not fit: the chain is over (rather than cut by the data so far).
     pub closed: bool,
+    /// Width of the element ids: 8 (Revit 2024 and later) or 4.
+    pub id_width: usize,
 }
 
 /// Walks the chain from byte 0; stops at the first header or trailer that does not fit.
 pub fn walk_chain(p: &[u8]) -> Chain {
     let mut c = Chain::default();
+    let Ok(w) = id_width(p) else { return c };
+    c.id_width = w;
     let mut o = 0usize;
     loop {
-        let (Some(id), Some(size), Some(k)) = (u64_at(p, o), u32_at(p, o + 8), u16_at(p, o + 12)) else { break };
+        let id = if w == 8 { u64_at(p, o) } else { u32_at(p, o).map(u64::from) };
+        let (Some(id), Some(size), Some(k)) = (id, u32_at(p, o + w), u16_at(p, o + w + 4)) else { break };
         let size = size as usize;
         if size < 16 || c.constant.is_some_and(|x| x != k) {
             c.closed = true;
             break;
         }
-        let Some(tr) = u32_at(p, o + size + 12) else { break };
+        let Some(tr) = u32_at(p, o + size + w + 4) else { break };
         if tr as usize != size {
             c.closed = true;
             break;
         }
         c.constant.get_or_insert(k);
         c.records.push((o, id));
-        o += size + 16;
+        o += size + w + 8;
     }
     c.end = o;
     c
@@ -277,27 +315,39 @@ pub struct Scan {
 /// two or more directions. Duplicates (same category and box) are dropped.
 pub fn scan_boxes(p: &[u8], chain: &Chain, outline: u16, max_boxes: usize) -> Scan {
     let mut s = Scan { records: chain.records.len(), ..Default::default() };
-    let Some(k) = chain.constant else { return s };
-    let tag = k.wrapping_add(12);
+    if chain.constant.is_none() {
+        return s;
+    }
     let mut mk = outline.to_le_bytes().to_vec();
     mk.extend_from_slice(&[0xff; 4]);
-    mk.extend_from_slice(&tag.to_le_bytes());
     let region = &p[..chain.end.min(p.len())];
+    // the tag after the marker: the most frequent one (it is not tied to the constant before 2024)
+    let mut tags: std::collections::HashMap<u16, usize> = Default::default();
+    let mut i = 0;
+    while let Some(j) = find(region, &mk, i) {
+        i = j + 1;
+        if let Some(t) = u16_at(region, j + 6) {
+            *tags.entry(t).or_default() += 1;
+        }
+    }
+    let Some(tag) = tags.into_iter().max_by_key(|&(t, n)| (n, t)).map(|(t, _)| t) else { return s };
+    mk.extend_from_slice(&tag.to_le_bytes());
+    let (cat_back, wide) = if chain.id_width == 4 { (0x26, false) } else { (0x3e, true) };
     let mut seen = std::collections::HashSet::new();
     let mut i = 0;
     while let Some(j) = find(region, &mk, i) {
         i = j + 1;
-        let Some(f) = j.checked_sub(0x50) else { continue };
+        let (Some(c), Some(k)) = (j.checked_sub(cat_back), j.checked_sub(0x0e)) else { continue };
         s.frames += 1;
-        let (Some(cat), Some(kind)) = (u64_at(region, f + 0x12), u32_at(region, f + 0x42)) else { continue };
-        let cat = cat as i64;
+        let cat = if wide { u64_at(region, c).map(|x| x as i64) } else { u32_at(region, c).map(|x| x as i32 as i64) };
+        let (Some(cat), Some(kind)) = (cat, u32_at(region, k)) else { continue };
         if kind != PLACED || !(cat == -1 || (-2_100_000..-1_000_000).contains(&cat)) {
             continue;
         }
         let mut v = [0f64; 6];
         let mut ok = true;
         for (n, x) in v.iter_mut().enumerate() {
-            match f64_at(region, f + 0x58 + 8 * n) {
+            match f64_at(region, j + 8 + 8 * n) {
                 Some(y) if y.is_finite() && y.abs() < MAX_FEET => *x = y,
                 _ => ok = false,
             }
@@ -367,6 +417,38 @@ pub fn category(cat: i64) -> Option<(&'static str, [f32; 4])> {
         -2008130 => ("Chemins de câbles", c(0xe0, 0xa0, 0x40, 1.0)),
         -2008132 => ("Conduits", c(0xe0, 0xa0, 0x40, 1.0)),
         -2009000 => ("Armatures", c(0x80, 0x50, 0x40, 1.0)),
+        -2009016 => ("Armatures", c(0x80, 0x50, 0x40, 1.0)),
+        -2009060 => ("Armatures", c(0x80, 0x50, 0x40, 1.0)),
+        -2000175 | -2000127 | -2000948 => ("Garde-corps", c(0x70, 0x70, 0x78, 1.0)),
+        -2000946 | -2000947 => ("Mains courantes", c(0x70, 0x70, 0x78, 1.0)),
+        -2000919 | -2000920 | -2000123 | -2000952 => ("Escaliers", c(0xb5, 0xa9, 0x95, 1.0)),
+        -2000181 => ("Profilés de mur", c(0xc8, 0xc4, 0xbc, 1.0)),
+        -2001390 => ("Bordures de toit", c(0xa0, 0x4a, 0x3a, 1.0)),
+        -2001391 => ("Gouttières", c(0x80, 0x80, 0x88, 1.0)),
+        -2001393 => ("Sous-faces de toit", c(0xa0, 0x4a, 0x3a, 1.0)),
+        -2001392 => ("Bordures de dalle", c(0xa8, 0xa0, 0x94, 1.0)),
+        -2000269 => ("Pièces", c(0xb0, 0xb0, 0xb0, 1.0)),
+        -2001336 | -2009600 => ("Fermes", c(0x8a, 0x8f, 0x99, 1.0)),
+        -2001354 => ("Raidisseurs", c(0x8a, 0x8f, 0x99, 1.0)),
+        -2009030 => ("Assemblages structurels", c(0x6f, 0x74, 0x7e, 1.0)),
+        -2001079 | -2001263 => ("Topographie", c(0x8f, 0xb0, 0x6a, 1.0)),
+        -2001036 => ("Aménagements extérieurs", c(0xa8, 0xa0, 0x94, 1.0)),
+        -2001220 => ("Routes", c(0x70, 0x70, 0x70, 1.0)),
+        -2001046 => ("Équipements médicaux", c(0x9e, 0xa7, 0xb5, 1.0)),
+        -2001043 => ("Équipements de restauration", c(0x9e, 0xa7, 0xb5, 1.0)),
+        -2001058 => ("Signalétique", c(0xe0, 0x60, 0x40, 1.0)),
+        -2001049 => ("Protection incendie", c(0xd0, 0x40, 0x40, 1.0)),
+        -2008099 => ("Sprinkleurs", c(0xd0, 0x40, 0x40, 1.0)),
+        -2008234 => ("Équipements de plomberie", c(0x4f, 0xa8, 0x6b, 1.0)),
+        -2008232 => ("Commandes mécaniques", c(0x6a, 0x9f, 0xd4, 1.0)),
+        -2008013 => ("Bouches d'aération", c(0x6a, 0x9f, 0xd4, 1.0)),
+        -2008016 => ("Accessoires de gaine", c(0x6a, 0x9f, 0xd4, 1.0)),
+        -2008020 => ("Gaines souples", c(0x6a, 0x9f, 0xd4, 1.0)),
+        -2008050 => ("Canalisations souples", c(0x4f, 0xa8, 0x6b, 1.0)),
+        -2008055 => ("Accessoires de canalisation", c(0x4f, 0xa8, 0x6b, 1.0)),
+        -2008126 => ("Raccords de chemin de câbles", c(0xe0, 0xa0, 0x40, 1.0)),
+        -2008128 => ("Raccords de conduit", c(0xe0, 0xa0, 0x40, 1.0)),
+        -2008075 | -2008077 | -2008079 | -2008081 | -2008083 | -2008085 | -2008087 | -2001055 => ("Dispositifs électriques", c(0xe0, 0xa0, 0x40, 1.0)),
         _ => return None,
     })
 }
@@ -472,5 +554,40 @@ mod tests {
         let (mut pos, mut tri) = (Vec::new(), Vec::new());
         push_box(&s.boxes[0], &mut pos, &mut tri);
         assert_eq!((pos.len(), tri.len()), (8, 12));
+    }
+
+    /// Same with 32-bit ids (Revit 2023 and earlier): 12-byte header and trailer, `i32` category.
+    #[test]
+    fn chain_and_boxes_32() {
+        let rec = |id: u32, placed: bool, cat: i32, bb: [f64; 6]| {
+            let m = 0x40;
+            let mut r = vec![0u8; m + 8 + 48 + 4];
+            let size = r.len() as u32;
+            r[0..4].copy_from_slice(&id.to_le_bytes());
+            r[4..8].copy_from_slice(&size.to_le_bytes());
+            r[8..10].copy_from_slice(&0x4ebu16.to_le_bytes());
+            r[m - 0x26..m - 0x22].copy_from_slice(&cat.to_le_bytes());
+            r[m - 0x0e..m - 0x0a].copy_from_slice(&(if placed { PLACED } else { 0xffff8080 }).to_le_bytes());
+            r[m..m + 2].copy_from_slice(&0x109u16.to_le_bytes());
+            r[m + 2..m + 6].copy_from_slice(&[0xff; 4]);
+            r[m + 6..m + 8].copy_from_slice(&0x4f4u16.to_le_bytes());
+            for (k, v) in bb.iter().enumerate() {
+                r[m + 8 + 8 * k..m + 16 + 8 * k].copy_from_slice(&v.to_le_bytes());
+            }
+            let mut t = vec![0u8; 12];
+            t[8..12].copy_from_slice(&size.to_le_bytes());
+            r.extend(t);
+            r
+        };
+        let mut p = rec(7, true, -2000032, [0.0, 0.0, 0.0, 10.0, 5.0, 1.0]);
+        p.extend(rec(8, true, -2000011, [1.0, 1.0, 0.0, 2.0, 1.0, 9.0]));
+        p.extend(rec(9, false, -2000011, [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]));
+        p.extend([0xAB; 64]);
+        let c = walk_chain(&p);
+        assert_eq!((c.records.len(), c.id_width, c.records[1].1), (3, 4, 8));
+        let s = scan_boxes(&p, &c, 0x109, 100);
+        assert_eq!(s.boxes.iter().map(|b| b.category).collect::<Vec<_>>(), [-2000032, -2000011]);
+        let mut stop = until_chain_end();
+        assert!(!stop(&p));
     }
 }

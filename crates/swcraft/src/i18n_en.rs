@@ -451,7 +451,7 @@ pub static EN: &[(&str, &str)] = &[
     ("eDrawings", "eDrawings"),
     ("Aperçu et maillages lisibles uniquement.", "Preview and readable meshes only."),
     ("Autodesk Revit", "Autodesk Revit"),
-    ("Boîtes 3D des éléments par catégorie (Revit 2024 et plus), vignette et informations du projet ; pas encore la forme exacte.", "3D bounding boxes of the elements by category (Revit 2024 and later), thumbnail and project information; not the exact shapes yet."),
+    ("Boîtes 3D des éléments par catégorie (Revit 2018 et plus), vignette et informations du projet ; pas encore la forme exacte.", "3D bounding boxes of the elements by category (Revit 2018 and later), thumbnail and project information; not the exact shapes yet."),
     ("Parasolid", "Parasolid"),
     ("Format B-rep propriétaire ; exportez en STEP depuis SolidWorks.", "Proprietary B-rep format; export to STEP from SolidWorks."),
     ("AutoCAD DWG", "AutoCAD DWG"),

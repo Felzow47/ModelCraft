@@ -116,3 +116,24 @@ Lus en lecture seule sur le PC, `BasicFileInfo` uniquement (aucun nom de fichier
 15 `.rvt`, 0,4 à 330 Mo. 14 sont des Revit 2018 (13 en travail partagé « Central », 1 non partagé),
 1 est un Revit 2025 « Central ». Le format 2018 n'a pas le cadre d'élément de 2024+ : il reste en
 repli vignette/informations ; la piste suivante est le cadre « jusqu'à 2023 » (ids `u32`).
+
+## V5.1 : fichiers d'avant 2024 (identifiants 32 bits)
+
+Vérifié sur les projets d'exemple publiés par Autodesk (revit.downloads.autodesk.com, non versionnés) :
+`rst_basic_sample_project` 2018, `rstbasicsampleproject` 2023 et 2025, `rac_basic_sample_project`
+2018 et `racbasicsampleproject` 2021.
+
+- Revit 2024 est passé aux `ElementId` 64 bits. Avant : en-tête d'enregistrement `u32` id, `u32`
+  taille, `u16` constante, `u16` compte (12 octets), bloc de fin de 12 octets dont le dernier `u32`
+  répète la taille ; enregistrement suivant à `o + taille + 12` (contre `+ 16` en 2024+).
+- Le marqueur `[Outline] ff ff ff ff [tag]` reste, suivi des six `f64` ; tag `Outline` = 0x109 (2018),
+  0x13c (2023), 0x159 (2025), lu dans `Formats/Latest`. Le tag qui suit n'est plus « constante + 12 »
+  en 2018 (0x4f4 pour une constante 0x4eb) : on prend le plus fréquent après le marqueur.
+- Type de placement (`u32`) toujours 14 octets avant le marqueur ; catégorie `i32` 0x26 octets avant
+  (0x3e et `i64` en 2024+ : les six identifiants intermédiaires sont deux fois plus courts).
+- Même modèle, mêmes résultats d'une version à l'autre : rst 786 boîtes en 2018, 2023 et 2025 ;
+  rac 458 en 2018 et 2021.
+- Depuis 2019, le bloc `Clé: valeur` de `BasicFileInfo` est à un décalage impair : on prend
+  l'alignement qui contient les clés.
+- Les fichiers en travail partagé sont lus comme les autres (une partition par sous-projet), en
+  lecture seule : aucun verrou, aucun fichier temporaire, aucune synchronisation avec le central.

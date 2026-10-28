@@ -34,28 +34,33 @@ fn utf16_text(b: &[u8]) -> String {
         let u: Vec<u16> = b.get(off..).unwrap_or(&[]).chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
         String::from_utf16_lossy(&u)
     };
-    let a = dec(0);
-    if a.contains("Revit") {
-        return a;
+    // From 2019 the `Key: value` block sits at an odd offset after a binary header that holds
+    // the path at an even one: prefer the alignment that has the keys.
+    let (a, b2) = (dec(0), dec(1));
+    for key in ["Worksharing:", "Revit Build:", "Format:", "Revit"] {
+        if a.contains(key) {
+            return a;
+        }
+        if b2.contains(key) {
+            return b2;
+        }
     }
-    let b2 = dec(1);
-    if b2.contains("Revit") {
-        b2
-    } else {
-        a
-    }
+    a
 }
 
 /// `Key: value` pairs of BasicFileInfo.
 pub fn basic_file_info(b: &[u8]) -> Vec<(String, String)> {
     let text = utf16_text(b);
     let mut out = Vec::new();
-    for line in text.split(['\r', '\n']) {
+    // U+0A0D: a CR LF pair read one byte off, between the binary header and the first key
+    for line in text.split(['\r', '\n', '\u{0a0d}']) {
         let line: String = line.chars().filter(|c| !c.is_control()).collect();
         if let Some((k, v)) = line.split_once(": ") {
             // the first key can be glued to binary header bytes: keep its trailing words
             let k = k.rsplit(|c: char| !(c.is_ascii_alphanumeric() || " '_-".contains(c))).next().unwrap_or("").trim();
-            if !k.is_empty() && k.len() < 80 && k.chars().all(|c| c.is_alphanumeric() || " '_-".contains(c)) {
+            // a value running over the binary header (bytes read one off) is not a value
+            let garbled = v.chars().any(|c| ('\u{2c00}'..='\u{9fff}').contains(&c));
+            if !garbled && !k.is_empty() && k.len() < 80 && k.chars().all(|c| c.is_alphanumeric() || " '_-".contains(c)) {
                 out.push((k.to_string(), v.trim().to_string()));
             }
         }
@@ -258,7 +263,7 @@ pub fn element_boxes<F: Read + std::io::Seek>(cf: &mut cfb::CompoundFile<F>, nam
     if schema.verified == 0 {
         return Err("schéma illisible".into());
     }
-    let outline = rvt_model::schema_inline_tag(&schema.data, "Outline").ok_or("format antérieur à Revit 2024 ou inconnu")?;
+    let outline = rvt_model::schema_inline_tag(&schema.data, "Outline").ok_or("format de modèle non reconnu (classe Outline absente)")?;
     drop(schema);
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -357,6 +362,15 @@ mod tests {
             eprintln!("M_Chair-Desk: {} boxes", count(&s));
             assert!(count(&s) >= 3);
             assert!(s.properties.iter().any(|(k, _)| k == "Revit"));
+        }
+        // Autodesk's published sample projects (revit.downloads.autodesk.com), 32-bit ids
+        for (n, min) in [("ad/rst_2018.rvt", 500), ("ad/rac_2018.rvt", 300), ("ad/rst_2023.rvt", 500), ("ad/rac_2021.rvt", 300), ("ad/rst_2025.rvt", 500)] {
+            if let Some(s) = get(n) {
+                let k = count(&s);
+                eprintln!("{n}: {k} boxes, {:?}", s.components.iter().map(|c| c.name.clone()).collect::<Vec<_>>());
+                assert!(k >= min, "{n}: {k}");
+                assert!(s.properties.iter().any(|(k, _)| k == "Revit"), "{n}");
+            }
         }
         if let Some(s) = get("BatchPrintInitial.rvt") {
             eprintln!("BatchPrintInitial: {} boxes", count(&s));
