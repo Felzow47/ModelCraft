@@ -143,6 +143,12 @@ pub struct Settings {
     /// Numpad . frame selected, G move, R rotate, Ctrl+Z / Ctrl+Y.
     pub blender_keys: bool,
     pub orbit: OrbitMode,
+    /// After a 90° roll from the view cube, orbit freely in every direction (trackball) instead
+    /// of the turntable, until a standard view is picked again (toggle next to the view cube).
+    pub free_orbit_after_roll: bool,
+    /// Move / Rotate on a selected face detaches that face so it moves alone (viewer-only).
+    /// Off: the whole part moves (toggle in the viewport toolbar).
+    pub face_detach: bool,
     pub ortho: bool,
     pub fov_deg: f32,
     pub background: Background,
@@ -192,6 +198,8 @@ impl Default for Settings {
             invert_zoom: false,
             blender_keys: true,
             orbit: OrbitMode::Turntable,
+            free_orbit_after_roll: false,
+            face_detach: true,
             ortho: false,
             fov_deg: 30.0,
             background: Background::Gradient,

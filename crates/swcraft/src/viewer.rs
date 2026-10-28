@@ -297,6 +297,50 @@ pub fn frame_component(doc: &mut Document, i: usize) {
     zoom_to(doc, i);
 }
 
+/// World-space bounding box of a selected face (its triangles only, not the whole body).
+pub fn face_bbox(doc: &Document, f: FaceSel) -> Option<(Vec3, Vec3)> {
+    let s = doc.scene.as_ref()?;
+    let m = &s.meshes.get(f.mesh)?.mesh;
+    let w = *doc.display.get(f.comp)?;
+    let mut lo = Vec3::splat(f32::INFINITY);
+    let mut hi = Vec3::splat(f32::NEG_INFINITY);
+    for t in crate::measure::face_tris(m, f.face, f.tri) {
+        for k in 0..3 {
+            let Some(&vi) = m.indices.get(t as usize * 3 + k) else { continue };
+            let Some(p) = m.positions.get(vi as usize) else { continue };
+            let q = w.transform_point3(Vec3::from(*p));
+            lo = lo.min(q);
+            hi = hi.max(q);
+        }
+    }
+    (lo.x <= hi.x && lo.is_finite() && hi.is_finite()).then_some((lo, hi))
+}
+
+/// Numpad . with a face selected: frame that face only, even when the whole model is one
+/// single body. The clip radius is kept so the rest of the model is not clipped away.
+pub fn frame_face(doc: &mut Document, f: FaceSel) -> bool {
+    let Some((lo, hi)) = face_bbox(doc, f) else { return false };
+    doc.cam_goal = None;
+    let r = doc.camera.radius;
+    let aspect = doc.aspect;
+    doc.camera.fit(lo, hi, aspect);
+    doc.camera.radius = doc.camera.radius.max(r);
+    true
+}
+
+/// Frame the current selection: the selected face when there is one, else the component.
+pub fn frame_selection(doc: &mut Document) {
+    if let Some(f) = doc.face_sel {
+        if frame_face(doc, f) {
+            return;
+        }
+    }
+    match doc.selected {
+        Some(i) => frame_component(doc, i),
+        None => doc.needs_fit = true,
+    }
+}
+
 // ---------------------------------------------------------------- viewport
 
 pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'_>, cmds: &mut Cmds) {
@@ -326,6 +370,8 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
         doc.fit(aspect);
     }
     if let Some((yaw, pitch)) = doc.cam_goal {
+        // a standard view levels the camera again: back to the turntable
+        doc.rolled = false;
         if doc.camera.lerp_towards(crate::camera::Camera::orientation(yaw, pitch), 0.25) {
             doc.cam_goal = None;
         }
@@ -397,7 +443,8 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
         match op {
             Op::Orbit => {
                 doc.cam_goal = None;
-                doc.camera.orbit(gd, st.orbit == crate::settings::OrbitMode::Turntable)
+                let tt = st.orbit == crate::settings::OrbitMode::Turntable && !(st.free_orbit_after_roll && doc.rolled);
+                doc.camera.orbit(gd, tt)
             }
             Op::Pan => doc.camera.pan(gd, rect.height()),
             Op::Zoom => doc.camera.dolly((d.y * 0.005).exp()),
@@ -557,7 +604,7 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
         triad(&painter, rect, view, &t);
     }
     if st.show_viewcube {
-        viewcube(ui, rect, doc);
+        viewcube(ui, rect, doc, st, cmds);
     }
     toolbar(ui, rect, doc, st, cmds);
     if doc.gizmo {
@@ -1156,7 +1203,7 @@ fn triad(p: &egui::Painter, rect: Rect, view: Mat4, t: &Tokens) {
 }
 
 /// Orientation cube in the top-right corner; click a face to look at it.
-fn viewcube(ui: &mut egui::Ui, rect: Rect, doc: &mut Document) {
+fn viewcube(ui: &mut egui::Ui, rect: Rect, doc: &mut Document, st: &Settings, cmds: &mut Cmds) {
     let t = Tokens::get(ui.ctx());
     let size = 44.0;
     let c = rect.right_top() + vec2(-70.0, 112.0);
@@ -1195,7 +1242,7 @@ fn viewcube(ui: &mut egui::Ui, rect: Rect, doc: &mut Document) {
             }
         }
     }
-    for (k, (depth, corners, label, _, _, n, u, _w)) in polys.iter().enumerate() {
+    for (k, (depth, corners, label, _, _, n, u, w)) in polys.iter().enumerate() {
         if *depth <= 0.02 {
             continue;
         }
@@ -1203,19 +1250,36 @@ fn viewcube(ui: &mut egui::Ui, rect: Rect, doc: &mut Document) {
         let base = if t.dark() { Color32::from_rgb(0x2E, 0x31, 0x38) } else { Color32::from_rgb(0xF4, 0xF5, 0xF7) };
         let fill = if hovered == Some(k) { t.accent } else { base.gamma_multiply(0.75 + 0.25 * shade) };
         painter.add(egui::Shape::convex_polygon(corners.to_vec(), fill, Stroke::new(1.0, t.border.gamma_multiply(1.4))));
-        if *depth > 0.35 {
-            // label drawn along the face's horizontal direction, scaled by its tilt
+        if *depth > 0.25 {
+            // Label painted ON the face: the glyph mesh is mapped through the face's own
+            // projected axes (the cube uses an orthographic projection, so this affine map is
+            // exact). It tilts, foreshortens and rolls with the face and can never be mirrored
+            // or upside down relative to it, unlike a flat rotated 2D text.
             let cen = to2(*n).0;
-            let ux = to2(*n + *u).0 - cen;
-            let a = ux.y.atan2(ux.x);
-            let fs = (8.5 * depth.sqrt()).max(6.0);
-            let g = painter.layout_no_wrap(label.to_string(), theme::semibold(fs), if hovered == Some(k) { t.on_accent() } else { t.text_muted });
-            let mut shape = egui::epaint::TextShape::new(cen, g, t.text_muted);
-            let half = shape.galley.size() * 0.5;
-            let rot = egui::emath::Rot2::from_angle(a);
-            shape.pos = cen - rot * half;
-            shape.angle = a;
-            painter.add(shape);
+            let ax = to2(*n + *u).0 - cen; // face +u on screen (half a face)
+            let ay = cen - to2(*n + *w).0; // face "down" on screen (half a face)
+            let color = if hovered == Some(k) { t.on_accent() } else { t.text_muted };
+            let g = painter.layout_no_wrap(label.to_string(), theme::semibold(9.0), color);
+            let gs = g.size();
+            if gs.x > 0.0 {
+                let half_px = size * 0.5;
+                // face half-width units per galley point, so the longest label fits the face
+                let kx = (1.0 / half_px).min(1.62 / gs.x);
+                let shape = egui::epaint::TextShape::new(egui::Pos2::ZERO, g, color);
+                let ppp = ui.ctx().pixels_per_point();
+                let tex = ui.ctx().fonts(|f| f.font_image_size());
+                let mut opts = egui::epaint::TessellationOptions::default();
+                opts.round_text_to_pixels = false;
+                let mut tess = egui::epaint::Tessellator::new(ppp, opts, tex, Vec::new());
+                let mut mesh = egui::epaint::Mesh::default();
+                tess.tessellate_text(&shape, &mut mesh);
+                let mid = gs * 0.5;
+                for v in &mut mesh.vertices {
+                    let l = (v.pos.to_vec2() - mid) * kx;
+                    v.pos = cen + ax * l.x + ay * l.y;
+                }
+                painter.add(egui::Shape::mesh(mesh));
+            }
         }
     }
     if resp.clicked() {
@@ -1241,7 +1305,26 @@ fn viewcube(ui: &mut egui::Ui, rect: Rect, doc: &mut Document) {
         if rr.on_hover_text(tip).clicked() {
             doc.cam_goal = None;
             doc.camera.roll(deg);
+            doc.rolled = true;
         }
+    }
+    // one-click toggle: free orbit in every direction after a roll, or the turntable
+    let fb = Rect::from_center_size(c + vec2(0.0, size * 1.05), vec2(22.0, 22.0));
+    let fr = ui.interact(fb, ui.id().with(("cube-free", doc.id)), Sense::click());
+    let on = st.free_orbit_after_roll;
+    let fill = if on { t.accent.gamma_multiply(0.25) } else if fr.hovered() { t.hover } else { Color32::TRANSPARENT };
+    painter.rect_filled(fb, CornerRadius::same(6), fill);
+    if on {
+        painter.rect_stroke(fb.shrink(0.5), CornerRadius::same(6), Stroke::new(1.0, t.accent.gamma_multiply(0.6)), egui::StrokeKind::Inside);
+    }
+    icons::paint(ui, fb.shrink(4.0), "rotate-3d", 13.0, if on { t.accent_text } else { t.text_muted });
+    let tip = if on {
+        tr("Rotation libre après pivot : activée (tourne dans tous les sens). Clic : plateau tournant")
+    } else {
+        tr("Rotation libre après pivot : désactivée (plateau tournant). Clic : rotation libre")
+    };
+    if fr.on_hover_text(tip).clicked() {
+        cmds.push("view.free_orbit_roll");
     }
 }
 
@@ -1340,7 +1423,7 @@ fn toolbar(ui: &mut egui::Ui, rect: Rect, doc: &mut Document, st: &Settings, cmd
         ("boxes", doc.explode_panel, tr("Vue éclatée"), "view.explode"),
     ];
     let moved = doc.asm.user.iter().any(|m| *m != glam::Mat4::IDENTITY);
-    let n_buttons = 4.0 + 1.0 + 4.0 + 7.0 + 2.0;
+    let n_buttons = 4.0 + 2.0 + 4.0 + 7.0 + 2.0;
     let full = |b: f32| b * n_buttons + 4.0 * (n_buttons - 1.0) + 4.0 * 7.0 + 12.0;
     let b = if full(30.0) + 24.0 <= rect.width() { 30.0 } else { 26.0 };
     let w = full(b);
@@ -1369,6 +1452,14 @@ fn toolbar(ui: &mut egui::Ui, rect: Rect, doc: &mut Document, st: &Settings, cmd
                         if icons::button(ui, icon, b, on, &tip_with(ui, tip, cmd)).clicked() {
                             cmds.push(cmd);
                         }
+                    }
+                    let fd_tip = if st.face_detach {
+                        tr("Déplacer une face seule : activé (la face sélectionnée se détache). Clic : désactiver")
+                    } else {
+                        tr("Déplacer une face seule : désactivé (toute la pièce bouge). Clic : activer")
+                    };
+                    if icons::button(ui, "square-split-horizontal", b, st.face_detach, fd_tip).clicked() {
+                        cmds.push("asm.face_detach");
                     }
                     let reset_tip = tr("Réinitialiser la position (sélection, sinon tout)");
                     if ui.add_enabled_ui(moved, |ui| icons::button(ui, "rotate-ccw", b, false, reset_tip)).inner.clicked() {
@@ -1418,7 +1509,10 @@ fn viewport_menu(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, cmds: &mu
         item(ui, cmds, "edit.hide");
         item(ui, cmds, "edit.isolate");
         if widgets::menu_icon_item(ui, "zoom-in", tr("Zoom sur"), "").clicked() {
-            zoom_to(doc, i);
+            match doc.face_sel.filter(|f| f.comp == i) {
+                Some(f) if frame_face(doc, f) => {}
+                _ => zoom_to(doc, i),
+            }
             ui.close();
         }
         if let Some(pi) = parent {

@@ -274,12 +274,12 @@ fn family(id: &str) -> &'static str {
         "view.fit" | "view.frame_selected" => "a",
         "view.iso" | "view.front" | "view.top" | "view.right" | "view.back" | "view.bottom" | "view.left" | "view.flip" => "b",
         "view.orbit_left" | "view.orbit_right" | "view.orbit_up" | "view.orbit_down" => "o",
-        "view.ortho" | "view.edges" | "view.bbox" | "view.section" | "view.grid" | "view.axes" | "view.viewcube" => "c",
+        "view.ortho" | "view.edges" | "view.bbox" | "view.section" | "view.grid" | "view.axes" | "view.viewcube" | "view.free_orbit_roll" => "c",
         "view.explode" => "e",
         "view.tree" | "view.info" | "view.theme" | "view.fullscreen" => "d",
         "tool.select" | "tool.pan" | "tool.distance" | "tool.edge" | "tool.diameter" | "tool.angle" => "a",
         "tool.clear" => "b",
-        "asm.move" | "asm.rotate" | "asm.reset_sel" | "asm.reset_all" => "c",
+        "asm.move" | "asm.rotate" | "asm.reset_sel" | "asm.reset_all" | "asm.face_detach" => "c",
         "asm.explode" | "asm.explode_lines" => "d",
         "asm.transparent" | "asm.others" | "asm.xray" => "e",
         "help.palette" | "help.shortcuts" => "a",
@@ -291,7 +291,7 @@ pub fn needs_doc(id: &str) -> bool {
     !(id.starts_with("help.")
         || matches!(
             id,
-            "file.open" | "file.home" | "file.quit" | "edit.settings" | "view.theme" | "view.fullscreen" | "view.edges" | "view.grid" | "view.axes" | "view.viewcube" | "view.tree" | "view.info" | "tool.assoc" | "tool.settings_folder"
+            "file.open" | "file.home" | "file.quit" | "edit.settings" | "view.theme" | "view.fullscreen" | "view.edges" | "view.grid" | "view.axes" | "view.viewcube" | "view.free_orbit_roll" | "asm.face_detach" | "view.tree" | "view.info" | "tool.assoc" | "tool.settings_folder"
         ))
 }
 
@@ -306,6 +306,8 @@ pub fn checked(app: &App, id: &str) -> Option<bool> {
         "view.grid" => s.show_grid,
         "view.axes" => s.show_axes,
         "view.viewcube" => s.show_viewcube,
+        "view.free_orbit_roll" => s.free_orbit_after_roll,
+        "asm.face_detach" => s.face_detach,
         "view.tree" => s.show_tree,
         "view.info" => s.show_info,
         "tool.select" => d.is_some_and(|d| d.measure.tool == Tool::Select && !d.pan_tool && !d.gizmo),

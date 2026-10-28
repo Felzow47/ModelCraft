@@ -122,6 +122,8 @@ pub struct Document {
     pub expanded: HashSet<usize>,
     pub selected: Option<usize>,
     pub face_sel: Option<FaceSel>,
+    /// The view was rolled with the view cube's 90° buttons (cleared by a standard view).
+    pub rolled: bool,
     pub hover: Option<usize>,
     pub measure: MeasureState,
     pub section: Option<Section>,
@@ -269,6 +271,7 @@ impl Document {
             expanded: HashSet::new(),
             selected: None,
             face_sel: None,
+            rolled: false,
             hover: None,
             measure: MeasureState::default(),
             section: None,

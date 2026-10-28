@@ -72,6 +72,8 @@ pub static COMMANDS: &[Command] = &[
     Command { id: "view.section", label: "Plan de coupe", icon: "scissors", shortcut: ks(N, Key::X), group: "Affichage" },
     Command { id: "view.grid", label: "Grille", icon: "grid-3x3", shortcut: ks(S, Key::G), group: "Affichage" },
     Command { id: "view.axes", label: "Repère XYZ", icon: "axis-3d", shortcut: None, group: "Affichage" },
+    Command { id: "view.free_orbit_roll", label: "Rotation libre après pivot du cube", icon: "rotate-3d", shortcut: None, group: "Affichage" },
+    Command { id: "asm.face_detach", label: "Déplacer une face seule", icon: "square-split-horizontal", shortcut: None, group: "Outils" },
     Command { id: "view.viewcube", label: "Cube de vue", icon: "box", shortcut: None, group: "Affichage" },
     Command { id: "view.explode", label: "Vue éclatée…", icon: "boxes", shortcut: ks(S, Key::V), group: "Affichage" },
     Command { id: "view.tree", label: "Arbre de création", icon: "list-tree", shortcut: ks(N, Key::T), group: "Affichage" },

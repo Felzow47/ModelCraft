@@ -328,10 +328,7 @@ impl App {
             }
             "view.frame_selected" => {
                 if let Some(d) = self.doc_mut() {
-                    match d.selected {
-                        Some(i) => viewer::frame_component(d, i),
-                        None => d.needs_fit = true,
-                    }
+                    viewer::frame_selection(d);
                 }
             }
             "view.flip" => {
@@ -351,9 +348,11 @@ impl App {
                     _ => glam::Vec2::new(0.0, px),
                 };
                 let turntable = st.orbit == crate::settings::OrbitMode::Turntable;
+                let free_roll = st.free_orbit_after_roll;
                 if let Some(doc) = self.doc_mut() {
                     doc.cam_goal = None;
-                    doc.camera.orbit(d, turntable);
+                    let tt = turntable && !(free_roll && doc.rolled);
+                    doc.camera.orbit(d, tt);
                 }
             }
             "asm.reset_sel" => {
@@ -502,6 +501,26 @@ impl App {
                 st.show_axes = !st.show_axes;
                 self.settings_dirty = true;
             }
+            "view.free_orbit_roll" => {
+                st.free_orbit_after_roll = !st.free_orbit_after_roll;
+                self.settings_dirty = true;
+                let msg = if st.free_orbit_after_roll {
+                    tr("Rotation libre après pivot du cube : la vue tourne dans tous les sens")
+                } else {
+                    tr("Plateau tournant après pivot du cube : l'inclinaison est gardée")
+                };
+                self.toast = Some((msg.into(), 0.0));
+            }
+            "asm.face_detach" => {
+                st.face_detach = !st.face_detach;
+                self.settings_dirty = true;
+                let msg = if st.face_detach {
+                    tr("Déplacer une face seule : activé")
+                } else {
+                    tr("Déplacer une face seule : désactivé (toute la pièce bouge)")
+                };
+                self.toast = Some((msg.into(), 0.0));
+            }
             "view.viewcube" => {
                 st.show_viewcube = !st.show_viewcube;
                 self.settings_dirty = true;
@@ -572,7 +591,7 @@ impl App {
                     Err(e) => trf("Association impossible : {e}", &[("e", &e)]),
                 };
                 self.assoc_result = Some(msg.clone());
-                self.toast(msg);
+                self.toast = Some((msg.into(), 0.0));
             }
             "tool.settings_folder" => {
                 if let Some(d) = crate::settings::config_dir() {
@@ -710,7 +729,7 @@ impl App {
             self.settings.show_tree = false;
             self.settings.show_info = false;
         }
-        if matches!(show.as_str(), "move" | "rotate" | "pivot" | "framesel" | "facemove") {
+        if matches!(show.as_str(), "move" | "rotate" | "pivot" | "framesel" | "facemove" | "faceframe" | "roll") {
             // the selection card shows the author's original file path: keep it out of shots
             self.settings.show_info = false;
         }
@@ -735,6 +754,35 @@ impl App {
                 d.needs_fit = true;
             }
             "pan" => d.pan_tool = true,
+            "roll" => {
+                // view cube 90° roll (cube labels must follow their faces)
+                d.camera.set_view(30.0, 25.0);
+                d.camera.roll(90.0);
+                d.rolled = true;
+            }
+            "faceframe" => {
+                // Numpad . on a face of a single body: frame that face only
+                let pick = d.scene.as_ref().and_then(|s| {
+                    let ci = s.components.iter().position(|c| c.mesh.is_some_and(|m| s.meshes[m].mesh.face_start.len() >= 2))?;
+                    let mi = s.components[ci].mesh?;
+                    let m = &s.meshes[mi].mesh;
+                    let w = d.display[ci];
+                    let f = (0..m.face_start.len()).min_by(|&a, &b| {
+                        let aa = crate::measure::face_props(m, m.face_triangles(a), w).1;
+                        let bb = crate::measure::face_props(m, m.face_triangles(b), w).1;
+                        aa.partial_cmp(&bb).unwrap_or(std::cmp::Ordering::Equal)
+                    })?;
+                    Some((ci, mi, f, m.face_triangles(f).start))
+                });
+                if let Some((ci, mi, f, tri)) = pick {
+                    d.select(Some(ci));
+                    d.face_sel = Some(crate::document::FaceSel { comp: ci, mesh: mi, face: Some(f), tri });
+                    d.highlight_dirty = true;
+                    d.fit(d.aspect.max(0.1));
+                    d.needs_fit = false;
+                    viewer::frame_selection(d);
+                }
+            }
             "facemove" => {
                 // Move tool on one face of a single body: the face is detached and pulled out
                 let pick = d.scene.as_ref().and_then(|s| {
@@ -968,7 +1016,15 @@ impl eframe::App for App {
         }
         // Move / Rotate with a face selected: that face becomes its own piece (viewer-only)
         let dev = self.rs.device.clone();
-        let detached = self.doc_mut().is_some_and(|d| d.gizmo && d.face_sel.is_some_and(|f| f.face.is_some()) && d.drag.is_none() && d.detach_selected_face(&dev, &ctx));
+        let face_detach = self.settings.face_detach;
+        if !face_detach {
+            // detaching off: the gizmo moves the whole part, drop the face highlight
+            if let Some(d) = self.doc_mut().filter(|d| d.gizmo && d.face_sel.is_some() && d.drag.is_none()) {
+                d.face_sel = None;
+                d.highlight_dirty = true;
+            }
+        }
+        let detached = face_detach && self.doc_mut().is_some_and(|d| d.gizmo && d.face_sel.is_some_and(|f| f.face.is_some()) && d.drag.is_none() && d.detach_selected_face(&dev, &ctx));
         if detached {
             self.toast(tr("Face détachée : elle se déplace seule, le reste de la pièce ne bouge pas (affichage uniquement)"));
             ctx.request_repaint();
