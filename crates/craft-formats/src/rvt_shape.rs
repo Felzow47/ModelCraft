@@ -726,6 +726,99 @@ impl Trf {
     }
 }
 
+// ------------------------------------------------------------------ stored BRep
+
+/// Mesh (metres) of the boundary representation an element stores (`Geometry`:
+/// `Face` → `EdgeLoop` ring of `Edge`s, each edge holding its end points in the face's
+/// surface parameters, per side): the planar faces, triangulated in their plane.
+/// Non-planar faces are left out.
+pub(crate) fn stored_brep(s: &Schema, tr: &Tree) -> Option<Mesh> {
+    brep_faces(s, tr, &mut (0..tr.objs.len()))
+}
+
+/// [`stored_brep`] of the faces of one `Geometry` object (tree index `g`).
+fn brep_of(s: &Schema, tr: &Tree, g: usize) -> Option<Mesh> {
+    brep_faces(s, tr, &mut tr.objs.get(g)?.ptrs("m_pFaces").into_iter())
+}
+
+fn brep_faces(s: &Schema, tr: &Tree, faces: &mut dyn Iterator<Item = usize>) -> Option<Mesh> {
+    let lid: HashMap<usize, u32> = tr.local.iter().map(|(&l, &i)| (i, l)).collect();
+    let by_local = |l: u32| tr.local.get(&l).and_then(|&i| tr.objs.get(i));
+    let rref = |o: &Obj, k: &str| match o.get(k) {
+        Some(G::R(v)) => Some(*v),
+        _ => None,
+    };
+    let ints = |o: &Obj, k: &str| match o.get(k) {
+        Some(G::Is(v)) => v.clone(),
+        _ => vec![],
+    };
+    let mut m = Mesh::default();
+    for fi in faces {
+        let Some(f) = tr.objs.get(fi) else { continue };
+        if s.name(f.tag) != "Face" {
+            continue;
+        }
+        let Some(fl) = lid.get(&fi).copied() else { continue };
+        let Some(sf) = f.ptr("m_pSurf").and_then(|k| tr.objs.get(k)) else { continue };
+        if s.name(sf.tag) != "Plane" {
+            continue;
+        }
+        let (Some(o), Some(x), Some(y)) = (v3(sf.fs("m_origin")), v3(sf.fs("m_xVec")), v3(sf.fs("m_yVec"))) else { continue };
+        let mut loops: Vec<Vec<[f64; 2]>> = Vec::new();
+        let mut lp = f.ptr("m_pFirstLoop");
+        let mut nl = 0;
+        while let Some(li) = lp {
+            nl += 1;
+            if nl > 256 {
+                break;
+            }
+            let Some(l) = tr.objs.get(li) else { break };
+            lp = l.ptr("m_nextLoop");
+            let Some(ll) = lid.get(&li).copied() else { continue };
+            let mut ring: Vec<[f64; 2]> = Vec::new();
+            let mut e = rref(l, "m_next");
+            let mut n = 0;
+            while let Some(el) = e {
+                if el == ll || n > 4096 {
+                    break;
+                }
+                n += 1;
+                let Some(ed) = by_local(el) else { break };
+                if s.name(ed.tag) != "Edge" {
+                    break;
+                }
+                let side = ints(ed, "m_pFace").iter().position(|&v| v == fl as i64).unwrap_or(0);
+                let ends = ed.list("m_firstAndLastEdgePnts");
+                let uv = |p: &Obj| p.fs("uv").filter(|u| u.len() >= 2 * side + 2).map(|u| [u[2 * side], u[2 * side + 1]]);
+                if let Some(a) = ends.first().and_then(uv) {
+                    ring.push(a);
+                }
+                for p in ed.list("m_interiorEdgePnts") {
+                    if let Some(a) = uv(p) {
+                        ring.push(a);
+                    }
+                }
+                e = ints(ed, "m_next").get(side).map(|&v| v as u32);
+            }
+            ring.dedup_by(|a, b| (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9);
+            if ring.len() >= 3 && ring.iter().all(|p| p[0].is_finite() && p[1].is_finite()) {
+                loops.push(ring);
+            }
+        }
+        if loops.is_empty() {
+            continue;
+        }
+        let (pts, tri) = cap2d(&orient(loops));
+        let base = m.pos.len() as u32;
+        for p in &pts {
+            let q = add(o, add(mul(x, p[0]), mul(y, p[1])));
+            m.pos.push([(q[0] * FEET) as f32, (q[1] * FEET) as f32, (q[2] * FEET) as f32]);
+        }
+        m.tri.extend(tri.iter().map(|t| [t[0] + base, t[1] + base, t[2] + base]));
+    }
+    (!m.tri.is_empty()).then_some(m)
+}
+
 // ------------------------------------------------------------------ collection
 
 struct Wall {
@@ -819,6 +912,8 @@ pub struct Shapes {
     symbols: HashMap<i64, (i64, i64)>,
     /// Type width and height (feet) of the family symbols that have them (doors, windows).
     sym_size: HashMap<i64, (f64, f64)>,
+    /// Meshes of the boundary representations stored by stairs, landings, parts and roofs.
+    breps: Vec<(i64, Mesh)>,
     mep: Vec<Mep>,
     /// curve-driven instance (beam, brace) → its location line (start, end), feet
     framing: Vec<(i64, V3, V3)>,
@@ -1001,8 +1096,8 @@ fn param(tr: &Tree, id: i64) -> Option<f64> {
 
 impl Shapes {
     /// Element classes read.
-    const CLASSES: [&'static str; 17] = [
-        "SWall", "Floor", "Ceiling", "BuildingPad", "RoofSoffit", "Toposolid", "ExtrusionElem", "RevolutionElem", "SweepElem", "BlendElem", "Family", "FamilyInstance", "FamilySymbol", "VarSketch", "Sketch", "SketchPlane", "Path3d",
+    const CLASSES: [&'static str; 21] = [
+        "StairsRun", "StairsLanding", "PartMaker", "ProfileRoof", "SWall", "Floor", "Ceiling", "BuildingPad", "RoofSoffit", "Toposolid", "ExtrusionElem", "RevolutionElem", "SweepElem", "BlendElem", "Family", "FamilyInstance", "FamilySymbol", "VarSketch", "Sketch", "SketchPlane", "Path3d",
     ];
 
     /// Element classes read, by tag.
@@ -1102,6 +1197,21 @@ impl Shapes {
     fn element(&mut self, s: &Schema, cls: &str, tr: &Tree) {
         let id = tr.id;
         match cls {
+            "PartMaker" => {
+                // one part per DPartData: its id and its stored geometry
+                for d in tr.objs.iter().filter(|o| s.name(o.tag) == "DPartData") {
+                    if let (Some(pid), Some(g)) = (d.int("m_dPartId"), d.ptr("m_oGeometry")) {
+                        if let Some(m) = brep_of(s, tr, g) {
+                            self.breps.push((pid, m));
+                        }
+                    }
+                }
+            }
+            "StairsRun" | "StairsLanding" | "ProfileRoof" => {
+                if let Some(m) = stored_brep(s, tr) {
+                    self.breps.push((id, m));
+                }
+            }
             "SWall" => {
                 let Some(dr) = tr.objs.iter().find(|o| s.name(o.tag) == "VWallDriver") else { return };
                 let Some(c) = dr.ptr("m_pCrv").and_then(|i| tr.objs.get(i)) else { return };
@@ -1275,6 +1385,9 @@ impl Shapes {
         let t0 = std::time::Instant::now();
         if std::env::var_os("RVT_SHAPE_DEBUG").is_some() {
             eprintln!("walls {} slabs {} forms {} sketches {} instances {} symbols {}", self.walls.len(), self.slabs.len(), self.forms.len(), self.sketch_planes.len(), self.instances.len(), self.symbols.len());
+        }
+        for (id, m) in &self.breps {
+            out.insert(*id, m.clone());
         }
         for m in &self.mep {
             if let Some(x) = mep(m) {
