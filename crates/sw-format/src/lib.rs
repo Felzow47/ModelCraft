@@ -195,6 +195,9 @@ pub struct ViewFrame {
     /// What the view hides (crop region, plan view range, depth clip, 3D section box), when
     /// the file gives it: only the model inside this box is drawn.
     pub clip: Option<ViewClip>,
+    /// Components the view does not show (categories switched off in its visibility settings,
+    /// elements hidden in the view), as indices into [`Scene::components`].
+    pub hide: Vec<usize>,
 }
 
 /// An oriented box in model coordinates (metres, z up): a point `p` is kept when, for each

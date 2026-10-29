@@ -835,7 +835,7 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
     if let Some(r) = doc.view_ctx.and_then(|i| doc.scene.as_ref().and_then(|s| s.browser.get(i))).cloned() {
         let label = browser_label(&r.label, r.kind);
         let g = ui.painter().layout_no_wrap(format!("{} : {label}", tr("Vue")), theme::medium(12.5), t.text);
-        let clips = doc.view_clip.is_some();
+        let clips = doc.view_clip.is_some() || !doc.view_hide.is_empty();
         let extra = if clips { 24.0 } else { 0.0 };
         let chip = Rect::from_min_size(rect.left_top() + vec2(12.0, 12.0), vec2(g.size().x + 44.0 + extra, 26.0));
         ui.painter().rect(chip, CornerRadius::same(13), t.card.gamma_multiply(0.94), Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
@@ -844,14 +844,15 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
         let cr = ui.interact(close, egui::Id::new(("leave-view", doc.id)), Sense::click()).on_hover_text(tr("Revenir à toute la maquette en 3D"));
         icons::paint(ui, close, "x", 13.0, if cr.hovered() { t.text } else { t.text_muted });
         if clips {
-            // Revit crop region / view range: hide what the view does not show, or show it all
+            // Revit crop region / view range / visibility: hide what the view does not show, or show it all
             let tog = Rect::from_center_size(egui::pos2(chip.right() - 39.0, chip.center().y), vec2(18.0, 18.0));
             let on = !doc.view_clip_off;
-            let tip = if on { tr("Afficher toute la maquette (ignorer cadrage et plage de vue)") } else { tr("Appliquer le cadrage et la plage de vue de la vue") };
+            let tip = if on { tr("Afficher toute la maquette (ignorer cadrage, plage de vue et visibilité de la vue)") } else { tr("Appliquer le cadrage, la plage de vue et la visibilité de la vue") };
             let tg = ui.interact(tog, egui::Id::new(("view-clip", doc.id)), Sense::click()).on_hover_text(tip);
             icons::paint(ui, tog, "scissors", 13.0, if on { t.accent } else if tg.hovered() { t.text } else { t.text_muted });
             if tg.clicked() {
                 doc.view_clip_off = on;
+                doc.update_visibility();
             }
         }
         if cr.clicked() {

@@ -327,10 +327,15 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
             s.view_frames = sheets.frames(lo, hi).into_iter().filter(|f| rows.contains(&f.id)).collect();
         }
     }
+    let mut owners = Vec::new();
     let (n, shaped) = match &boxes {
-        Ok(b) => build_boxes(&mut s, b, &meshes, family),
+        Ok(b) => build_boxes(&mut s, b, &meshes, family, &mut owners),
         Err(_) => (0, 0),
     };
+    // what each view does not show: its switched-off categories and hidden elements
+    for f in &mut s.view_frames {
+        f.hide = owners.iter().filter(|&&(_, id, cat)| sheets.view_hides(f.id, id, cat)).map(|&(c, _, _)| c).collect();
+    }
     if n > 0 {
         props.push(("Éléments 3D".into(), format!("{n} dont {shaped} en forme reconstruite, {} en boîte englobante", n - shaped)));
         s.warnings.push(if shaped == n { WARN_SHAPES } else { WARN_SHAPES_PARTIAL }.into());
@@ -401,8 +406,9 @@ const ZONES: f64 = 16.0;
 
 /// One group component per category with its elements (or zones) below; an element with a
 /// rebuilt shape in `shapes` (by id) gets it, the others their box. Returns the number of
-/// elements and how many have their shape.
-fn build_boxes(s: &mut Scene, boxes: &[rvt_model::ElemBox], shapes: &std::collections::HashMap<i64, crate::rvt_shape::Mesh>, family: bool) -> (usize, usize) {
+/// elements and how many have their shape. `owners` gets (component, element id, category) of each
+/// element and zone (element id 0) component.
+fn build_boxes(s: &mut Scene, boxes: &[rvt_model::ElemBox], shapes: &std::collections::HashMap<i64, crate::rvt_shape::Mesh>, family: bool, owners: &mut Vec<(usize, i64, i64)>) -> (usize, usize) {
     let t = std::time::Instant::now();
     type Cat<'a> = (Vec<&'a rvt_model::ElemBox>, [f32; 4]);
     let mut by: std::collections::BTreeMap<&'static str, Cat> = Default::default();
@@ -446,6 +452,7 @@ fn build_boxes(s: &mut Scene, boxes: &[rvt_model::ElemBox], shapes: &std::collec
                     s.meshes.push(sw_format::SceneMesh { name: name.to_string(), mesh, source: sw_format::MeshSource::Embedded, color: Some(color) });
                     let mut c = crate::component(&format!("{name} {}", k + 1), 2, Some(group), false, Some(s.meshes.len() - 1));
                     c.world = [1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.];
+                    owners.push((s.components.len(), b.id, b.category));
                     s.components.push(c);
                     shaped += 1;
                     continue;
@@ -453,9 +460,11 @@ fn build_boxes(s: &mut Scene, boxes: &[rvt_model::ElemBox], shapes: &std::collec
                 let (o, sz) = rvt_model::box_extent(b);
                 let mut c = crate::component(&format!("{name} {}", k + 1), 2, Some(group), false, Some(mi));
                 c.world = [sz[0], 0., 0., 0., 0., sz[1], 0., 0., 0., 0., sz[2], 0., o[0], o[1], o[2], 1.];
+                owners.push((s.components.len(), b.id, b.category));
                 s.components.push(c);
             }
         } else {
+            // zones mix the elements of a category name: they follow its first element's category
             let mut zones: std::collections::BTreeMap<[i32; 3], (Vec<[f32; 3]>, Vec<[u32; 3]>, usize)> = Default::default();
             for b in &list {
                 let key: [i32; 3] = std::array::from_fn(|a| (((b.min[a] + b.max[a]) * 0.5 - lo[a]) / cell[a]).floor().clamp(0.0, ZONES - 1.0) as i32);
@@ -473,6 +482,7 @@ fn build_boxes(s: &mut Scene, boxes: &[rvt_model::ElemBox], shapes: &std::collec
             for (k, (_, (pos, tri, count))) in zones.into_iter().enumerate() {
                 let mesh = sw_format::mesh::build_from_triangles(&pos, &tri, 30.0, true);
                 s.meshes.push(sw_format::SceneMesh { name: name.to_string(), mesh, source: sw_format::MeshSource::Embedded, color: Some(color) });
+                owners.push((s.components.len(), 0, list[0].category));
                 s.components.push(crate::component(&format!("{name} - zone {} ({count})", k + 1), 2, Some(group), false, Some(s.meshes.len() - 1)));
             }
         }

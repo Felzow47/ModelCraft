@@ -709,6 +709,12 @@ impl Sheets {
         lo.iter().chain(hi.iter()).any(|x| x.is_finite()).then_some(clip)
     }
 
+    /// Whether view `id` hides element `elem` of category `cat` (hidden in the view, or its
+    /// category switched off in the view's visibility settings).
+    pub fn view_hides(&self, id: i64, elem: i64, cat: i64) -> bool {
+        self.views.get(&id).is_some_and(|v| v.hidden_cats.contains(&cat) || (elem != 0 && v.hidden.contains(&elem)))
+    }
+
     /// How the views look at the model: direction and up of each view, and what it keeps of
     /// the model (crop region, plan view range, depth clips, 3D section box), with the box
     /// that encloses it clamped to the model's box `lo`..`hi` (metres).
@@ -760,7 +766,7 @@ impl Sheets {
                 };
                 vclip = Some(sw_format::ViewClip { orig: f32s(c.orig.map(|x| x * FEET)), axes: c.ax.map(f32s), lo: c.lo.map(far), hi: c.hi.map(far) });
             }
-            out.push(ViewFrame { id, dir: f32s(dir), up: f32s(up), region, clip: vclip });
+            out.push(ViewFrame { id, dir: f32s(dir), up: f32s(up), region, clip: vclip, hide: Vec::new() });
         }
         out.sort_by_key(|f| f.id);
         out

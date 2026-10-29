@@ -143,7 +143,10 @@ pub struct Document {
     /// What the opened Revit view keeps of the model (crop region, plan view range, depth
     /// clips, 3D section box), display space: (axes, lower bounds, upper bounds).
     pub view_clip: Option<([[f32; 3]; 3], [f32; 3], [f32; 3])>,
-    /// Show the whole model while a view is open (the view clip is ignored).
+    /// Components the opened Revit view does not show (its switched-off categories and hidden
+    /// elements).
+    pub view_hide: std::collections::HashSet<usize>,
+    /// Show the whole model while a view is open (the view clip and `view_hide` are ignored).
     pub view_clip_off: bool,
     pub needs_fit: bool,
     pub cam_goal: Option<(f32, f32)>,
@@ -309,6 +312,7 @@ impl Document {
             sheet_cam: (1.0, egui::Vec2::ZERO),
             view_box: None,
             view_clip: None,
+            view_hide: Default::default(),
             view_clip_off: false,
             needs_fit: true,
             cam_goal: None,
@@ -493,8 +497,9 @@ impl Document {
         // the view's own direction and crop region when the file gives them
         self.view_box = None;
         self.view_clip = None;
+        self.view_hide.clear();
         self.view_clip_off = false;
-        let id = self.scene.as_ref().and_then(|s| s.browser.get(row)).map_or(-1, |r| r.id);
+        let id =self.scene.as_ref().and_then(|s| s.browser.get(row)).map_or(-1, |r| r.id);
         let up_z = self.scene.as_ref().is_some_and(|s| s.up_z);
         let frame = self.scene.as_ref().and_then(|s| s.view_frames.iter().find(|f| f.id == id)).cloned();
         let model_view = matches!(kind, K::Plan | K::CeilingPlan | K::Section | K::Elevation | K::Detail | K::View3d);
@@ -514,7 +519,9 @@ impl Document {
                 let base: [f32; 3] = std::array::from_fn(|k| o.dot(ax[k]));
                 (ax.map(|a| a.to_array()), std::array::from_fn(|k| base[k] + c.lo[k]), std::array::from_fn(|k| base[k] + c.hi[k]))
             });
+            self.view_hide = f.hide.iter().copied().collect();
         }
+        self.update_visibility();
         if let Some(((y, p), ortho)) = goal {
             if ortho {
                 self.camera.ortho = true;
@@ -533,7 +540,9 @@ impl Document {
         self.view_ctx = None;
         self.view_box = None;
         self.view_clip = None;
+        self.view_hide.clear();
         self.view_clip_off = false;
+        self.update_visibility();
         self.cam_goal = Some((45f32.to_radians(), 35.264f32.to_radians()));
         self.needs_fit = true;
     }
@@ -718,9 +727,10 @@ impl Document {
         let Some(s) = &self.scene else { return };
         let n = s.components.len();
         let mut vis = vec![true; n];
+        let view_hides = self.view_ctx.is_some() && !self.view_clip_off;
         for i in 0..n {
             let c = &s.components[i];
-            let own = !c.suppressed && !self.hidden.get(i).copied().unwrap_or(false);
+            let own = !c.suppressed && !self.hidden.get(i).copied().unwrap_or(false) && !(view_hides && self.view_hide.contains(&i));
             vis[i] = own && c.parent.is_none_or(|p| p < i && vis[p]);
         }
         self.visible = vis;
