@@ -4,6 +4,16 @@
 <p align="center"><img src="assets/logo/modelcraft_512.png" width="256" alt="Logo ModelCraft"></p>
 
 > **NDA** : aucune capture de modèles clients / échantillons de test n'est publiée dans ce dépôt.
+> Les captures ci-dessous viennent uniquement des **projets d'exemple publics d'Autodesk** (`rac_basic_sample_project`,
+> `rst_basic_sample_project`) ouverts dans ModelCraft.
+
+| Feuille de titre (rendus intégrés) | Feuille de plans |
+|---|---|
+| ![Feuille de titre Revit](assets/captures/rvt_feuille_titre.png) | ![Feuille de plans Revit](assets/captures/rvt_feuille_plans.png) |
+| **Coupes, lignes cachées retirées** | **Vue 3D « From Yard »** |
+| ![Feuille de coupes Revit](assets/captures/rvt_feuille_coupes.png) | ![Vue 3D Revit](assets/captures/rvt_vue_3d.png) |
+| **Projet de structure (S201)** | |
+| ![Feuille de structure Revit](assets/captures/rvt_structure.png) | |
 
 Visionneuse native, légère et instantanée pour **SolidWorks (`.SLDPRT` / `.SLDASM`), STEP, IGES,
 IFC, FBX, glTF/GLB, COLLADA, 3MF, PLY, STL, OBJ, VRML/X3D, USD, 3DS, 3DXML, eDrawings et Revit (boîtes 3D)**, écrite en Rust (wgpu + egui). Un seul `.exe` (ou l'installateur
@@ -322,7 +332,8 @@ moteur : `WGPU_BACKEND=dx12|vulkan|gl`.
   couleur, motif de ligne), régions remplies (remplissage plein ou **hachures** du motif), **cotes**
   linéaires (lignes d'attache, repères, valeurs dans l'unité du projet), textes et **étiquettes**
   (pièces : nom et numéro ; étiquettes d'éléments : paramètres texte stockés) ; les vues de dessin
-  n'affichent que leurs annotations. Pas encore : masquage des arêtes cachées, épaisseurs par
+  n'affichent que leurs annotations. Les **lignes cachées** des vues placées sont retirées (faces des
+  formes reconstruites ; les éléments encore en boîte ne cachent rien). Pas encore : épaisseurs par
   catégorie des éléments du modèle, cotes angulaires / radiales / altimétriques, composants de
   détail, valeurs calculées des étiquettes (surface…). Une vue de plan, coupe, élévation ou 3D s'ouvre avec **sa direction et son
   orientation** (plans pivotés compris) et, quand sa zone cadrée est active, **cadrée dessus**. Ce que

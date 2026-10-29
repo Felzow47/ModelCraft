@@ -502,6 +502,6 @@ pub static EN: &[(&str, &str)] = &[
     ("Vue de démarrage du projet (Revit s'ouvre sur cette vue)", "Project starting view (Revit opens on this view)"),
     ("Contenu 2D (cartouche, vues placées, textes) pas encore lu", "2D content (title block, placed views, texts) not read yet"),
     ("double-clic pour ouvrir la vue", "double-click to open the view"),
-    ("Lu dans le fichier (vues en arêtes, sans masquage) · molette : zoom · glisser : déplacer · double-clic : ouvrir une vue / recadrer", "Read from the file (views as edges, no hidden lines) · wheel: zoom · drag: pan · double-click: open a view / refit"),
+    ("Lu dans le fichier (vues en arêtes, lignes cachées retirées) · molette : zoom · glisser : déplacer · double-clic : ouvrir une vue / recadrer", "Read from the file (views as edges, hidden lines removed) · wheel: zoom · drag: pan · double-click: open a view / refit"),
     ("Contenu 2D (cartouche, vues placées, textes) pas encore lu ; image : aperçu enregistré dans le fichier", "2D content (title block, placed views, texts) not read yet; image: preview saved in the file"),
 ];

@@ -2171,7 +2171,7 @@ fn sheet_2d(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, r: &sw_format::Br
     let band = Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 52.0), rect.right_bottom());
     p.rect_filled(band, CornerRadius::ZERO, t.pasteboard.gamma_multiply(0.92));
     p.text(band.center_top() + vec2(0.0, 8.0), Align2::CENTER_TOP, head, theme::medium(13.0), t.text);
-    p.text(band.center_top() + vec2(0.0, 28.0), Align2::CENTER_TOP, tr("Lu dans le fichier (vues en arêtes, sans masquage) · molette : zoom · glisser : déplacer · double-clic : ouvrir une vue / recadrer"), theme::regular(11.5), t.text_muted);
+    p.text(band.center_top() + vec2(0.0, 28.0), Align2::CENTER_TOP, tr("Lu dans le fichier (vues en arêtes, lignes cachées retirées) · molette : zoom · glisser : déplacer · double-clic : ouvrir une vue / recadrer"), theme::regular(11.5), t.text_muted);
 }
 
 fn empty_or_preview(ui: &mut egui::Ui, doc: &Document, rect: Rect) {
