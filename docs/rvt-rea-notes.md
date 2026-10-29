@@ -409,3 +409,17 @@ interactive, dont les composants regroupent plusieurs éléments).
 - Comme dans Revit, une annotation entièrement hors du cadre n'est pas dessinée ; une annotation qui
   le touche reste entière (pas de découpe). Appliqué seulement aux vues cadrées.
 - Sur les exemples publics toutes les annotations sont déjà dans le cadre : aucun changement visible.
+
+## Styles de cotes et repères de fin
+
+- Une cote (`LinearDimString`, `RadialDim`, `AngularDim`) pointe son type par `m_styleSymbolId`
+  → `DimensionStyle`. Celui-ci donne le repère de fin `m_arrowHeadStyleId` → `LeaderStyle`, et la
+  taille du texte dans le paramètre double -1006433 (pieds papier ; 0,0078 = 3/32", 0,00787 = 2,4 mm).
+  Autres paramètres vus (-1006465, -1006431, -1006407, -1006405, -1006404, -1006401) : non identifiés
+  avec certitude (écarts et prolongements des lignes d'attache), non utilisés.
+- `LeaderStyle` : `m_tickType` 0 = trait oblique, 8 = flèche ; `m_arrowFilled`, `m_arrowClosed` ;
+  paramètre -1006426 = angle d'ouverture de la flèche (radians, 0,5236 = 30°), -1006414 = taille
+  (pieds papier ; « Diagonal 3mm » = 0,00984).
+- Dessin : trait oblique à 45° de la taille donnée ; flèche pointe sur la ligne d'attache, corps vers
+  l'intérieur du segment (deux flèches dos à dos sur les attaches intermédiaires), pleine, fermée ou
+  ouverte selon le type.

@@ -23,6 +23,9 @@
 //!   `m_bendOrPosPtOffset` from it, shoulder `m_horizLeaderLength`; values in
 //!   `m_ArrSegInfo[0].m_values`: elevation first, east and north next; a
 //!   `SpotCoordinateState` object marks a spot coordinate);
+//! - dimension types (`DimensionStyle`: tick mark `m_arrowHeadStyleId`, text size parameter
+//!   -1006433) and their tick marks (`LeaderStyle`: diagonal or arrow, filled, closed, width
+//!   angle -1006426, size -1006414);
 //! - tags (`IndependentTag`, `RoomTag`): placement and tagged element, drawn by the sheets
 //!   with the tag symbol and the tagged element's text parameters.
 //!
@@ -36,7 +39,9 @@ use std::collections::HashMap;
 type V3 = [f64; 3];
 type P2 = [f64; 2];
 
-pub(crate) const CLASSES: [&str; 15] = [
+pub(crate) const CLASSES: [&str; 17] = [
+    "DimensionStyle",
+    "LeaderStyle",
     "SpotElevation",
     "RadialDim",
     "AngularDim",
@@ -61,6 +66,24 @@ const EXT_GAP: f64 = 1.5 / 304.8;
 const EXT_OVER: f64 = 2.0 / 304.8;
 /// Most hatch lines drawn for one filled region.
 const MAX_HATCH: usize = 4000;
+
+/// A tick mark or arrowhead (`LeaderStyle`): `m_tickType` 8 = arrow (0 = diagonal),
+/// `m_arrowFilled`, `m_arrowClosed`, width angle (parameter -1006426, radians) and size on
+/// paper (parameter -1006414, feet).
+#[derive(Debug, Clone, Copy)]
+struct Mark {
+    arrow: bool,
+    filled: bool,
+    closed: bool,
+    angle: f64,
+    size: f64,
+}
+
+/// A double parameter of an element (`m_pParamValueSetDouble`).
+fn param_f(tr: &Tree, id: i64) -> Option<f64> {
+    let set = tr.root.ptr("m_pParamValueSetDouble").and_then(|i| tr.objs.get(i))?;
+    set.list("m_paramSet").iter().find(|o| o.int("m_paramId") == Some(id)).and_then(|o| num(o, "m_value"))
+}
 
 #[derive(Debug, Clone)]
 struct Style {
@@ -97,6 +120,8 @@ struct Curve {
 #[derive(Debug)]
 struct Dim {
     owner: i64,
+    /// dimension type (`m_styleSymbolId` → `DimensionStyle`)
+    style: i64,
     refs: Vec<V3>,
     line: (V3, V3),
     texts: Vec<V3>,
@@ -107,6 +132,7 @@ struct Dim {
 #[derive(Debug)]
 struct ArcDim {
     owner: i64,
+    style: i64,
     angular: bool,
     center: V3,
     refs: Vec<V3>,
@@ -160,6 +186,10 @@ pub struct Annots {
     /// (owner, sketch, type)
     regions: Vec<(i64, i64, i64)>,
     dims: Vec<Dim>,
+    /// dimension type → (tick mark `LeaderStyle`, text size on paper)
+    dim_styles: HashMap<i64, (i64, Option<f64>)>,
+    /// tick marks / arrowheads (`LeaderStyle`)
+    marks: HashMap<i64, Mark>,
     arc_dims: Vec<ArcDim>,
     spots: Vec<Spot>,
     /// Angle display accuracy (degrees).
@@ -271,13 +301,24 @@ impl Annots {
                     self.regions.push((owner, sk, at));
                 }
             }
+            "DimensionStyle" => {
+                let size = param_f(tr, -1006433).filter(|v| *v > 1e-6 && *v < 0.1);
+                self.dim_styles.insert(tr.id, (r.int("m_arrowHeadStyleId").unwrap_or(-1), size));
+            }
+            "LeaderStyle" => {
+                let (Some(angle), Some(size)) = (param_f(tr, -1006426), param_f(tr, -1006414)) else { return };
+                if size > 1e-6 && size < 0.1 {
+                    let arrow = r.int("m_tickType").unwrap_or(0) == 8;
+                    self.marks.insert(tr.id, Mark { arrow, filled: r.int("m_arrowFilled").unwrap_or(0) != 0, closed: r.int("m_arrowClosed").unwrap_or(0) != 0, angle, size });
+                }
+            }
             "LinearDimString" if owner > 0 => {
                 let refs: Vec<V3> = r.fs("m_refPnts").unwrap_or(&[]).chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
                 let Some(l) = tr.objs.iter().find(|o| s.name(o.tag) == "GLine") else { return };
                 let (Some(o), Some(d)) = (v3(l.fs("m_origin")), v3(l.fs("m_dirVec"))) else { return };
                 let texts = r.list("m_ArrSegInfo").iter().filter_map(|g| v3(g.fs("m_origin"))).collect();
                 if refs.len() >= 2 {
-                    self.dims.push(Dim { owner, refs, line: (o, d), texts });
+                    self.dims.push(Dim { owner, style: r.int("m_styleSymbolId").unwrap_or(-1), refs, line: (o, d), texts });
                 }
             }
             "SpotElevation" if owner > 0 => {
@@ -297,7 +338,7 @@ impl Annots {
                 let (Some(center), Some(value)) = (center, value.filter(|v| v.is_finite() && *v > 0.0)) else { return };
                 if refs.len() >= if angular { 2 } else { 1 } {
                     let normal = v3(r.fs("m_planeNormal")).unwrap_or([0.0, 0.0, 1.0]);
-                    self.arc_dims.push(ArcDim { owner, angular, center, refs, text: seg.and_then(|g| v3(g.fs("m_origin"))), value, normal });
+                    self.arc_dims.push(ArcDim { owner, style: r.int("m_styleSymbolId").unwrap_or(-1), angular, center, refs, text: seg.and_then(|g| v3(g.fs("m_origin"))), value, normal });
                 }
             }
             "IndependentTag" if owner > 0 => {
@@ -350,6 +391,47 @@ impl Annots {
 
     pub fn owns(&self, view: i64) -> bool {
         self.curves.iter().any(|c| c.owner == view) || self.regions.iter().any(|r| r.0 == view) || self.dims.iter().any(|d| d.owner == view) || self.arc_dims.iter().any(|d| d.owner == view) || self.spots.iter().any(|d| d.owner == view) || self.tags.iter().any(|t| t.owner == view)
+    }
+
+    /// The tick mark of dimension type `style`, if known.
+    fn mark_of(&self, style: i64) -> Option<Mark> {
+        self.dim_styles.get(&style).and_then(|d| self.marks.get(&d.0)).copied()
+    }
+
+    /// Dimension text size (paper feet) of dimension type `style`.
+    fn dim_text(&self, style: i64) -> f64 {
+        self.dim_styles.get(&style).and_then(|d| d.1).unwrap_or(DIM_TEXT)
+    }
+
+    /// An end mark at `p`: a diagonal tick across the line `d` (unit), or an arrowhead with its
+    /// tip at `p` and its body towards `back` (unit).
+    fn end_mark(&self, mark: Option<Mark>, p: P2, d: P2, back: P2, k: f64, out: &mut Drawn) {
+        match mark {
+            Some(m) if m.arrow => {
+                let (len, h) = (m.size / k, (m.angle * 0.5).clamp(0.02, 1.5));
+                let side: Vec<P2> = [-1.0, 1.0]
+                    .iter()
+                    .map(|sg| {
+                        let (cs, sn) = (h.cos(), h.sin() * sg);
+                        let l = len / cs.max(0.2);
+                        [p[0] + (back[0] * cs - back[1] * sn) * l, p[1] + (back[0] * sn + back[1] * cs) * l]
+                    })
+                    .collect();
+                if m.filled {
+                    out.fills.push((vec![[p, side[0], side[1]]], [0; 3]));
+                } else if m.closed {
+                    out.strokes.push((vec![p, side[0], side[1], p], self.pen(1), [0; 3]));
+                } else {
+                    out.strokes.push((vec![side[0], p, side[1]], self.pen(1), [0; 3]));
+                }
+            }
+            _ => {
+                let half = mark.map_or(TICK, |m| m.size * 0.5) / k;
+                let nv = [-d[1], d[0]];
+                let a = [(d[0] + nv[0]) * half, (d[1] + nv[1]) * half];
+                out.strokes.push((vec![[p[0] - a[0], p[1] - a[1]], [p[0] + a[0], p[1] + a[1]]], self.pen(3), [0; 3]));
+            }
+        }
     }
 
     pub(crate) fn pen(&self, n: i64) -> f64 {
@@ -483,11 +565,24 @@ impl Annots {
                     let u = [e[0] / el, e[1] / el];
                     out.strokes.push((vec![[p[0] + u[0] * EXT_GAP / k, p[1] + u[1] * EXT_GAP / k], [f[0] + u[0] * EXT_OVER / k, f[1] + u[1] * EXT_OVER / k]], w, [0; 3]));
                 }
-                let a = [(d[0] + nv[0]) * TICK / k, (d[1] + nv[1]) * TICK / k];
-                out.strokes.push((vec![[f[0] - a[0], f[1] - a[1]], [f[0] + a[0], f[1] + a[1]]], self.pen(3), [0; 3]));
                 ts.push(t);
             }
             let (t0, t1) = ts.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |a, &t| (a.0.min(t), a.1.max(t)));
+            // end marks: a tick on each witness line, or arrows pointing out of each segment
+            let mark = self.mark_of(dm.style);
+            for &t in &ts {
+                let f = [o[0] + d[0] * t, o[1] + d[1] * t];
+                if mark.is_some_and(|m| m.arrow) {
+                    if t > t0 + 1e-9 {
+                        self.end_mark(mark, f, d, [-d[0], -d[1]], k, out);
+                    }
+                    if t < t1 - 1e-9 {
+                        self.end_mark(mark, f, d, d, k, out);
+                    }
+                } else {
+                    self.end_mark(mark, f, d, d, k, out);
+                }
+            }
             let ov = EXT_OVER / k;
             out.strokes.push((vec![[o[0] + d[0] * (t0 - ov), o[1] + d[1] * (t0 - ov)], [o[0] + d[0] * (t1 + ov), o[1] + d[1] * (t1 + ov)]], w, [0; 3]));
             for (i, p) in ts.windows(2).enumerate() {
@@ -502,7 +597,7 @@ impl Annots {
                     [o[0] + d[0] * mid + nv[0] * c.max(0.4 / 304.8 / k), o[1] + d[1] * mid + nv[1] * c.max(0.4 / 304.8 / k)]
                 });
                 let pos = pos.unwrap_or([o[0] + d[0] * mid + nv[0] * 0.6 / 304.8 / k, o[1] + d[1] * mid + nv[1] * 0.6 / 304.8 / k]);
-                out.texts.push((pos, d, DIM_TEXT, self.length(v)));
+                out.texts.push((pos, d, self.dim_text(dm.style), self.length(v)));
             }
         }
         // radial and angular dimensions
@@ -522,18 +617,14 @@ impl Annots {
                 let tt = dm.text.map(|t| sdot([proj(t)[0] - c[0], proj(t)[1] - c[1]], d)).unwrap_or(l);
                 let end = tt.max(l);
                 out.strokes.push((vec![c, [c[0] + d[0] * end, c[1] + d[1] * end]], w, [0; 3]));
-                // arrow on the arc, pointing outwards
-                let (a, h) = (TICK * 2.0 / k, 0.35f64);
-                for sgn in [-1.0, 1.0] {
-                    let (cs, sn) = (h.cos(), h.sin() * sgn);
-                    let back = [-(d[0] * cs - d[1] * sn), -(d[0] * sn + d[1] * cs)];
-                    out.strokes.push((vec![p, [p[0] + back[0] * a, p[1] + back[1] * a]], w, [0; 3]));
-                }
+                // arrow on the arc, pointing outwards (the type's mark, an open arrow by default)
+                let mark = self.mark_of(dm.style).or(Some(Mark { arrow: true, filled: false, closed: false, angle: 0.7, size: TICK * 2.0 }));
+                self.end_mark(mark, p, d, [-d[0], -d[1]], k, out);
                 let dr = read(d);
                 let nv = [-dr[1], dr[0]];
                 let mid = l * 0.5;
                 let pos = dm.text.map(proj).unwrap_or([c[0] + d[0] * mid + nv[0] * 0.6 / 304.8 / k, c[1] + d[1] * mid + nv[1] * 0.6 / 304.8 / k]);
-                out.texts.push((pos, dr, DIM_TEXT, format!("R {}", self.length(dm.value))));
+                out.texts.push((pos, dr, self.dim_text(dm.style), format!("R {}", self.length(dm.value))));
                 continue;
             }
             // angular: the arc through the two points, around the centre, in the dimension's plane
@@ -555,22 +646,22 @@ impl Annots {
                 continue; // seen edge on
             }
             out.strokes.push((arc, w, [0; 3]));
+            let mark = self.mark_of(dm.style);
             for t in [0.0, th] {
                 let p = at(t);
-                let q = at(t + th.signum() * 0.01);
+                // along the arc, towards its other end
+                let q = at(if t == 0.0 { th.signum() * 0.01 } else { th - th.signum() * 0.01 });
                 let mut d = [q[0] - p[0], q[1] - p[1]];
                 let l = sdot(d, d).sqrt().max(1e-12);
                 d = [d[0] / l, d[1] / l];
-                let nv = [-d[1], d[0]];
-                let a = [(d[0] + nv[0]) * TICK / k, (d[1] + nv[1]) * TICK / k];
-                out.strokes.push((vec![[p[0] - a[0], p[1] - a[1]], [p[0] + a[0], p[1] + a[1]]], self.pen(3), [0; 3]));
+                self.end_mark(mark, p, d, d, k, out);
             }
             let (pm, qm) = (at(th * 0.5), at(th * 0.5 + 0.01));
             let mut d = [qm[0] - pm[0], qm[1] - pm[1]];
             let l = sdot(d, d).sqrt().max(1e-12);
             d = read([d[0] / l, d[1] / l]);
             let pos = dm.text.map(proj).unwrap_or(pm);
-            out.texts.push((pos, d, DIM_TEXT, self.angle(dm.value)));
+            out.texts.push((pos, d, self.dim_text(dm.style), self.angle(dm.value)));
         }
         // spot elevations and coordinates: leader, shoulder, values above it
         for sp in self.spots.iter().filter(|d| d.owner == owner) {
@@ -684,6 +775,23 @@ mod tests {
         assert_eq!(p.len(), 4);
         assert!((p[3][1][0] - 10.0).abs() < 1e-9);
     }
+    #[test]
+    fn end_marks() {
+        let a = Annots::default();
+        let mut out = Drawn::default();
+        // filled arrow, tip at the origin, body towards +x, 30° wide, 3 mm long at 1:1
+        let m = Mark { arrow: true, filled: true, closed: false, angle: 30f64.to_radians(), size: 0.01 };
+        a.end_mark(Some(m), [0.0, 0.0], [1.0, 0.0], [1.0, 0.0], 1.0, &mut out);
+        let t = out.fills[0].0[0];
+        assert_eq!(t[0], [0.0, 0.0]);
+        assert!(t[1][0] > 0.0099 && t[2][0] > 0.0099);
+        assert!((t[1][1] + t[2][1]).abs() < 1e-12 && (t[1][1].abs() / t[1][0] - 15f64.to_radians().tan()).abs() < 1e-9);
+        // diagonal: one stroke across the point
+        a.end_mark(None, [0.0, 0.0], [1.0, 0.0], [1.0, 0.0], 1.0, &mut out);
+        let s = &out.strokes[0].0;
+        assert!((s[0][0] + s[1][0]).abs() < 1e-12 && s[1][0] > 0.0 && s[1][1] > 0.0);
+    }
+
     #[test]
     fn lengths() {
         let a = Annots::default();
