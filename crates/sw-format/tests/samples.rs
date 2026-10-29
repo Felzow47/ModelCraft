@@ -24,7 +24,11 @@ fn check_part(name: &str, kind: ContainerKind, min_faces: usize, min_tris: usize
     assert!(s.has_geometry());
     let faces: usize = s.meshes.iter().map(|m| m.mesh.face_count).sum();
     assert!(faces >= min_faces, "{name}: {faces} faces");
-    assert!(s.drawn_triangles() >= min_tris, "{name}: {} tris", s.drawn_triangles());
+    assert!(
+        s.drawn_triangles() >= min_tris,
+        "{name}: {} tris",
+        s.drawn_triangles()
+    );
     for m in &s.meshes {
         let n = m.mesh.positions.len() as u32;
         assert!(m.mesh.indices.iter().all(|&i| i < n));
@@ -52,7 +56,11 @@ fn p4_ole() {
     let Some(p) = sample("p4.SLDPRT") else { return };
     let s = load_scene(&p, &LoadOptions::default()).unwrap();
     let (lo, hi) = s.bounds().unwrap();
-    assert!((hi[0] - lo[0] - 1.304).abs() < 0.01, "length {}", hi[0] - lo[0]);
+    assert!(
+        (hi[0] - lo[0] - 1.304).abs() < 0.01,
+        "length {}",
+        hi[0] - lo[0]
+    );
 }
 
 #[test]
@@ -73,7 +81,10 @@ fn a2_nested_assembly_transforms() {
     assert_eq!(s.kind, DocKind::Assembly);
     assert_eq!(s.container, ContainerKind::Ole);
     assert_eq!(s.missing_components(), 0);
-    assert!(s.components.iter().any(|c| c.depth >= 2), "nested subassemblies expected");
+    assert!(
+        s.components.iter().any(|c| c.depth >= 2),
+        "nested subassemblies expected"
+    );
     // the two latch subassemblies sit left and right of the grille (x ≈ ±0.249 m)
     let xs: Vec<f32> = s
         .components
@@ -92,15 +103,28 @@ fn a2_nested_assembly_transforms() {
 fn streaming_decoder_matches_in_memory() {
     use sw_format::container::Container;
     use sw_format::dl;
-    for name in ["p1.SLDPRT", "p2.SLDPRT", "p3.SLDPRT", "p4.SLDPRT", "a1.SLDASM", "a2.SLDASM"] {
+    for name in [
+        "p1.SLDPRT",
+        "p2.SLDPRT",
+        "p3.SLDPRT",
+        "p4.SLDPRT",
+        "a1.SLDASM",
+        "a2.SLDASM",
+    ] {
         let Some(p) = sample(name) else { continue };
         let c = Container::open(&p).unwrap();
-        let Some(d) = c.read("Contents/DisplayLists").unwrap() else { continue };
+        let Some(d) = c.read("Contents/DisplayLists").unwrap() else {
+            continue;
+        };
         let reference = dl::decode(&d);
         let want: Vec<(Option<String>, usize, usize)> = reference
             .blocks
             .iter()
-            .flat_map(|b| b.faces.iter().map(move |f| (b.key(), f.offset, f.positions.len())))
+            .flat_map(|b| {
+                b.faces
+                    .iter()
+                    .map(move |f| (b.key(), f.offset, f.positions.len()))
+            })
             .collect();
         for piece in [4099usize, 65_536, 1 << 20] {
             let mut got: Vec<(Option<String>, usize, usize)> = Vec::new();
@@ -125,7 +149,11 @@ fn streaming_decoder_matches_in_memory() {
         std::env::set_var("MODELCRAFT_STREAM", "1");
         let streamed = load_scene(&p, &LoadOptions::default()).unwrap();
         std::env::remove_var("MODELCRAFT_STREAM");
-        assert_eq!(normal.drawn_triangles(), streamed.drawn_triangles(), "{name}");
+        assert_eq!(
+            normal.drawn_triangles(),
+            streamed.drawn_triangles(),
+            "{name}"
+        );
         assert!(streamed.timings.dl.as_ref().is_some_and(|s| s.streamed));
     }
 }

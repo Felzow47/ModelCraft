@@ -51,7 +51,11 @@ fn main() -> eframe::Result {
                 eprintln!("--diag : fichier manquant");
                 std::process::exit(2)
             };
-            let out = a.iter().position(|x| x == "--diag-out").and_then(|j| a.get(j + 1)).map(PathBuf::from);
+            let out = a
+                .iter()
+                .position(|x| x == "--diag-out")
+                .and_then(|j| a.get(j + 1))
+                .map(PathBuf::from);
             std::process::exit(diag::run(&file, out));
         }
     }
@@ -59,10 +63,17 @@ fn main() -> eframe::Result {
     let mut size = [1440.0f32, 900.0];
     let mut args = std::env::args_os().skip(1);
     while let Some(a) = args.next() {
-        let next = |args: &mut std::iter::Skip<std::env::ArgsOs>| args.next().and_then(|s| s.into_string().ok());
+        let next = |args: &mut std::iter::Skip<std::env::ArgsOs>| {
+            args.next().and_then(|s| s.into_string().ok())
+        };
         match a.to_str() {
             Some("-h") | Some("--help") => usage(),
-            Some("--associate") => match platform::associate(&platform::ASSOC_EXTS.iter().map(|e| e.to_string()).collect::<Vec<_>>()) {
+            Some("--associate") => match platform::associate(
+                &platform::ASSOC_EXTS
+                    .iter()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>(),
+            ) {
                 Ok((n, _)) => {
                     println!("{n} extensions associées à {}", branding::NAME);
                     std::process::exit(0)
@@ -80,8 +91,24 @@ fn main() -> eframe::Result {
             Some("--no-edges") => opts.no_edges = true,
             Some("--ephemeral") => opts.ephemeral = true,
             Some("--show") => opts.show = next(&mut args),
-            Some("--lang") => opts.lang = next(&mut args).map(|l| if l.starts_with("en") { i18n::Lang::En } else { i18n::Lang::Fr }),
-            Some("--theme") => opts.theme = next(&mut args).map(|l| if l == "light" { theme::ThemeKind::Light } else { theme::ThemeKind::Dark }),
+            Some("--lang") => {
+                opts.lang = next(&mut args).map(|l| {
+                    if l.starts_with("en") {
+                        i18n::Lang::En
+                    } else {
+                        i18n::Lang::Fr
+                    }
+                })
+            }
+            Some("--theme") => {
+                opts.theme = next(&mut args).map(|l| {
+                    if l == "light" {
+                        theme::ThemeKind::Light
+                    } else {
+                        theme::ThemeKind::Dark
+                    }
+                })
+            }
             Some("--size") => {
                 if let Some(s) = next(&mut args) {
                     if let Some((w, h)) = s.split_once('x') {
@@ -104,7 +131,11 @@ fn main() -> eframe::Result {
         centered: true,
         ..Default::default()
     };
-    let res = eframe::run_native(branding::NAME, native, Box::new(move |cc| Ok(Box::new(app::App::new(cc, opts)))));
+    let res = eframe::run_native(
+        branding::NAME,
+        native,
+        Box::new(move |cc| Ok(Box::new(app::App::new(cc, opts)))),
+    );
     if let Err(e) = &res {
         // GPU init failed with the default backend (broken DX12 driver, VM, Wine):
         // relaunch with the next backend in a fresh process.
@@ -133,7 +164,13 @@ fn relaunch_with_next_backend() -> Option<i32> {
 }
 
 fn icon() -> egui::IconData {
-    let img = image::load_from_memory(branding::ICON_PNG).expect("icon").to_rgba8();
+    let img = image::load_from_memory(branding::ICON_PNG)
+        .expect("icon")
+        .to_rgba8();
     let (w, h) = img.dimensions();
-    egui::IconData { rgba: img.into_raw(), width: w, height: h }
+    egui::IconData {
+        rgba: img.into_raw(),
+        width: w,
+        height: h,
+    }
 }

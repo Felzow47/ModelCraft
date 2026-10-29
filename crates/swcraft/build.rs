@@ -9,7 +9,11 @@ fn main() {
     }
     let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let obj = out.join("modelcraft_res.o");
-    let windres = if cfg!(windows) { "windres" } else { "x86_64-w64-mingw32-windres" };
+    let windres = if cfg!(windows) {
+        "windres"
+    } else {
+        "x86_64-w64-mingw32-windres"
+    };
     let ok = std::process::Command::new(windres)
         .current_dir("assets")
         .args(["modelcraft.rc", "-O", "coff", "-o"])

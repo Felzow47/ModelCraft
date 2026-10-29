@@ -12,12 +12,25 @@ fn main() {
     println!("container: {:?} size={}", c.kind(), c.file_size());
     std::fs::create_dir_all(&a[1]).unwrap();
     for s in c.streams() {
-        let want = a.len() > 2 && a[2..].iter().any(|k| k == "*" || s.name.to_lowercase().contains(&k.to_lowercase()));
+        let want = a.len() > 2
+            && a[2..]
+                .iter()
+                .any(|k| k == "*" || s.name.to_lowercase().contains(&k.to_lowercase()));
         let mut line = format!("  {:60} stored={:>11}", s.name, s.stored_size);
         if want {
             match c.read_info(s) {
                 Ok(d) => {
-                    let fname: String = s.name.chars().map(|ch| if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' { ch } else { '_' }).collect();
+                    let fname: String = s
+                        .name
+                        .chars()
+                        .map(|ch| {
+                            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                                ch
+                            } else {
+                                '_'
+                            }
+                        })
+                        .collect();
                     std::fs::write(Path::new(&a[1]).join(format!("{fname}.bin")), &d).unwrap();
                     line += &format!(" raw={} DUMPED", d.len());
                 }

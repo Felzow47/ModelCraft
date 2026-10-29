@@ -37,7 +37,11 @@ pub fn system_lang() -> Lang {
 }
 
 pub fn lang_for_locale(loc: &str) -> Lang {
-    if loc.to_ascii_lowercase().starts_with("fr") { Lang::Fr } else { Lang::En }
+    if loc.to_ascii_lowercase().starts_with("fr") {
+        Lang::Fr
+    } else {
+        Lang::En
+    }
 }
 
 static CURRENT: AtomicU8 = AtomicU8::new(0);
@@ -47,7 +51,11 @@ pub fn set_current(l: Lang) {
 }
 
 pub fn current() -> Lang {
-    if CURRENT.load(Ordering::Relaxed) == 1 { Lang::En } else { Lang::Fr }
+    if CURRENT.load(Ordering::Relaxed) == 1 {
+        Lang::En
+    } else {
+        Lang::Fr
+    }
 }
 
 fn table() -> &'static HashMap<&'static str, &'static str> {
@@ -106,7 +114,10 @@ mod tests {
         let mut missing = Vec::new();
         for e in std::fs::read_dir(dir).unwrap() {
             let p = e.unwrap().path();
-            if p.extension().and_then(|x| x.to_str()) != Some("rs") || p.ends_with("i18n_en.rs") || p.ends_with("i18n.rs") {
+            if p.extension().and_then(|x| x.to_str()) != Some("rs")
+                || p.ends_with("i18n_en.rs")
+                || p.ends_with("i18n.rs")
+            {
                 continue;
             }
             let src = std::fs::read_to_string(&p).unwrap();
@@ -142,14 +153,22 @@ mod tests {
                         }
                     }
                     if !table().contains_key(lit.as_str()) {
-                        missing.push(format!("{}: {lit}", p.file_name().unwrap().to_string_lossy()));
+                        missing.push(format!(
+                            "{}: {lit}",
+                            p.file_name().unwrap().to_string_lossy()
+                        ));
                     }
                 }
             }
         }
         missing.sort();
         missing.dedup();
-        assert!(missing.is_empty(), "{} chaînes sans traduction :\n{}", missing.len(), missing.join("\n"));
+        assert!(
+            missing.is_empty(),
+            "{} chaînes sans traduction :\n{}",
+            missing.len(),
+            missing.join("\n")
+        );
     }
 
     /// Strings translated through a variable (command labels, menus, cards, formats…).
@@ -161,9 +180,21 @@ mod tests {
         all.extend(crate::theme::Accent::ALL.iter().map(|a| a.label()));
         all.extend(crate::home::CARDS.iter().flat_map(|c| [c.title, c.blurb]));
         all.extend(crate::dialogs::CATS.iter().map(|c| c.2));
-        all.extend(craft_formats::formats().iter().flat_map(|f| [f.name, f.note]));
+        all.extend(
+            craft_formats::formats()
+                .iter()
+                .flat_map(|f| [f.name, f.note]),
+        );
         all.extend(crate::viewer::STAGES);
-        let missing: Vec<&str> = all.into_iter().filter(|s| !table().contains_key(s)).collect();
-        assert!(missing.is_empty(), "{} chaînes sans traduction :\n{}", missing.len(), missing.join("\n"));
+        let missing: Vec<&str> = all
+            .into_iter()
+            .filter(|s| !table().contains_key(s))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "{} chaînes sans traduction :\n{}",
+            missing.len(),
+            missing.join("\n")
+        );
     }
 }

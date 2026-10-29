@@ -18,7 +18,9 @@
 
 use crate::Result;
 
-const MARK: [u8; 12] = [0x02, 0, 0, 0, 0xFE, 0xFF, 0xFF, 0xFF, 0xFE, 0xFF, 0xFF, 0xFF];
+const MARK: [u8; 12] = [
+    0x02, 0, 0, 0, 0xFE, 0xFF, 0xFF, 0xFF, 0xFE, 0xFF, 0xFF, 0xFF,
+];
 /// Longest record we read from a marker (type 2: 12 + 4 + 4 + 24 + 4).
 const REC: usize = 48;
 
@@ -62,7 +64,11 @@ impl Decoder {
         let t = u32_at(r, 12);
         match t {
             1 if u32_at(r, 16) == 3 => {
-                let p = [f64_at(r, 20) as f32, f64_at(r, 28) as f32, f64_at(r, 36) as f32];
+                let p = [
+                    f64_at(r, 20) as f32,
+                    f64_at(r, 28) as f32,
+                    f64_at(r, 36) as f32,
+                ];
                 if !p.iter().all(|v| v.is_finite()) {
                     return Ok(());
                 }
@@ -207,7 +213,10 @@ mod tests {
     fn two_bodies() {
         let m = decode(&sample()).unwrap();
         assert_eq!(m.positions.len(), 8);
-        assert_eq!(m.triangles, vec![[0, 1, 2], [2, 3, 0], [4, 5, 6], [6, 7, 4]]);
+        assert_eq!(
+            m.triangles,
+            vec![[0, 1, 2], [2, 3, 0], [4, 5, 6], [6, 7, 4]]
+        );
         assert_eq!(m.body_start, vec![0, 2]);
         assert_eq!(m.bad, 2);
     }

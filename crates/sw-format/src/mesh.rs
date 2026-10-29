@@ -39,12 +39,20 @@ impl TriMesh {
         if self.face_start.is_empty() {
             return None;
         }
-        Some(self.face_start.partition_point(|&s| s <= tri).saturating_sub(1))
+        Some(
+            self.face_start
+                .partition_point(|&s| s <= tri)
+                .saturating_sub(1),
+        )
     }
     /// Triangle range of a face.
     pub fn face_triangles(&self, face: usize) -> std::ops::Range<u32> {
         let a = self.face_start.get(face).copied().unwrap_or(0);
-        let b = self.face_start.get(face + 1).copied().unwrap_or(self.triangle_count() as u32);
+        let b = self
+            .face_start
+            .get(face + 1)
+            .copied()
+            .unwrap_or(self.triangle_count() as u32);
         a..b
     }
     pub fn recompute_bbox(&mut self) {
@@ -72,11 +80,19 @@ impl TriMesh {
             let a = self.positions[t[0] as usize].map(|v| v as f64);
             let b = self.positions[t[1] as usize].map(|v| v as f64);
             let c = self.positions[t[2] as usize].map(|v| v as f64);
-            let cr = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+            let cr = [
+                a[1] * b[2] - a[2] * b[1],
+                a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0],
+            ];
             vol += (cr[0] * c[0] + cr[1] * c[1] + cr[2] * c[2]) / 6.0;
             let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
             let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-            let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+            let n = [
+                u[1] * v[2] - u[2] * v[1],
+                u[2] * v[0] - u[0] * v[2],
+                u[0] * v[1] - u[1] * v[0],
+            ];
             area += 0.5 * (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
         }
         (vol.abs(), area)
@@ -87,7 +103,11 @@ fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
@@ -110,7 +130,11 @@ pub fn build(faces: &[FacePatch], with_edges: bool) -> TriMesh {
 pub const EDGE_VERTEX_LIMIT: usize = 12_000_000;
 
 /// [`build`] with fallible allocation, overflow checks and cancellation.
-pub fn try_build(faces: &[FacePatch], with_edges: bool, ctl: &crate::Ctl) -> crate::Result<TriMesh> {
+pub fn try_build(
+    faces: &[FacePatch],
+    with_edges: bool,
+    ctl: &crate::Ctl,
+) -> crate::Result<TriMesh> {
     let nv: usize = faces.iter().map(|f| f.positions.len()).sum();
     let mut b = MeshBuilder::new(nv, faces.len(), with_edges, None)?;
     for (fi, f) in faces.iter().enumerate() {
@@ -136,7 +160,14 @@ pub struct FaceStats {
 
 impl Default for FaceStats {
     fn default() -> Self {
-        FaceStats { faces: 0, vertices: 0, triangles: 0, area: 0.0, bbox_min: [f32::INFINITY; 3], bbox_max: [f32::NEG_INFINITY; 3] }
+        FaceStats {
+            faces: 0,
+            vertices: 0,
+            triangles: 0,
+            area: 0.0,
+            bbox_min: [f32::INFINITY; 3],
+            bbox_max: [f32::NEG_INFINITY; 3],
+        }
     }
 }
 
@@ -152,7 +183,10 @@ impl FaceStats {
         }
         for_each_triangle(f, |a, b, c| {
             self.triangles += 1;
-            let n = cross(sub(f.positions[b], f.positions[a]), sub(f.positions[c], f.positions[a]));
+            let n = cross(
+                sub(f.positions[b], f.positions[a]),
+                sub(f.positions[c], f.positions[a]),
+            );
             self.area += 0.5 * (dot(n, n) as f64).sqrt();
         });
     }
@@ -166,7 +200,11 @@ fn for_each_triangle(f: &FacePatch, mut cb: impl FnMut(usize, usize, usize)) {
         let sv = sv as usize;
         if sv >= 3 && o + sv <= n {
             for j in 0..sv - 2 {
-                let (a, b, c) = if j % 2 == 0 { (o + j, o + j + 1, o + j + 2) } else { (o + j + 1, o + j, o + j + 2) };
+                let (a, b, c) = if j % 2 == 0 {
+                    (o + j, o + j + 1, o + j + 2)
+                } else {
+                    (o + j + 1, o + j, o + j + 2)
+                };
                 let (pa, pb, pc) = (f.positions[a], f.positions[b], f.positions[c]);
                 if pa == pb || pb == pc || pa == pc {
                     continue; // degenerate (strip stitching)
@@ -200,21 +238,47 @@ impl MeshBuilder {
     /// `expect_vertices` / `expect_faces` size the buffers (fallibly). With `cluster =
     /// Some((origin, cell))`, vertices are merged per grid cell of size `cell` (simplified
     /// display mesh, no B-rep edges).
-    pub fn new(expect_vertices: usize, expect_faces: usize, with_edges: bool, cluster: Option<([f32; 3], f32)>) -> crate::Result<Self> {
+    pub fn new(
+        expect_vertices: usize,
+        expect_faces: usize,
+        with_edges: bool,
+        cluster: Option<([f32; 3], f32)>,
+    ) -> crate::Result<Self> {
         use crate::ctl::reserve;
         if expect_vertices >= u32::MAX as usize / 2 {
-            return Err(crate::Error::TooLarge(format!("{expect_vertices} sommets dans une seule pièce")));
+            return Err(crate::Error::TooLarge(format!(
+                "{expect_vertices} sommets dans une seule pièce"
+            )));
         }
-        let mut m = TriMesh { bbox_min: [f32::INFINITY; 3], bbox_max: [f32::NEG_INFINITY; 3], ..Default::default() };
-        let cluster = cluster.map(|(lo, cell)| Cluster { lo, inv: 1.0 / cell.max(1e-12), map: HashMap::new(), count: Vec::new(), local: Vec::new() });
+        let mut m = TriMesh {
+            bbox_min: [f32::INFINITY; 3],
+            bbox_max: [f32::NEG_INFINITY; 3],
+            ..Default::default()
+        };
+        let cluster = cluster.map(|(lo, cell)| Cluster {
+            lo,
+            inv: 1.0 / cell.max(1e-12),
+            map: HashMap::new(),
+            count: Vec::new(),
+            local: Vec::new(),
+        });
         if cluster.is_none() {
             reserve(&mut m.positions, expect_vertices, "sommets")?;
             reserve(&mut m.normals, expect_vertices, "normales")?;
-            reserve(&mut m.indices, expect_vertices.saturating_mul(3), "triangles")?;
+            reserve(
+                &mut m.indices,
+                expect_vertices.saturating_mul(3),
+                "triangles",
+            )?;
         }
         reserve(&mut m.face_start, expect_faces, "faces")?;
         let with_edges = with_edges && cluster.is_none() && expect_vertices <= EDGE_VERTEX_LIMIT;
-        Ok(MeshBuilder { m, with_edges, cluster, edge_count: HashMap::new() })
+        Ok(MeshBuilder {
+            m,
+            with_edges,
+            cluster,
+            edge_count: HashMap::new(),
+        })
     }
 
     pub fn vertex_count(&self) -> usize {
@@ -231,7 +295,10 @@ impl MeshBuilder {
     pub fn add_face(&mut self, f: &FacePatch) -> crate::Result<()> {
         let n = f.positions.len();
         if self.m.positions.len() + n >= u32::MAX as usize / 2 {
-            return Err(crate::Error::TooLarge(format!("plus de {} sommets dans une seule pièce", self.m.positions.len())));
+            return Err(crate::Error::TooLarge(format!(
+                "plus de {} sommets dans une seule pièce",
+                self.m.positions.len()
+            )));
         }
         for p in &f.positions {
             for k in 0..3 {
@@ -256,7 +323,9 @@ impl MeshBuilder {
             // in `finish`.
             cl.local.clear();
             for (i, p) in f.positions.iter().enumerate() {
-                let q = |k: usize| (((p[k] - cl.lo[k]) * cl.inv).floor() as i64).clamp(0, (1 << 21) - 1) as u64;
+                let q = |k: usize| {
+                    (((p[k] - cl.lo[k]) * cl.inv).floor() as i64).clamp(0, (1 << 21) - 1) as u64
+                };
                 let key = q(0) | (q(1) << 21) | (q(2) << 42);
                 let idx = match cl.map.get(&key) {
                     Some(&v) => v,
@@ -308,12 +377,18 @@ impl MeshBuilder {
         for_each_triangle(f, |_, _, _| tris += 1);
         Self::grow(&mut self.m.indices, tris * 3, "triangles")?;
         let idx = &mut self.m.indices;
-        for_each_triangle(f, |a, b, c| idx.extend_from_slice(&[base + a as u32, base + b as u32, base + c as u32]));
+        for_each_triangle(f, |a, b, c| {
+            idx.extend_from_slice(&[base + a as u32, base + b as u32, base + c as u32])
+        });
         let m = &mut self.m;
         // Missing normals -> flat normals from triangles.
         if f.normals.len() != n && f.normals.len() != 1 {
             for t in m.indices[tri_start..].chunks_exact(3) {
-                let (a, b, c) = (m.positions[t[0] as usize], m.positions[t[1] as usize], m.positions[t[2] as usize]);
+                let (a, b, c) = (
+                    m.positions[t[0] as usize],
+                    m.positions[t[1] as usize],
+                    m.positions[t[2] as usize],
+                );
                 let nn = normalize(cross(sub(b, a), sub(c, a)));
                 for &i in t {
                     m.normals[i as usize] = nn;
@@ -326,9 +401,15 @@ impl MeshBuilder {
             edge_count.clear();
             let mut weld: HashMap<[u32; 3], u32> = HashMap::new();
             let key = |p: [f32; 3]| [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()];
-            let mut canon = |i: u32, pos: &[[f32; 3]]| -> u32 { *weld.entry(key(pos[i as usize])).or_insert(i) };
+            let mut canon = |i: u32, pos: &[[f32; 3]]| -> u32 {
+                *weld.entry(key(pos[i as usize])).or_insert(i)
+            };
             for t in m.indices[tri_start..].chunks_exact(3) {
-                let c = [canon(t[0], &m.positions), canon(t[1], &m.positions), canon(t[2], &m.positions)];
+                let c = [
+                    canon(t[0], &m.positions),
+                    canon(t[1], &m.positions),
+                    canon(t[2], &m.positions),
+                ];
                 for (x, y) in [(c[0], c[1]), (c[1], c[2]), (c[2], c[0])] {
                     let k = if x < y { (x, y) } else { (y, x) };
                     let e = edge_count.entry(k).or_insert((0, x, y));
@@ -377,7 +458,12 @@ pub fn cluster_cell(area: f64, target: usize) -> f32 {
 /// Vertices are welded by position, normals are smoothed across edges whose dihedral angle is
 /// below `crease_deg` and split elsewhere; "faces" are the smooth regions (used for picking) and
 /// edges are the region boundaries plus open borders.
-pub fn build_from_triangles(positions: &[[f32; 3]], tris: &[[u32; 3]], crease_deg: f32, with_edges: bool) -> TriMesh {
+pub fn build_from_triangles(
+    positions: &[[f32; 3]],
+    tris: &[[u32; 3]],
+    crease_deg: f32,
+    with_edges: bool,
+) -> TriMesh {
     // 1. weld
     let key = |p: [f32; 3]| [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()];
     let mut weld: HashMap<[u32; 3], u32> = HashMap::with_capacity(positions.len());
@@ -395,11 +481,20 @@ pub fn build_from_triangles(positions: &[[f32; 3]], tris: &[[u32; 3]], crease_de
     let mut t: Vec<[u32; 3]> = Vec::with_capacity(tris.len());
     let mut fnrm: Vec<[f32; 3]> = Vec::with_capacity(tris.len());
     for tr in tris {
-        let (Some(&a), Some(&b), Some(&c)) = (remap.get(tr[0] as usize), remap.get(tr[1] as usize), remap.get(tr[2] as usize)) else { continue };
+        let (Some(&a), Some(&b), Some(&c)) = (
+            remap.get(tr[0] as usize),
+            remap.get(tr[1] as usize),
+            remap.get(tr[2] as usize),
+        ) else {
+            continue;
+        };
         if a == b || b == c || a == c {
             continue;
         }
-        let n = cross(sub(wpos[b as usize], wpos[a as usize]), sub(wpos[c as usize], wpos[a as usize]));
+        let n = cross(
+            sub(wpos[b as usize], wpos[a as usize]),
+            sub(wpos[c as usize], wpos[a as usize]),
+        );
         if dot(n, n) <= 0.0 {
             continue;
         }
@@ -410,7 +505,9 @@ pub fn build_from_triangles(positions: &[[f32; 3]], tris: &[[u32; 3]], crease_de
     let mut emap: HashMap<(u32, u32), Vec<u32>> = HashMap::with_capacity(t.len() * 2);
     for (ti, tr) in t.iter().enumerate() {
         for (x, y) in [(tr[0], tr[1]), (tr[1], tr[2]), (tr[2], tr[0])] {
-            emap.entry(if x < y { (x, y) } else { (y, x) }).or_default().push(ti as u32);
+            emap.entry(if x < y { (x, y) } else { (y, x) })
+                .or_default()
+                .push(ti as u32);
         }
     }
     let cos_crease = crease_deg.to_radians().cos();
@@ -492,8 +589,24 @@ mod generic_tests {
     use super::*;
     #[test]
     fn cube_has_six_faces_and_twelve_edges() {
-        let p = [[0., 0., 0.], [1., 0., 0.], [1., 1., 0.], [0., 1., 0.], [0., 0., 1.], [1., 0., 1.], [1., 1., 1.], [0., 1., 1.]];
-        let q = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [2, 3, 7, 6], [1, 2, 6, 5], [0, 4, 7, 3]];
+        let p = [
+            [0., 0., 0.],
+            [1., 0., 0.],
+            [1., 1., 0.],
+            [0., 1., 0.],
+            [0., 0., 1.],
+            [1., 0., 1.],
+            [1., 1., 1.],
+            [0., 1., 1.],
+        ];
+        let q = [
+            [0, 3, 2, 1],
+            [4, 5, 6, 7],
+            [0, 1, 5, 4],
+            [2, 3, 7, 6],
+            [1, 2, 6, 5],
+            [0, 4, 7, 3],
+        ];
         let mut tris = Vec::new();
         for f in q {
             tris.push([f[0], f[1], f[2]]);
@@ -511,18 +624,29 @@ mod generic_tests {
 impl TriMesh {
     /// An empty mesh ready for [`TriMesh::push_indexed_face`].
     pub fn new_empty() -> TriMesh {
-        TriMesh { bbox_min: [f32::INFINITY; 3], bbox_max: [f32::NEG_INFINITY; 3], ..Default::default() }
+        TriMesh {
+            bbox_min: [f32::INFINITY; 3],
+            bbox_max: [f32::NEG_INFINITY; 3],
+            ..Default::default()
+        }
     }
 
     /// Append one B-rep face given as an indexed triangulation with per-vertex normals.
     /// Edges are the face border (segments used by a single triangle, welded by position).
-    pub fn push_indexed_face(&mut self, pos: &[[f32; 3]], nrm: &[[f32; 3]], tris: &[[u32; 3]], with_edges: bool) {
+    pub fn push_indexed_face(
+        &mut self,
+        pos: &[[f32; 3]],
+        nrm: &[[f32; 3]],
+        tris: &[[u32; 3]],
+        with_edges: bool,
+    ) {
         let base = self.positions.len() as u32;
         self.positions.extend_from_slice(pos);
         if nrm.len() == pos.len() {
             self.normals.extend(nrm.iter().map(|&x| normalize(x)));
         } else {
-            self.normals.extend(std::iter::repeat_n([0.0, 0.0, 1.0], pos.len()));
+            self.normals
+                .extend(std::iter::repeat_n([0.0, 0.0, 1.0], pos.len()));
         }
         for p in pos {
             for k in 0..3 {
@@ -536,18 +660,26 @@ impl TriMesh {
             if t[0] >= n || t[1] >= n || t[2] >= n || t[0] == t[1] || t[1] == t[2] || t[0] == t[2] {
                 continue;
             }
-            self.indices.extend_from_slice(&[base + t[0], base + t[1], base + t[2]]);
+            self.indices
+                .extend_from_slice(&[base + t[0], base + t[1], base + t[2]]);
         }
         if with_edges {
             let key = |p: [f32; 3]| [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()];
             let mut weld: HashMap<[u32; 3], u32> = HashMap::with_capacity(pos.len());
-            let canon: Vec<u32> = (0..n).map(|i| *weld.entry(key(pos[i as usize])).or_insert(i)).collect();
-            let mut cnt: HashMap<(u32, u32), (u32, u32, u32)> = HashMap::with_capacity(tris.len() * 2);
+            let canon: Vec<u32> = (0..n)
+                .map(|i| *weld.entry(key(pos[i as usize])).or_insert(i))
+                .collect();
+            let mut cnt: HashMap<(u32, u32), (u32, u32, u32)> =
+                HashMap::with_capacity(tris.len() * 2);
             for t in tris {
                 if t[0] >= n || t[1] >= n || t[2] >= n {
                     continue;
                 }
-                let c = [canon[t[0] as usize], canon[t[1] as usize], canon[t[2] as usize]];
+                let c = [
+                    canon[t[0] as usize],
+                    canon[t[1] as usize],
+                    canon[t[2] as usize],
+                ];
                 for (x, y) in [(c[0], c[1]), (c[1], c[2]), (c[2], c[0])] {
                     if x == y {
                         continue;
@@ -581,11 +713,13 @@ impl TriMesh {
         if o.normals.len() == o.positions.len() {
             self.normals.extend_from_slice(&o.normals);
         } else {
-            self.normals.extend(std::iter::repeat_n([0.0, 0.0, 1.0], o.positions.len()));
+            self.normals
+                .extend(std::iter::repeat_n([0.0, 0.0, 1.0], o.positions.len()));
         }
         self.indices.extend(o.indices.iter().map(|i| i + base));
         self.edges.extend(o.edges.iter().map(|i| i + base));
-        self.face_start.extend(o.face_start.iter().map(|f| f + tri_base));
+        self.face_start
+            .extend(o.face_start.iter().map(|f| f + tri_base));
         self.face_count += o.face_count;
     }
 

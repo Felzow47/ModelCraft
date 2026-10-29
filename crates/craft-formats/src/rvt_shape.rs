@@ -36,7 +36,11 @@ fn dot(a: V3, b: V3) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 fn cross(a: V3, b: V3) -> V3 {
-    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 fn norm(a: V3) -> Option<V3> {
     let l = dot(a, a).sqrt();
@@ -79,7 +83,10 @@ struct Frame {
 
 impl Frame {
     fn at(&self, u: f64, v: f64, w: f64) -> V3 {
-        add(add(add(self.o, mul(self.u, u)), mul(self.v, v)), mul(self.n, w))
+        add(
+            add(add(self.o, mul(self.u, u)), mul(self.v, v)),
+            mul(self.n, w),
+        )
     }
     fn uv(&self, p: V3) -> [f64; 2] {
         let d = sub(p, self.o);
@@ -98,11 +105,17 @@ pub(crate) fn curve_points(c: &Obj, s: &Schema) -> Vec<V3> {
     };
     match s.name(c.tag) {
         "GLine" => {
-            let (Some(o), Some(d)) = (v3(c.fs("m_origin")), v3(c.fs("m_dirVec"))) else { return vec![] };
+            let (Some(o), Some(d)) = (v3(c.fs("m_origin")), v3(c.fs("m_dirVec"))) else {
+                return vec![];
+            };
             vec![add(o, mul(d, t0)), add(o, mul(d, t1))]
         }
         "GArc" | "GEllipse" => {
-            let (Some(ce), Some(x), Some(y)) = (v3(c.fs("m_center")), v3(c.fs("m_xVec")), v3(c.fs("m_yVec"))) else { return vec![] };
+            let (Some(ce), Some(x), Some(y)) =
+                (v3(c.fs("m_center")), v3(c.fs("m_xVec")), v3(c.fs("m_yVec")))
+            else {
+                return vec![];
+            };
             let (rx, ry) = match s.name(c.tag) {
                 "GArc" => {
                     let r = match c.get("m_radius") {
@@ -122,8 +135,13 @@ pub(crate) fn curve_points(c: &Obj, s: &Schema) -> Vec<V3> {
             }
             // 24 segments a turn, finer on large radii (chord within about 1 cm)
             let r = rx.abs().max(ry.abs());
-            let step = if r > 0.03 { (std::f64::consts::PI / 12.0).min(2.0 * (1.0 - 0.03 / r).acos()) } else { std::f64::consts::PI / 12.0 };
-            let n = ((span.abs() / step.max(std::f64::consts::PI / 96.0)).ceil() as usize).clamp(2, 192);
+            let step = if r > 0.03 {
+                (std::f64::consts::PI / 12.0).min(2.0 * (1.0 - 0.03 / r).acos())
+            } else {
+                std::f64::consts::PI / 12.0
+            };
+            let n = ((span.abs() / step.max(std::f64::consts::PI / 96.0)).ceil() as usize)
+                .clamp(2, 192);
             (0..=n)
                 .map(|i| {
                     let t = t0 + span * i as f64 / n as f64;
@@ -145,7 +163,13 @@ pub(crate) fn curve_points(c: &Obj, s: &Schema) -> Vec<V3> {
 
 /// The curves of a `CurveLoop` chained into one closed polyline (feet).
 fn loop_points(lp: &Obj, tr: &Tree, s: &Schema) -> Vec<V3> {
-    let curves: Vec<Vec<V3>> = lp.ptrs("m_curves").iter().filter_map(|&i| tr.objs.get(i)).map(|c| curve_points(c, s)).filter(|p| p.len() >= 2).collect();
+    let curves: Vec<Vec<V3>> = lp
+        .ptrs("m_curves")
+        .iter()
+        .filter_map(|&i| tr.objs.get(i))
+        .map(|c| curve_points(c, s))
+        .filter(|p| p.len() >= 2)
+        .collect();
     chain(curves)
 }
 
@@ -207,11 +231,21 @@ const MAX_STRIPS: usize = 20_000;
 /// Tessellates the region inside `loops` (even-odd) minus the rectangles `cuts`
 /// (`[u0, v0, u1, v1]`), extruded from `w0` to `w1`: returns (u, v, w) points and triangles
 /// oriented outwards (for a right-handed frame U, V, N).
-fn extrude_region(loops: &[Vec<[f64; 2]>], cuts: &[[f64; 4]], w0: f64, w1: f64) -> (Vec<V3>, Vec<[u32; 3]>) {
+fn extrude_region(
+    loops: &[Vec<[f64; 2]>],
+    cuts: &[[f64; 4]],
+    w0: f64,
+    w1: f64,
+) -> (Vec<V3>, Vec<[u32; 3]>) {
     let (w0, w1) = if w1 < w0 { (w1, w0) } else { (w0, w1) };
     let mut pts: Vec<V3> = Vec::new();
     let mut tri: Vec<[u32; 3]> = Vec::new();
-    let mut us: Vec<f64> = loops.iter().flatten().map(|p| p[0]).filter(|x| x.is_finite()).collect();
+    let mut us: Vec<f64> = loops
+        .iter()
+        .flatten()
+        .map(|p| p[0])
+        .filter(|x| x.is_finite())
+        .collect();
     for c in cuts {
         us.push(c[0]);
         us.push(c[2]);
@@ -246,7 +280,10 @@ fn extrude_region(loops: &[Vec<[f64; 2]>], cuts: &[[f64; 4]], w0: f64, w1: f64) 
                 .filter(|(a, b)| a[0] < um && b[0] > um)
                 .map(|(a, b)| {
                     let k = (b[1] - a[1]) / (b[0] - a[0]);
-                    Lin { k, m: a[1] - k * a[0] }
+                    Lin {
+                        k,
+                        m: a[1] - k * a[0],
+                    }
                 })
                 .collect();
             xs.sort_by(|a, b| a.at(um).total_cmp(&b.at(um)));
@@ -273,14 +310,26 @@ fn extrude_region(loops: &[Vec<[f64; 2]>], cuts: &[[f64; 4]], w0: f64, w1: f64) 
         }
         // vertical boundary at u0 between the previous strip and this one
         let ul = u0;
-        let left: Vec<(f64, f64)> = if (prev_u1 - ul).abs() < 1e-9 { prev.iter().map(|(a, b)| (a.at(ul), b.at(ul))).collect() } else { vec![] };
+        let left: Vec<(f64, f64)> = if (prev_u1 - ul).abs() < 1e-9 {
+            prev.iter().map(|(a, b)| (a.at(ul), b.at(ul))).collect()
+        } else {
+            vec![]
+        };
         let right: Vec<(f64, f64)> = cur.iter().map(|(a, b)| (a.at(ul), b.at(ul))).collect();
         for (a, b) in diff(&left, &right) {
             // covered on the left only: outward +U, edge direction +V
-            quad([[ul, a, w0], [ul, b, w0], [ul, b, w1], [ul, a, w1]], &mut pts, &mut tri);
+            quad(
+                [[ul, a, w0], [ul, b, w0], [ul, b, w1], [ul, a, w1]],
+                &mut pts,
+                &mut tri,
+            );
         }
         for (a, b) in diff(&right, &left) {
-            quad([[ul, b, w0], [ul, a, w0], [ul, a, w1], [ul, b, w1]], &mut pts, &mut tri);
+            quad(
+                [[ul, b, w0], [ul, a, w0], [ul, a, w1], [ul, b, w1]],
+                &mut pts,
+                &mut tri,
+            );
         }
         if s + 1 >= us.len() {
             break;
@@ -288,11 +337,27 @@ fn extrude_region(loops: &[Vec<[f64; 2]>], cuts: &[[f64; 4]], w0: f64, w1: f64) 
         for (lo, hi) in &cur {
             let (a0, a1, b0, b1) = (lo.at(u0), lo.at(u1), hi.at(u0), hi.at(u1));
             // caps
-            quad([[u0, a0, w1], [u1, a1, w1], [u1, b1, w1], [u0, b0, w1]], &mut pts, &mut tri);
-            quad([[u0, a0, w0], [u0, b0, w0], [u1, b1, w0], [u1, a1, w0]], &mut pts, &mut tri);
+            quad(
+                [[u0, a0, w1], [u1, a1, w1], [u1, b1, w1], [u0, b0, w1]],
+                &mut pts,
+                &mut tri,
+            );
+            quad(
+                [[u0, a0, w0], [u0, b0, w0], [u1, b1, w0], [u1, a1, w0]],
+                &mut pts,
+                &mut tri,
+            );
             // bottom edge (outward -V) and top edge (outward +V)
-            quad([[u0, a0, w0], [u1, a1, w0], [u1, a1, w1], [u0, a0, w1]], &mut pts, &mut tri);
-            quad([[u1, b1, w0], [u0, b0, w0], [u0, b0, w1], [u1, b1, w1]], &mut pts, &mut tri);
+            quad(
+                [[u0, a0, w0], [u1, a1, w0], [u1, a1, w1], [u0, a0, w1]],
+                &mut pts,
+                &mut tri,
+            );
+            quad(
+                [[u1, b1, w0], [u0, b0, w0], [u0, b0, w1], [u1, b1, w1]],
+                &mut pts,
+                &mut tri,
+            );
         }
         prev = cur;
         prev_u1 = u1;
@@ -336,16 +401,30 @@ fn diff(a: &[(f64, f64)], b: &[(f64, f64)]) -> Vec<(f64, f64)> {
 }
 
 /// Region in frame `f` extruded between `w0` and `w1` (feet) as a mesh in metres.
-fn solid(f: &Frame, loops: &[Vec<[f64; 2]>], cuts: &[[f64; 4]], w0: f64, w1: f64, trf: Option<&Trf>) -> Mesh {
+fn solid(
+    f: &Frame,
+    loops: &[Vec<[f64; 2]>],
+    cuts: &[[f64; 4]],
+    w0: f64,
+    w1: f64,
+    trf: Option<&Trf>,
+) -> Mesh {
     let (pts, tri) = extrude_region(loops, cuts, w0, w1);
-    let mut m = Mesh { pos: Vec::with_capacity(pts.len()), tri };
+    let mut m = Mesh {
+        pos: Vec::with_capacity(pts.len()),
+        tri,
+    };
     let flip = trf.is_some_and(|t| t.det() < 0.0);
     for p in pts {
         let mut q = f.at(p[0], p[1], p[2]);
         if let Some(t) = trf {
             q = t.apply(q);
         }
-        m.pos.push([(q[0] * FEET) as f32, (q[1] * FEET) as f32, (q[2] * FEET) as f32]);
+        m.pos.push([
+            (q[0] * FEET) as f32,
+            (q[1] * FEET) as f32,
+            (q[2] * FEET) as f32,
+        ]);
     }
     if flip {
         for t in &mut m.tri {
@@ -371,13 +450,19 @@ fn loops_from(curves: &[Vec<V3>]) -> (Vec<Vec<V3>>, Vec<Vec<V3>>) {
             }
             let tail = *cur.last().unwrap();
             let head = cur[0];
-            if let Some(k) = left.iter().position(|c| d2(c[0], tail) < tol || d2(*c.last().unwrap(), tail) < tol) {
+            if let Some(k) = left
+                .iter()
+                .position(|c| d2(c[0], tail) < tol || d2(*c.last().unwrap(), tail) < tol)
+            {
                 let mut c = left.remove(k);
                 if d2(c[0], tail) >= tol {
                     c.reverse();
                 }
                 cur.extend(c.into_iter().skip(1));
-            } else if let Some(k) = left.iter().position(|c| d2(c[0], head) < tol || d2(*c.last().unwrap(), head) < tol) {
+            } else if let Some(k) = left
+                .iter()
+                .position(|c| d2(c[0], head) < tol || d2(*c.last().unwrap(), head) < tol)
+            {
                 let mut c = left.remove(k);
                 if d2(*c.last().unwrap(), head) >= tol {
                     c.reverse();
@@ -400,17 +485,22 @@ fn loops_from(curves: &[Vec<V3>]) -> (Vec<Vec<V3>>, Vec<Vec<V3>>) {
 }
 
 fn area2(l: &[[f64; 2]]) -> f64 {
-    (0..l.len()).map(|i| {
-        let (a, b) = (l[i], l[(i + 1) % l.len()]);
-        a[0] * b[1] - b[0] * a[1]
-    }).sum::<f64>() * 0.5
+    (0..l.len())
+        .map(|i| {
+            let (a, b) = (l[i], l[(i + 1) % l.len()]);
+            a[0] * b[1] - b[0] * a[1]
+        })
+        .sum::<f64>()
+        * 0.5
 }
 
 fn inside(p: [f64; 2], l: &[[f64; 2]]) -> bool {
     let mut c = false;
     for i in 0..l.len() {
         let (a, b) = (l[i], l[(i + 1) % l.len()]);
-        if (a[1] > p[1]) != (b[1] > p[1]) && p[0] < a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]) {
+        if (a[1] > p[1]) != (b[1] > p[1])
+            && p[0] < a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0])
+        {
             c = !c;
         }
     }
@@ -419,7 +509,13 @@ fn inside(p: [f64; 2], l: &[[f64; 2]]) -> bool {
 
 /// Orients outer loops counter-clockwise and holes clockwise (even-odd nesting).
 fn orient(mut loops: Vec<Vec<[f64; 2]>>) -> Vec<Vec<[f64; 2]>> {
-    let depth: Vec<usize> = (0..loops.len()).map(|i| (0..loops.len()).filter(|&j| j != i && inside(loops[i][0], &loops[j])).count()).collect();
+    let depth: Vec<usize> = (0..loops.len())
+        .map(|i| {
+            (0..loops.len())
+                .filter(|&j| j != i && inside(loops[i][0], &loops[j]))
+                .count()
+        })
+        .collect();
     for (l, d) in loops.iter_mut().zip(depth) {
         if (area2(l) > 0.0) != (d % 2 == 0) {
             l.reverse();
@@ -452,7 +548,11 @@ fn cap2d(loops: &[Vec<[f64; 2]>]) -> (Vec<[f64; 2]>, Vec<[u32; 3]>) {
 /// Mesh (metres) from rings of loops (feet, one ring per station, loops with matching point
 /// counts, counter-clockwise about the advance direction) and the end caps (`cap0` facing
 /// backwards, `cap1` forwards). Turned inside out when its signed volume is negative.
-fn assemble(rings: &[Vec<Vec<V3>>], wrap: bool, caps: [Option<(Vec<V3>, Vec<[u32; 3]>)>; 2]) -> Option<Mesh> {
+fn assemble(
+    rings: &[Vec<Vec<V3>>],
+    wrap: bool,
+    caps: [Option<(Vec<V3>, Vec<[u32; 3]>)>; 2],
+) -> Option<Mesh> {
     let mut pts: Vec<V3> = Vec::new();
     let mut tri: Vec<[u32; 3]> = Vec::new();
     let n = rings.len();
@@ -477,7 +577,13 @@ fn assemble(rings: &[Vec<Vec<V3>>], wrap: bool, caps: [Option<(Vec<V3>, Vec<[u32
         if let Some((p, t)) = c {
             let base = pts.len() as u32;
             pts.extend(p);
-            tri.extend(t.into_iter().map(|t| if e == 0 { [t[0] + base, t[2] + base, t[1] + base] } else { [t[0] + base, t[1] + base, t[2] + base] }));
+            tri.extend(t.into_iter().map(|t| {
+                if e == 0 {
+                    [t[0] + base, t[2] + base, t[1] + base]
+                } else {
+                    [t[0] + base, t[1] + base, t[2] + base]
+                }
+            }));
         }
     }
     tri.retain(|t| {
@@ -488,13 +594,33 @@ fn assemble(rings: &[Vec<Vec<V3>>], wrap: bool, caps: [Option<(Vec<V3>, Vec<[u32
     if tri.is_empty() || pts.iter().any(|p| !p.iter().all(|x| x.is_finite())) {
         return None;
     }
-    let vol: f64 = tri.iter().map(|t| dot(pts[t[0] as usize], cross(pts[t[1] as usize], pts[t[2] as usize]))).sum();
+    let vol: f64 = tri
+        .iter()
+        .map(|t| {
+            dot(
+                pts[t[0] as usize],
+                cross(pts[t[1] as usize], pts[t[2] as usize]),
+            )
+        })
+        .sum();
     if vol < 0.0 {
         for t in &mut tri {
             t.swap(1, 2);
         }
     }
-    Some(Mesh { pos: pts.iter().map(|q| [(q[0] * FEET) as f32, (q[1] * FEET) as f32, (q[2] * FEET) as f32]).collect(), tri })
+    Some(Mesh {
+        pos: pts
+            .iter()
+            .map(|q| {
+                [
+                    (q[0] * FEET) as f32,
+                    (q[1] * FEET) as f32,
+                    (q[2] * FEET) as f32,
+                ]
+            })
+            .collect(),
+        tri,
+    })
 }
 
 /// Frame of a sketch: its plane, or the plane of its loops.
@@ -514,9 +640,18 @@ fn sketch_frame(plane: Option<(V3, V3, V3)>, loops: &[Vec<V3>]) -> Option<Frame>
     };
     let u = norm(x)?;
     let n = norm(cross(x, y))?;
-    let f = Frame { o, u, v: cross(n, u), n };
+    let f = Frame {
+        o,
+        u,
+        v: cross(n, u),
+        n,
+    };
     // the loops must lie in it
-    if loops.iter().flatten().any(|&p| dot(sub(p, o), n).abs() > 1e-3 * (1.0 + dot(sub(p, o), sub(p, o)).sqrt())) {
+    if loops
+        .iter()
+        .flatten()
+        .any(|&p| dot(sub(p, o), n).abs() > 1e-3 * (1.0 + dot(sub(p, o), sub(p, o)).sqrt()))
+    {
         return None;
     }
     Some(f)
@@ -526,7 +661,13 @@ fn sketch_frame(plane: Option<(V3, V3, V3)>, loops: &[Vec<V3>]) -> Option<Frame>
 fn rotate(p: V3, o: V3, d: V3, a: f64) -> V3 {
     let v = sub(p, o);
     let (c, s) = (a.cos(), a.sin());
-    add(o, add(add(mul(v, c), mul(cross(d, v), s)), mul(d, dot(d, v) * (1.0 - c))))
+    add(
+        o,
+        add(
+            add(mul(v, c), mul(cross(d, v), s)),
+            mul(d, dot(d, v) * (1.0 - c)),
+        ),
+    )
 }
 
 /// Vector `v` turned by the rotation taking unit `a` to unit `b`.
@@ -541,30 +682,114 @@ fn turn(v: V3, a: V3, b: V3) -> V3 {
 }
 
 fn revolution(sk: &SketchData, a0: f64, a1: f64) -> Option<Mesh> {
-    let (closed, open) = loops_from(&sk.curves);
+    let (mut closed, open) = loops_from(&sk.curves);
+    let mut axis = open.iter().find(|c| c.len() == 2).cloned();
+    if closed.is_empty() || !open.iter().all(|c| c.len() == 2) {
+        // the axis line touches the profile (an edge of the profile along the axis): the
+        // axis is the straight curve without which the others close
+        let lines: Vec<usize> = (0..sk.curves.len())
+            .filter(|&k| sk.curves[k].len() == 2)
+            .collect();
+        let found = lines.into_iter().find_map(|k| {
+            let rest: Vec<Vec<V3>> = sk
+                .curves
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != k)
+                .map(|(_, c)| c.clone())
+                .collect();
+            let (c, o) = loops_from(&rest);
+            (!c.is_empty() && o.is_empty()).then(|| (c, sk.curves[k].clone()))
+        });
+        if let Some((c, a)) = found {
+            closed = c;
+            axis = Some(a);
+        }
+    }
     if closed.is_empty() {
         return None;
     }
-    let axis = open.iter().find(|c| c.len() == 2)?;
+    let axis = axis?;
     let (ao, ad) = (axis[0], norm(sub(axis[1], axis[0]))?);
     let f = sketch_frame(sk.plane, &closed)?;
-    let prof = orient(closed.iter().map(|l| l.iter().map(|&p| f.uv(p)).collect()).collect());
+    let prof = orient(
+        closed
+            .iter()
+            .map(|l| l.iter().map(|&p| f.uv(p)).collect())
+            .collect(),
+    );
     let span = a1 - a0;
     if !(span.abs() > 1e-4 && span.abs() <= std::f64::consts::TAU + 1e-6) {
         return None;
     }
     let full = span.abs() > std::f64::consts::TAU - 1e-4;
     let n = ((span.abs() / (std::f64::consts::PI / 12.0)).ceil() as usize).clamp(3, 32);
-    let at = |i: usize, q: [f64; 2]| rotate(f.at(q[0], q[1], 0.0), ao, ad, a0 + span * i as f64 / n as f64);
+    let at = |i: usize, q: [f64; 2]| {
+        rotate(
+            f.at(q[0], q[1], 0.0),
+            ao,
+            ad,
+            a0 + span * i as f64 / n as f64,
+        )
+    };
     let count = if full { n } else { n + 1 };
-    let rings: Vec<Vec<Vec<V3>>> = (0..count).map(|i| prof.iter().map(|l| l.iter().map(|&q| at(i, q)).collect()).collect()).collect();
+    let rings: Vec<Vec<Vec<V3>>> = (0..count)
+        .map(|i| {
+            prof.iter()
+                .map(|l| l.iter().map(|&q| at(i, q)).collect())
+                .collect()
+        })
+        .collect();
     let caps = if full {
         [None, None]
     } else {
         let (cp, ct) = cap2d(&prof);
-        [Some((cp.iter().map(|&q| at(0, q)).collect(), ct.clone())), Some((cp.iter().map(|&q| at(n, q)).collect(), ct))]
+        [
+            Some((cp.iter().map(|&q| at(0, q)).collect(), ct.clone())),
+            Some((cp.iter().map(|&q| at(n, q)).collect(), ct)),
+        ]
     };
     assemble(&rings, full, caps)
+}
+
+/// A profile family's loops (its XY plane) set across the start of a sweep path: the
+/// profile's X along the horizontal square to the path, its Y up (Revit's default).
+fn profile_on_path(
+    loops: &[Vec<V3>],
+    off: [f64; 3],
+    flip: bool,
+    path: &SketchData,
+) -> Option<SketchData> {
+    let (pc, po) = loops_from(&path.curves);
+    let p = po.first().or(pc.first())?;
+    if p.len() < 2 {
+        return None;
+    }
+    let o = p[0];
+    let t = norm(sub(p[1], p[0]))?;
+    let x = norm(cross([0.0, 0.0, 1.0], t)).or_else(|| norm(cross([0.0, 1.0, 0.0], t)))?;
+    let y = cross(t, x);
+    let (c, sn) = (off[2].cos(), off[2].sin());
+    let curves = loops
+        .iter()
+        .map(|l| {
+            let mut l: Vec<V3> = l
+                .iter()
+                .map(|q| {
+                    let qx = if flip { -q[0] } else { q[0] };
+                    let (a, b) = (qx * c - q[1] * sn + off[0], qx * sn + q[1] * c + off[1]);
+                    add(o, add(mul(x, a), mul(y, b)))
+                })
+                .collect();
+            l.push(l[0]);
+            l
+        })
+        .collect();
+    Some(SketchData {
+        user: -1,
+        plane: Some((o, x, y)),
+        curves,
+    })
 }
 
 fn sweep(profile: &SketchData, path: &SketchData) -> Option<Mesh> {
@@ -587,26 +812,52 @@ fn sweep(profile: &SketchData, path: &SketchData) -> Option<Mesh> {
     if p.len() < 2 || p.len() > 4096 {
         return None;
     }
-    let seg: Vec<V3> = p.windows(2).map(|w| norm(sub(w[1], w[0]))).collect::<Option<_>>()?;
+    let seg: Vec<V3> = p
+        .windows(2)
+        .map(|w| norm(sub(w[1], w[0])))
+        .collect::<Option<_>>()?;
     // where the profile plane meets the path
     let side = |q: V3| dot(sub(q, f.o), f.n);
-    let k = (0..seg.len()).find(|&k| side(p[k]) * side(p[k + 1]) <= 0.0).or_else(|| (0..seg.len()).min_by(|&a, &b| side(p[a]).abs().total_cmp(&side(p[b]).abs())))?;
+    let k = (0..seg.len())
+        .find(|&k| side(p[k]) * side(p[k + 1]) <= 0.0)
+        .or_else(|| {
+            (0..seg.len()).min_by(|&a, &b| side(p[a]).abs().total_cmp(&side(p[b]).abs()))
+        })?;
     let (sa, sb) = (side(p[k]), side(p[k + 1]));
-    let q = if (sa - sb).abs() > 1e-12 { add(p[k], mul(sub(p[k + 1], p[k]), sa / (sa - sb))) } else { p[k] };
+    let q = if (sa - sb).abs() > 1e-12 {
+        add(p[k], mul(sub(p[k + 1], p[k]), sa / (sa - sb)))
+    } else {
+        p[k]
+    };
     if dot(f.n, seg[k]).abs() < 0.9 {
         return None; // the profile is not across the path
     }
-    let prof = orient(closed.iter().map(|l| l.iter().map(|&x| {
-        let d = sub(x, q);
-        [dot(d, f.u), dot(d, f.v)]
-    }).collect()).collect());
+    let prof = orient(
+        closed
+            .iter()
+            .map(|l| {
+                l.iter()
+                    .map(|&x| {
+                        let d = sub(x, q);
+                        [dot(d, f.u), dot(d, f.v)]
+                    })
+                    .collect()
+            })
+            .collect(),
+    );
     // profile axes on each segment, carried along by the turns of the path
     let mut ax = vec![(f.u, f.v); seg.len()];
     for j in k + 1..seg.len() {
-        ax[j] = (turn(ax[j - 1].0, seg[j - 1], seg[j]), turn(ax[j - 1].1, seg[j - 1], seg[j]));
+        ax[j] = (
+            turn(ax[j - 1].0, seg[j - 1], seg[j]),
+            turn(ax[j - 1].1, seg[j - 1], seg[j]),
+        );
     }
     for j in (0..k).rev() {
-        ax[j] = (turn(ax[j + 1].0, seg[j + 1], seg[j]), turn(ax[j + 1].1, seg[j + 1], seg[j]));
+        ax[j] = (
+            turn(ax[j + 1].0, seg[j + 1], seg[j]),
+            turn(ax[j + 1].1, seg[j + 1], seg[j]),
+        );
     }
     let n = p.len();
     let at = |i: usize, c: [f64; 2]| -> V3 {
@@ -624,16 +875,27 @@ fn sweep(profile: &SketchData, path: &SketchData) -> Option<Mesh> {
         }
         x
     };
-    let rings: Vec<Vec<Vec<V3>>> = (0..n).map(|i| prof.iter().map(|l| l.iter().map(|&c| at(i, c)).collect()).collect()).collect();
+    let rings: Vec<Vec<Vec<V3>>> = (0..n)
+        .map(|i| {
+            prof.iter()
+                .map(|l| l.iter().map(|&c| at(i, c)).collect())
+                .collect()
+        })
+        .collect();
     let (cp, ct) = cap2d(&prof);
-    let caps = [Some((cp.iter().map(|&c| at(0, c)).collect(), ct.clone())), Some((cp.iter().map(|&c| at(n - 1, c)).collect(), ct))];
+    let caps = [
+        Some((cp.iter().map(|&c| at(0, c)).collect(), ct.clone())),
+        Some((cp.iter().map(|&c| at(n - 1, c)).collect(), ct)),
+    ];
     assemble(&rings, false, caps)
 }
 
 /// Loop resampled to `n` points evenly along its length.
 fn resample(l: &[V3], n: usize) -> Vec<V3> {
     let m = l.len();
-    let len: Vec<f64> = (0..m).map(|i| dot(sub(l[(i + 1) % m], l[i]), sub(l[(i + 1) % m], l[i])).sqrt()).collect();
+    let len: Vec<f64> = (0..m)
+        .map(|i| dot(sub(l[(i + 1) % m], l[i]), sub(l[(i + 1) % m], l[i])).sqrt())
+        .collect();
     let total: f64 = len.iter().sum();
     let mut out = Vec::with_capacity(n);
     let (mut i, mut acc) = (0usize, 0.0);
@@ -643,7 +905,11 @@ fn resample(l: &[V3], n: usize) -> Vec<V3> {
             acc += len[i];
             i += 1;
         }
-        let r = if len[i] > 0.0 { ((t - acc) / len[i]).clamp(0.0, 1.0) } else { 0.0 };
+        let r = if len[i] > 0.0 {
+            ((t - acc) / len[i]).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         out.push(add(l[i], mul(sub(l[(i + 1) % m], l[i]), r)));
     }
     out
@@ -668,22 +934,35 @@ fn blend(a: &SketchData, b: &SketchData, first: f64, second: f64) -> Option<Mesh
         l
     };
     let n = la[0].len().max(lb[0].len()).clamp(12, 96);
-    let ra: Vec<V3> = resample(&ccw(&la[0]), n).into_iter().map(|p| add(p, mul(f.n, first))).collect();
-    let rb0: Vec<V3> = resample(&ccw(&lb[0]), n).into_iter().map(|p| add(p, mul(f.n, second))).collect();
+    let ra: Vec<V3> = resample(&ccw(&la[0]), n)
+        .into_iter()
+        .map(|p| add(p, mul(f.n, first)))
+        .collect();
+    let rb0: Vec<V3> = resample(&ccw(&lb[0]), n)
+        .into_iter()
+        .map(|p| add(p, mul(f.n, second)))
+        .collect();
     // start of the second loop: the rotation closest to the first loop
     let ua: Vec<[f64; 2]> = ra.iter().map(|&p| f.uv(p)).collect();
     let ub: Vec<[f64; 2]> = rb0.iter().map(|&p| f.uv(p)).collect();
-    let cost = |k: usize| (0..n).map(|j| {
-        let (p, q) = (ua[j], ub[(j + k) % n]);
-        (p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2)
-    }).sum::<f64>();
+    let cost = |k: usize| {
+        (0..n)
+            .map(|j| {
+                let (p, q) = (ua[j], ub[(j + k) % n]);
+                (p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2)
+            })
+            .sum::<f64>()
+    };
     let k = (0..n).min_by(|&x, &y| cost(x).total_cmp(&cost(y)))?;
     let rb: Vec<V3> = (0..n).map(|j| rb0[(j + k) % n]).collect();
     let cap = |l: &[V3]| {
         let uv: Vec<[f64; 2]> = l.iter().map(|&p| f.uv(p)).collect();
         let w = dot(sub(l[0], f.o), f.n);
         let (cp, ct) = cap2d(&[uv]);
-        (cp.iter().map(|c| f.at(c[0], c[1], w)).collect::<Vec<V3>>(), ct)
+        (
+            cp.iter().map(|c| f.at(c[0], c[1], w)).collect::<Vec<V3>>(),
+            ct,
+        )
     };
     let (c0, c1) = (cap(&ra), cap(&rb));
     assemble(&[vec![ra], vec![rb]], false, [Some(c0), Some(c1)])
@@ -706,23 +985,39 @@ impl Trf {
     pub(crate) fn from(o: &Obj) -> Option<Trf> {
         let m = o.fs("m_3x3")?;
         let or = v3(o.fs("m_or"))?;
-        (m.len() == 9 && m.iter().all(|x| x.is_finite())).then(|| Trf { m: m.try_into().unwrap(), or })
+        (m.len() == 9 && m.iter().all(|x| x.is_finite())).then(|| Trf {
+            m: m.try_into().unwrap(),
+            or,
+        })
     }
     pub(crate) fn apply(&self, p: V3) -> V3 {
         let m = &self.m;
-        [m[0] * p[0] + m[3] * p[1] + m[6] * p[2] + self.or[0], m[1] * p[0] + m[4] * p[1] + m[7] * p[2] + self.or[1], m[2] * p[0] + m[5] * p[1] + m[8] * p[2] + self.or[2]]
+        [
+            m[0] * p[0] + m[3] * p[1] + m[6] * p[2] + self.or[0],
+            m[1] * p[0] + m[4] * p[1] + m[7] * p[2] + self.or[1],
+            m[2] * p[0] + m[5] * p[1] + m[8] * p[2] + self.or[2],
+        ]
     }
     pub(crate) fn lin(&self, p: V3) -> V3 {
         let m = &self.m;
-        [m[0] * p[0] + m[3] * p[1] + m[6] * p[2], m[1] * p[0] + m[4] * p[1] + m[7] * p[2], m[2] * p[0] + m[5] * p[1] + m[8] * p[2]]
+        [
+            m[0] * p[0] + m[3] * p[1] + m[6] * p[2],
+            m[1] * p[0] + m[4] * p[1] + m[7] * p[2],
+            m[2] * p[0] + m[5] * p[1] + m[8] * p[2],
+        ]
     }
     /// Rotation part made of 0 and ±1 only (axis permutations and flips).
     fn axis_aligned(&self) -> bool {
-        self.m.iter().all(|x| x.abs() < 1e-6 || (x.abs() - 1.0).abs() < 1e-6)
+        self.m
+            .iter()
+            .all(|x| x.abs() < 1e-6 || (x.abs() - 1.0).abs() < 1e-6)
     }
     fn det(&self) -> f64 {
         let m = &self.m;
-        dot([m[0], m[1], m[2]], cross([m[3], m[4], m[5]], [m[6], m[7], m[8]]))
+        dot(
+            [m[0], m[1], m[2]],
+            cross([m[3], m[4], m[5]], [m[6], m[7], m[8]]),
+        )
     }
 }
 
@@ -758,12 +1053,22 @@ fn brep_faces(s: &Schema, tr: &Tree, faces: &mut dyn Iterator<Item = usize>) -> 
         if s.name(f.tag) != "Face" {
             continue;
         }
-        let Some(fl) = lid.get(&fi).copied() else { continue };
-        let Some(sf) = f.ptr("m_pSurf").and_then(|k| tr.objs.get(k)) else { continue };
+        let Some(fl) = lid.get(&fi).copied() else {
+            continue;
+        };
+        let Some(sf) = f.ptr("m_pSurf").and_then(|k| tr.objs.get(k)) else {
+            continue;
+        };
         if s.name(sf.tag) != "Plane" {
             continue;
         }
-        let (Some(o), Some(x), Some(y)) = (v3(sf.fs("m_origin")), v3(sf.fs("m_xVec")), v3(sf.fs("m_yVec"))) else { continue };
+        let (Some(o), Some(x), Some(y)) = (
+            v3(sf.fs("m_origin")),
+            v3(sf.fs("m_xVec")),
+            v3(sf.fs("m_yVec")),
+        ) else {
+            continue;
+        };
         let mut loops: Vec<Vec<[f64; 2]>> = Vec::new();
         let mut lp = f.ptr("m_pFirstLoop");
         let mut nl = 0;
@@ -774,7 +1079,9 @@ fn brep_faces(s: &Schema, tr: &Tree, faces: &mut dyn Iterator<Item = usize>) -> 
             }
             let Some(l) = tr.objs.get(li) else { break };
             lp = l.ptr("m_nextLoop");
-            let Some(ll) = lid.get(&li).copied() else { continue };
+            let Some(ll) = lid.get(&li).copied() else {
+                continue;
+            };
             let mut ring: Vec<[f64; 2]> = Vec::new();
             let mut e = rref(l, "m_next");
             let mut n = 0;
@@ -787,9 +1094,16 @@ fn brep_faces(s: &Schema, tr: &Tree, faces: &mut dyn Iterator<Item = usize>) -> 
                 if s.name(ed.tag) != "Edge" {
                     break;
                 }
-                let side = ints(ed, "m_pFace").iter().position(|&v| v == fl as i64).unwrap_or(0);
+                let side = ints(ed, "m_pFace")
+                    .iter()
+                    .position(|&v| v == fl as i64)
+                    .unwrap_or(0);
                 let ends = ed.list("m_firstAndLastEdgePnts");
-                let uv = |p: &Obj| p.fs("uv").filter(|u| u.len() >= 2 * side + 2).map(|u| [u[2 * side], u[2 * side + 1]]);
+                let uv = |p: &Obj| {
+                    p.fs("uv")
+                        .filter(|u| u.len() >= 2 * side + 2)
+                        .map(|u| [u[2 * side], u[2 * side + 1]])
+                };
                 if let Some(a) = ends.first().and_then(uv) {
                     ring.push(a);
                 }
@@ -812,9 +1126,14 @@ fn brep_faces(s: &Schema, tr: &Tree, faces: &mut dyn Iterator<Item = usize>) -> 
         let base = m.pos.len() as u32;
         for p in &pts {
             let q = add(o, add(mul(x, p[0]), mul(y, p[1])));
-            m.pos.push([(q[0] * FEET) as f32, (q[1] * FEET) as f32, (q[2] * FEET) as f32]);
+            m.pos.push([
+                (q[0] * FEET) as f32,
+                (q[1] * FEET) as f32,
+                (q[2] * FEET) as f32,
+            ]);
         }
-        m.tri.extend(tri.iter().map(|t| [t[0] + base, t[1] + base, t[2] + base]));
+        m.tri
+            .extend(tri.iter().map(|t| [t[0] + base, t[1] + base, t[2] + base]));
     }
     (!m.tri.is_empty()).then_some(m)
 }
@@ -844,17 +1163,30 @@ struct Slab {
 
 /// `m_famElemVisibility.m_flags` of a family form (-1: none)
 fn vis_flags(tr: &Tree) -> i64 {
-    tr.root.obj("m_famElemVisibility").and_then(|o| o.int("m_flags")).unwrap_or(-1)
+    tr.root
+        .obj("m_famElemVisibility")
+        .and_then(|o| o.int("m_flags"))
+        .unwrap_or(-1)
 }
 
 /// A family form not part of the loaded family: hidden by its `Visible` parameter
 /// (-1006205 = 0 for the type stored), or the sample host of a hosted family template
 /// (the extrusion that the family's voids cut in the family editor).
 fn not_in_family(tr: &Tree, s: &Schema) -> bool {
-    let hidden = tr.root.ptr("m_pParamValueSetInt").and_then(|i| tr.objs.get(i)).is_some_and(|set| {
-        set.list("m_paramSet").iter().any(|p| p.int("m_paramId") == Some(-1006205) && p.int("m_value") == Some(0))
-    });
-    hidden || tr.objs.iter().any(|o| s.name(o.tag) == "AddGeomToHostInFamEnvGStep")
+    let hidden = tr
+        .root
+        .ptr("m_pParamValueSetInt")
+        .and_then(|i| tr.objs.get(i))
+        .is_some_and(|set| {
+            set.list("m_paramSet")
+                .iter()
+                .any(|p| p.int("m_paramId") == Some(-1006205) && p.int("m_value") == Some(0))
+        });
+    hidden
+        || tr
+            .objs
+            .iter()
+            .any(|o| s.name(o.tag) == "AddGeomToHostInFamEnvGStep")
 }
 
 struct Form {
@@ -872,7 +1204,13 @@ enum Kind {
     /// Profile sketch revolved about the line of the sketch not in a closed loop.
     Revolution { sketch: i64, a0: f64, a1: f64 },
     /// Profile sketch swept along the path sketch.
-    Sweep { profile: i64, path: i64 },
+    Sweep {
+        profile: i64,
+        path: i64,
+        sym: i64,
+        off: [f64; 3],
+        flip: bool,
+    },
     /// Two sketches of one form, offset along their normal, joined by ruled faces.
     Blend { first: f64, second: f64 },
 }
@@ -918,6 +1256,14 @@ pub struct Shapes {
     rebar: Vec<(i64, i64, Vec<Vec<V3>>)>,
     /// Bars of rebar systems: (system id, layer, index) → (bar type, centre line).
     system_bars: HashMap<(i64, i64, i64), (i64, Vec<Vec<V3>>)>,
+    /// Rebar sets with no cached centre lines (older files): id, bar type, bar count, spacing (feet).
+    rebar_sets: Vec<(i64, i64, i64, f64)>,
+    /// The same for the bar sets of rebar systems: (system id, layer, index) → (bar type, count, spacing).
+    system_sets: HashMap<(i64, i64, i64), (i64, i64, f64)>,
+    /// Filled regions of family documents: id, family document, sketch.
+    regions: Vec<(i64, i64, i64)>,
+    /// Stair stringers and carriages rebuilt from their path curves: id, mesh (metres).
+    stringers: Vec<(i64, Mesh)>,
     /// Bars in systems: id, system id, layer, index.
     bars_in_system: Vec<(i64, i64, i64, i64)>,
     /// Wall footing segments: id, profile loop and straight path (feet).
@@ -941,6 +1287,23 @@ pub struct Shapes {
     framing: Vec<(i64, V3, V3)>,
     /// curtain mullions and panels → their placement, for a box in their own axes
     curtain: Vec<(i64, Trf)>,
+    /// System mullion types (one per mullion): centre line (feet, symbol frame), depth
+    /// direction, widths on either side of the line and depth (feet), rectangular or round.
+    mullion_syms: HashMap<i64, MullionSym>,
+    /// Profile family symbols: their profile loops (feet, profile family XY plane).
+    sym_profile: HashMap<i64, Vec<Vec<V3>>>,
+}
+
+/// A system mullion type: its centre line and section.
+#[derive(Clone)]
+struct MullionSym {
+    line: Vec<V3>,
+    depth_dir: V3,
+    w1: f64,
+    w2: f64,
+    depth: f64,
+    offset: f64,
+    round: bool,
 }
 
 /// A straight pipe, duct, cable tray or conduit: a section swept along its centre line.
@@ -963,16 +1326,35 @@ fn planes_of(tr: &Tree, field: &str) -> Vec<(V3, V3, V3, [f64; 4])> {
         .filter_map(|&i| tr.objs.get(i))
         .filter_map(|f| f.ptr("m_pSurf").and_then(|i| tr.objs.get(i)))
         .filter_map(|p| {
-            let env = p.obj("m_Envelope").and_then(|e| e.fs("m_corners")).unwrap_or(&[]);
-            let env: [f64; 4] = if env.len() == 4 { env.try_into().unwrap() } else { [f64::NAN; 4] };
-            Some((v3(p.fs("m_origin"))?, v3(p.fs("m_xVec"))?, v3(p.fs("m_yVec"))?, env))
+            let env = p
+                .obj("m_Envelope")
+                .and_then(|e| e.fs("m_corners"))
+                .unwrap_or(&[]);
+            let env: [f64; 4] = if env.len() == 4 {
+                env.try_into().unwrap()
+            } else {
+                [f64::NAN; 4]
+            };
+            Some((
+                v3(p.fs("m_origin"))?,
+                v3(p.fs("m_xVec"))?,
+                v3(p.fs("m_yVec"))?,
+                env,
+            ))
         })
         .collect()
 }
 
 fn helper_loops(tr: &Tree, s: &Schema, helper: &str) -> Vec<Vec<V3>> {
-    let Some(h) = tr.objs.iter().find(|o| s.name(o.tag).ends_with(helper)) else { return vec![] };
-    h.ptrs("m_pCurveLoops").iter().filter_map(|&i| tr.objs.get(i)).map(|lp| loop_points(lp, tr, s)).filter(|l| l.len() >= 3).collect()
+    let Some(h) = tr.objs.iter().find(|o| s.name(o.tag).ends_with(helper)) else {
+        return vec![];
+    };
+    h.ptrs("m_pCurveLoops")
+        .iter()
+        .filter_map(|&i| tr.objs.get(i))
+        .map(|lp| loop_points(lp, tr, s))
+        .filter(|l| l.len() >= 3)
+        .collect()
 }
 
 /// Pipe or duct solid: its section (a circle of 16 sides, or a rectangle) along the centre line.
@@ -984,14 +1366,38 @@ fn mep(m: &Mep) -> Option<Mesh> {
         return None;
     }
     // height direction square to the line
-    let up = norm(sub(m.up, [n[0] * dot(m.up, n), n[1] * dot(m.up, n), n[2] * dot(m.up, n)])).or_else(|| norm(cross(n, if n[2].abs() < 0.9 { [0.0, 0.0, 1.0] } else { [1.0, 0.0, 0.0] })))?;
+    let up = norm(sub(
+        m.up,
+        [
+            n[0] * dot(m.up, n),
+            n[1] * dot(m.up, n),
+            n[2] * dot(m.up, n),
+        ],
+    ))
+    .or_else(|| {
+        norm(cross(
+            n,
+            if n[2].abs() < 0.9 {
+                [0.0, 0.0, 1.0]
+            } else {
+                [1.0, 0.0, 0.0]
+            },
+        ))
+    })?;
     let side = norm(cross(up, n))?;
-    let f = Frame { o: m.a, u: side, v: up, n };
+    let f = Frame {
+        o: m.a,
+        u: side,
+        v: up,
+        n,
+    };
     let sec: Vec<[f64; 2]> = if m.round {
-        (0..16).map(|k| {
-            let a = k as f64 * std::f64::consts::TAU / 16.0;
-            [m.w * 0.5 * a.cos(), m.w * 0.5 * a.sin()]
-        }).collect()
+        (0..16)
+            .map(|k| {
+                let a = k as f64 * std::f64::consts::TAU / 16.0;
+                [m.w * 0.5 * a.cos(), m.w * 0.5 * a.sin()]
+            })
+            .collect()
     } else {
         let (a, b) = (m.w * 0.5, m.h * 0.5);
         vec![[-a, -b], [a, -b], [a, b], [-a, b]]
@@ -1013,9 +1419,15 @@ fn framing_box(a: V3, b: V3, lo: [f64; 3], hi: [f64; 3]) -> Option<Mesh> {
     let e = sub(hi, lo);
     // least squares for (w, h): e_i - len |n_i| = w |y_i| + h |z_i|
     let r: Vec<f64> = (0..3).map(|i| e[i] - len * n[i].abs()).collect();
-    let (ya, za) = ([y[0].abs(), y[1].abs(), y[2].abs()], [z[0].abs(), z[1].abs(), z[2].abs()]);
+    let (ya, za) = (
+        [y[0].abs(), y[1].abs(), y[2].abs()],
+        [z[0].abs(), z[1].abs(), z[2].abs()],
+    );
     let (s11, s12, s22) = (dot(ya, ya), dot(ya, za), dot(za, za));
-    let (b1, b2) = ((0..3).map(|i| ya[i] * r[i]).sum::<f64>(), (0..3).map(|i| za[i] * r[i]).sum::<f64>());
+    let (b1, b2) = (
+        (0..3).map(|i| ya[i] * r[i]).sum::<f64>(),
+        (0..3).map(|i| za[i] * r[i]).sum::<f64>(),
+    );
     let det = s11 * s22 - s12 * s12;
     if det.abs() < 1e-9 {
         return None;
@@ -1030,18 +1442,61 @@ fn framing_box(a: V3, b: V3, lo: [f64; 3], hi: [f64; 3]) -> Option<Mesh> {
     let mid = mul(add(a, b), 0.5);
     let off = sub(c, mid);
     let off = sub(off, mul(n, dot(off, n)));
-    let m = Mep { id: 0, a: add(a, off), b: add(b, off), w, h, up: z, round: false };
+    let m = Mep {
+        id: 0,
+        a: add(a, off),
+        b: add(b, off),
+        w,
+        h,
+        up: z,
+        round: false,
+    };
     mep(&m)
+}
+
+/// A system mullion (metres, its type's frame): its section swept along its centre line,
+/// the depth along the type's path normal (shifted by the offset), the widths either side.
+fn mullion(ms: &MullionSym) -> Option<Mesh> {
+    let mut out = Mesh::default();
+    for w in ms.line.windows(2) {
+        let n = norm(sub(w[1], w[0]))?;
+        let up = norm(sub(ms.depth_dir, mul(n, dot(ms.depth_dir, n))))?;
+        let side = norm(cross(up, n))?;
+        let shift = add(mul(side, (ms.w2 - ms.w1) * 0.5), mul(up, ms.offset));
+        let m = Mep {
+            id: 0,
+            a: add(w[0], shift),
+            b: add(w[1], shift),
+            w: ms.w1 + ms.w2,
+            h: ms.depth,
+            up,
+            round: ms.round,
+        };
+        let m = mep(&m)?;
+        let b = out.pos.len() as u32;
+        out.pos.extend(m.pos);
+        out.tri
+            .extend(m.tri.iter().map(|t| [t[0] + b, t[1] + b, t[2] + b]));
+    }
+    (!out.tri.is_empty()).then_some(out)
 }
 
 /// A box in the axes of the placement `t` whose world box is (`lo`, `hi`, metres): its edges
 /// solve `e_i = sum_j |u_j[i]| l_j`. For mullions and curtain panels, whose solids are boxes.
 fn oriented_box(t: &Trf, lo: [f64; 3], hi: [f64; 3]) -> Option<Mesh> {
     let e = mul(sub(hi, lo), 1.0 / FEET);
-    let u = [norm(t.lin([1.0, 0.0, 0.0]))?, norm(t.lin([0.0, 1.0, 0.0]))?, norm(t.lin([0.0, 0.0, 1.0]))?];
+    let u = [
+        norm(t.lin([1.0, 0.0, 0.0]))?,
+        norm(t.lin([0.0, 1.0, 0.0]))?,
+        norm(t.lin([0.0, 0.0, 1.0]))?,
+    ];
     let a = |i: usize, j: usize| u[j][i].abs();
     let det3 = |c: [V3; 3]| dot(c[0], cross(c[1], c[2]));
-    let cols = [[a(0, 0), a(1, 0), a(2, 0)], [a(0, 1), a(1, 1), a(2, 1)], [a(0, 2), a(1, 2), a(2, 2)]];
+    let cols = [
+        [a(0, 0), a(1, 0), a(2, 0)],
+        [a(0, 1), a(1, 1), a(2, 1)],
+        [a(0, 2), a(1, 2), a(2, 2)],
+    ];
     let d = det3(cols);
     if d.abs() < 1e-3 {
         return None;
@@ -1056,7 +1511,15 @@ fn oriented_box(t: &Trf, lo: [f64; 3], hi: [f64; 3]) -> Option<Mesh> {
         }
     }
     let c = mul(add(lo, hi), 0.5 / FEET);
-    let m = Mep { id: 0, a: sub(c, mul(u[0], l[0] * 0.5)), b: add(c, mul(u[0], l[0] * 0.5)), w: l[1], h: l[2], up: u[2], round: false };
+    let m = Mep {
+        id: 0,
+        a: sub(c, mul(u[0], l[0] * 0.5)),
+        b: add(c, mul(u[0], l[0] * 0.5)),
+        w: l[1],
+        h: l[2],
+        up: u[2],
+        round: false,
+    };
     mep(&m)
 }
 
@@ -1069,9 +1532,19 @@ fn append(out: &mut Mesh, m: &Mesh, t: &Trf) {
     let base = out.pos.len() as u32;
     for p in &m.pos {
         let q = t.apply([p[0] as f64 / FEET, p[1] as f64 / FEET, p[2] as f64 / FEET]);
-        out.pos.push([(q[0] * FEET) as f32, (q[1] * FEET) as f32, (q[2] * FEET) as f32]);
+        out.pos.push([
+            (q[0] * FEET) as f32,
+            (q[1] * FEET) as f32,
+            (q[2] * FEET) as f32,
+        ]);
     }
-    out.tri.extend(m.tri.iter().map(|tr| if flip { [tr[0] + base, tr[2] + base, tr[1] + base] } else { [tr[0] + base, tr[1] + base, tr[2] + base] }));
+    out.tri.extend(m.tri.iter().map(|tr| {
+        if flip {
+            [tr[0] + base, tr[2] + base, tr[1] + base]
+        } else {
+            [tr[0] + base, tr[1] + base, tr[2] + base]
+        }
+    }));
 }
 
 /// A horizontal sheet made a slab down to `z0`: a copy at `z0` and the walls along the
@@ -1137,24 +1610,102 @@ fn prism(prof: &[V3], path: &[V3]) -> Option<Mesh> {
     let c0: Vec<V3> = c2.iter().map(|q| f.at(q[0], q[1], 0.0)).collect();
     let c1: Vec<V3> = c0.iter().map(|&p| add(p, d)).collect();
     let far: Vec<V3> = prof.iter().map(|&p| add(p, d)).collect();
-    assemble(&[vec![prof], vec![far]], false, [Some((c0, ct.clone())), Some((c1, ct))])
+    assemble(
+        &[vec![prof], vec![far]],
+        false,
+        [Some((c0, ct.clone())), Some((c1, ct))],
+    )
+}
+
+/// A stair stringer or carriage with no stored solid, rebuilt from the curves of its path
+/// step: the longest line is its top edge, the shortest horizontal one its width, and the
+/// largest face envelope shorter than the path its vertical depth.
+fn stringer(s: &Schema, tr: &Tree) -> Option<Mesh> {
+    let lines: Vec<(V3, V3)> = tr
+        .objs
+        .iter()
+        .filter(|o| s.name(o.tag) == "GLine")
+        .filter_map(|o| {
+            let p = curve_points(o, s);
+            (p.len() == 2).then(|| (p[0], p[1]))
+        })
+        .collect();
+    let len = |l: &(V3, V3)| dot(sub(l.1, l.0), sub(l.1, l.0)).sqrt();
+    let path = *lines
+        .iter()
+        .max_by(|a, b| len(a).partial_cmp(&len(b)).unwrap())?;
+    let pl = len(&path);
+    let d = sub(path.1, path.0);
+    let w = lines
+        .iter()
+        .filter(|l| {
+            let v = sub(l.1, l.0);
+            v[2].abs() < 1e-6
+                && len(l) > 1e-3
+                && len(l) < pl * 0.5
+                && dot(v, d).abs() < 1e-6 * len(l) * pl + 1e-9
+        })
+        .min_by(|a, b| len(a).partial_cmp(&len(b)).unwrap())?;
+    let mut wv = sub(w.1, w.0);
+    // the width on the side where the other edge lines start
+    let pts: Vec<V3> = lines.iter().flat_map(|l| [l.0, l.1]).collect();
+    let near = |q: V3| pts.iter().any(|&p| dot(sub(p, q), sub(p, q)) < 1e-6);
+    if !near(add(path.0, wv)) && near(sub(path.0, wv)) {
+        wv = mul(wv, -1.0);
+    }
+    let h = tr
+        .objs
+        .iter()
+        .filter(|o| s.name(o.tag) == "Plane")
+        .filter_map(|o| {
+            o.obj("m_Envelope")
+                .map(|e| e.fs("m_corners").map(|v| v.to_vec()))
+                .flatten()
+        })
+        .flatten()
+        .map(f64::abs)
+        .filter(|&v| v < pl * 0.95 && v > len(w) * 1.5)
+        .fold(0.0f64, f64::max);
+    let h = if h > 0.0 { h } else { 1.0 };
+    let z = [0.0, 0.0, h];
+    let p0 = path.0;
+    let prof = [p0, add(p0, wv), sub(add(p0, wv), z), sub(p0, z)];
+    prism(&prof, &[path.0, path.1])
 }
 
 /// Axis-aligned cuboid (metres) between `lo` and `hi` (feet).
 fn cuboid(lo: V3, hi: V3) -> Mesh {
     let mut pos = Vec::new();
     for k in 0..8 {
-        let p = [if k & 1 == 0 { lo[0] } else { hi[0] }, if k & 2 == 0 { lo[1] } else { hi[1] }, if k & 4 == 0 { lo[2] } else { hi[2] }];
-        pos.push([(p[0] * FEET) as f32, (p[1] * FEET) as f32, (p[2] * FEET) as f32]);
+        let p = [
+            if k & 1 == 0 { lo[0] } else { hi[0] },
+            if k & 2 == 0 { lo[1] } else { hi[1] },
+            if k & 4 == 0 { lo[2] } else { hi[2] },
+        ];
+        pos.push([
+            (p[0] * FEET) as f32,
+            (p[1] * FEET) as f32,
+            (p[2] * FEET) as f32,
+        ]);
     }
     let q = |a: u32, b: u32, c: u32, d: u32| [[a, b, c], [a, c, d]];
-    let tri = [q(0, 2, 3, 1), q(4, 5, 7, 6), q(0, 1, 5, 4), q(2, 6, 7, 3), q(0, 4, 6, 2), q(1, 3, 7, 5)].concat();
+    let tri = [
+        q(0, 2, 3, 1),
+        q(4, 5, 7, 6),
+        q(0, 1, 5, 4),
+        q(2, 6, 7, 3),
+        q(0, 4, 6, 2),
+        q(1, 3, 7, 5),
+    ]
+    .concat();
     Mesh { pos, tri }
 }
 
 /// Whether the box of `m` is within `tol` metres of `b`.
 fn near_box(m: &Mesh, b: Option<&([f64; 3], [f64; 3])>, tol: f64) -> bool {
-    let (Some((lo, hi)), Some((blo, bhi))) = (m.bbox(), b) else { return b.is_none() };
+    let (Some((lo, hi)), Some((blo, bhi))) = (m.bbox(), b) else {
+        return b.is_none();
+    };
     (0..3).all(|k| (lo[k] as f64 - blo[k]).abs() <= tol && (hi[k] as f64 - bhi[k]).abs() <= tol)
 }
 
@@ -1173,9 +1724,115 @@ fn chain_onto(line: &mut Vec<V3>, mut pts: Vec<V3>) {
     line.extend(pts);
 }
 
+/// Centre lines (feet) of a rebar set of `n` bars at spacing `sp` filling the box `lo`..`hi`
+/// (feet) of bars of radius `r`: one straight bar for a line-like box, parallel straight bars
+/// for a flat box, closed rectangular ties along the distribution axis for a solid box.
+fn box_bars(lo: V3, hi: V3, n: i64, sp: f64, r: f64) -> Vec<Vec<V3>> {
+    let e = sub(hi, lo);
+    if e.iter().any(|x| !x.is_finite() || *x < 0.0) || e.iter().all(|&x| x < 1e-6) {
+        return vec![];
+    }
+    let thin_t = (4.0 * r).max(0.08);
+    let thin: Vec<usize> = (0..3).filter(|&i| e[i] <= thin_t).collect();
+    let c = mul(add(lo, hi), 0.5);
+    let n = n.clamp(1, 400) as usize;
+    let axis = |a: usize, t: f64| -> V3 {
+        let mut p = c;
+        p[a] = t;
+        p
+    };
+    // the axis whose extent best matches the set's span of (n - 1) spacings
+    let pick = |cands: &[usize]| -> usize {
+        let want = if sp > 0.0 && n > 1 {
+            (n - 1) as f64 * sp + 2.0 * r
+        } else {
+            0.0
+        };
+        if want > 0.0 {
+            *cands
+                .iter()
+                .min_by(|&&a, &&b| {
+                    (e[a] - want)
+                        .abs()
+                        .partial_cmp(&(e[b] - want).abs())
+                        .unwrap()
+                })
+                .unwrap()
+        } else {
+            *cands
+                .iter()
+                .min_by(|&&a, &&b| e[a].partial_cmp(&e[b]).unwrap())
+                .unwrap()
+        }
+    };
+    let at = |d: usize, k: usize, n: usize| -> f64 {
+        let (a, b) = (lo[d] + r.min(e[d] / 2.0), hi[d] - r.min(e[d] / 2.0));
+        if n <= 1 {
+            (a + b) / 2.0
+        } else {
+            a + (b - a) * k as f64 / (n - 1) as f64
+        }
+    };
+    match thin.len() {
+        3 => vec![],
+        2 => {
+            let a = (0..3).find(|i| !thin.contains(i)).unwrap();
+            vec![vec![axis(a, lo[a]), axis(a, hi[a])]]
+        }
+        1 => {
+            let plane: Vec<usize> = (0..3).filter(|i| !thin.contains(i)).collect();
+            let (d, a) = if n <= 1 {
+                let a = if e[plane[0]] >= e[plane[1]] {
+                    plane[0]
+                } else {
+                    plane[1]
+                };
+                (if a == plane[0] { plane[1] } else { plane[0] }, a)
+            } else {
+                let d = pick(&plane);
+                (d, if d == plane[0] { plane[1] } else { plane[0] })
+            };
+            (0..n)
+                .map(|k| {
+                    let mut p = axis(a, lo[a]);
+                    let mut q = axis(a, hi[a]);
+                    p[d] = at(d, k, n);
+                    q[d] = p[d];
+                    vec![p, q]
+                })
+                .collect()
+        }
+        _ => {
+            let d = pick(&[0, 1, 2]);
+            let o: Vec<usize> = (0..3).filter(|&i| i != d).collect();
+            let (u, v) = (o[0], o[1]);
+            let (u0, u1, v0, v1) = (lo[u] + r, hi[u] - r, lo[v] + r, hi[v] - r);
+            (0..n)
+                .map(|k| {
+                    let t = at(d, k, n);
+                    [(u0, v0), (u1, v0), (u1, v1), (u0, v1), (u0, v0)]
+                        .iter()
+                        .map(|&(a, b)| {
+                            let mut p = c;
+                            p[d] = t;
+                            p[u] = a;
+                            p[v] = b;
+                            p
+                        })
+                        .collect()
+                })
+                .collect()
+        }
+    }
+}
+
 /// Appends a hexagonal tube of radius `r` along the polyline `line` (feet) to `m` (metres).
 fn tube(m: &mut Mesh, line: &[V3], r: f64) {
-    let line: Vec<V3> = line.iter().copied().filter(|p| p.iter().all(|x| x.is_finite())).collect();
+    let line: Vec<V3> = line
+        .iter()
+        .copied()
+        .filter(|p| p.iter().all(|x| x.is_finite()))
+        .collect();
     if line.len() < 2 {
         return;
     }
@@ -1198,13 +1855,20 @@ fn tube(m: &mut Mesh, line: &[V3], r: f64) {
         for k in 0..K {
             let ang = std::f64::consts::TAU * k as f64 / K as f64;
             let q = add(line[i], add(mul(u, r * ang.cos()), mul(v, r * ang.sin())));
-            m.pos.push([(q[0] * FEET) as f32, (q[1] * FEET) as f32, (q[2] * FEET) as f32]);
+            m.pos.push([
+                (q[0] * FEET) as f32,
+                (q[1] * FEET) as f32,
+                (q[2] * FEET) as f32,
+            ]);
         }
         rings += 1;
     }
     for i in 0..rings.saturating_sub(1) {
         for k in 0..K as u32 {
-            let (a, b) = (base + i * K as u32 + k, base + i * K as u32 + (k + 1) % K as u32);
+            let (a, b) = (
+                base + i * K as u32 + k,
+                base + i * K as u32 + (k + 1) % K as u32,
+            );
             let (c, d) = (a + K as u32, b + K as u32);
             m.tri.push([a, b, d]);
             m.tri.push([a, d, c]);
@@ -1222,9 +1886,21 @@ fn terrain(pts: &[V3], bnd: &[usize]) -> Option<Mesh> {
     let tri = delaunay(&p2);
     let poly: Vec<[f64; 2]> = bnd.iter().filter_map(|&k| p2.get(k).copied()).collect();
     let mut m = Mesh::default();
-    m.pos = pts.iter().map(|p| [(p[0] * FEET) as f32, (p[1] * FEET) as f32, (p[2] * FEET) as f32]).collect();
+    m.pos = pts
+        .iter()
+        .map(|p| {
+            [
+                (p[0] * FEET) as f32,
+                (p[1] * FEET) as f32,
+                (p[2] * FEET) as f32,
+            ]
+        })
+        .collect();
     for t in tri {
-        let c = [(p2[t[0]][0] + p2[t[1]][0] + p2[t[2]][0]) / 3.0, (p2[t[0]][1] + p2[t[1]][1] + p2[t[2]][1]) / 3.0];
+        let c = [
+            (p2[t[0]][0] + p2[t[1]][0] + p2[t[2]][0]) / 3.0,
+            (p2[t[0]][1] + p2[t[1]][1] + p2[t[2]][1]) / 3.0,
+        ];
         if poly.len() >= 3 && !inside(c, &poly) {
             continue;
         }
@@ -1250,12 +1926,18 @@ fn delaunay(p: &[[f64; 2]]) -> Vec<[usize; 3]> {
     v.push([c[0] - 20.0 * span, c[1] - 10.0 * span]);
     v.push([c[0] + 20.0 * span, c[1] - 10.0 * span]);
     v.push([c[0], c[1] + 20.0 * span]);
-    let ccw = |a: [f64; 2], b: [f64; 2], c: [f64; 2]| (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+    let ccw = |a: [f64; 2], b: [f64; 2], c: [f64; 2]| {
+        (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    };
     // triangles with their circumcircle (centre, squared radius)
     let circ = |t: [usize; 3], v: &[[f64; 2]]| {
         let (a, b, c) = (v[t[0]], v[t[1]], v[t[2]]);
         let d = 2.0 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]));
-        let (a2, b2, c2) = (a[0] * a[0] + a[1] * a[1], b[0] * b[0] + b[1] * b[1], c[0] * c[0] + c[1] * c[1]);
+        let (a2, b2, c2) = (
+            a[0] * a[0] + a[1] * a[1],
+            b[0] * b[0] + b[1] * b[1],
+            c[0] * c[0] + c[1] * c[1],
+        );
         let ux = (a2 * (b[1] - c[1]) + b2 * (c[1] - a[1]) + c2 * (a[1] - b[1])) / d;
         let uy = (a2 * (c[0] - b[0]) + b2 * (a[0] - c[0]) + c2 * (b[0] - a[0])) / d;
         ([ux, uy], (a[0] - ux).powi(2) + (a[1] - uy).powi(2))
@@ -1268,7 +1950,10 @@ fn delaunay(p: &[[f64; 2]]) -> Vec<[usize; 3]> {
     let mut seen: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
     for i in 0..n {
         let q = v[i];
-        let key = ((q[0] / (span * 1e-9)).round() as i64, (q[1] / (span * 1e-9)).round() as i64);
+        let key = (
+            (q[0] / (span * 1e-9)).round() as i64,
+            (q[1] / (span * 1e-9)).round() as i64,
+        );
         if !seen.insert(key) {
             continue;
         }
@@ -1299,7 +1984,10 @@ fn delaunay(p: &[[f64; 2]]) -> Vec<[usize; 3]> {
             }
         }
     }
-    tris.into_iter().map(|(t, ..)| t).filter(|t| t.iter().all(|&k| k < n)).collect()
+    tris.into_iter()
+        .map(|(t, ..)| t)
+        .filter(|t| t.iter().all(|&k| k < n))
+        .collect()
 }
 
 /// Roof slabs from their layer faces: the faces sharing a plane direction and an extent
@@ -1313,14 +2001,23 @@ fn layer_slabs(planes: &[(V3, V3, V3, [f64; 4])]) -> Option<Mesh> {
             continue;
         }
         let (o, x, y, env) = planes[i];
-        if !env.iter().all(|v| v.is_finite()) || (env[2] - env[0]).abs() < 1e-3 || (env[3] - env[1]).abs() < 1e-3 || (env[2] - env[0]).abs() > 3e3 || (env[3] - env[1]).abs() > 3e3 {
+        if !env.iter().all(|v| v.is_finite())
+            || (env[2] - env[0]).abs() < 1e-3
+            || (env[3] - env[1]).abs() < 1e-3
+            || (env[2] - env[0]).abs() > 3e3
+            || (env[3] - env[1]).abs() > 3e3
+        {
             continue;
         }
         let Some(n) = norm(cross(x, y)) else { continue };
         let (mut d0, mut d1) = (0.0f64, 0.0f64);
         for j in i..planes.len() {
             let (oj, xj, yj, ej) = planes[j];
-            if used[j] || dot(xj, x) < 0.999 || dot(yj, y) < 0.999 || (0..4).any(|k| (ej[k] - env[k]).abs() > 1e-3) {
+            if used[j]
+                || dot(xj, x) < 0.999
+                || dot(yj, y) < 0.999
+                || (0..4).any(|k| (ej[k] - env[k]).abs() > 1e-3)
+            {
                 continue;
             }
             let dd = sub(oj, o);
@@ -1337,13 +2034,28 @@ fn layer_slabs(planes: &[(V3, V3, V3, [f64; 4])]) -> Option<Mesh> {
         }
         let c = |u: f64, v: f64, d: f64| {
             let p = add(add(o, add(mul(x, u), mul(y, v))), mul(n, d));
-            [(p[0] * FEET) as f32, (p[1] * FEET) as f32, (p[2] * FEET) as f32]
+            [
+                (p[0] * FEET) as f32,
+                (p[1] * FEET) as f32,
+                (p[2] * FEET) as f32,
+            ]
         };
         let base = m.pos.len() as u32;
         for k in 0..8 {
-            m.pos.push(c(if k & 1 == 0 { env[0] } else { env[2] }, if k & 2 == 0 { env[1] } else { env[3] }, if k & 4 == 0 { d0 } else { d1 }));
+            m.pos.push(c(
+                if k & 1 == 0 { env[0] } else { env[2] },
+                if k & 2 == 0 { env[1] } else { env[3] },
+                if k & 4 == 0 { d0 } else { d1 },
+            ));
         }
-        for q in [[0, 1, 3, 2], [4, 6, 7, 5], [0, 4, 5, 1], [2, 3, 7, 6], [0, 2, 6, 4], [1, 5, 7, 3]] {
+        for q in [
+            [0, 1, 3, 2],
+            [4, 6, 7, 5],
+            [0, 4, 5, 1],
+            [2, 3, 7, 6],
+            [0, 2, 6, 4],
+            [1, 5, 7, 3],
+        ] {
             m.tri.push([base + q[0], base + q[1], base + q[2]]);
             m.tri.push([base + q[0], base + q[2], base + q[3]]);
         }
@@ -1370,18 +2082,38 @@ fn swept_band(path: &[V3], half: f64, dz0: f64, dz1: f64) -> Option<Mesh> {
     for i in 0..n {
         let a = path[i.saturating_sub(1)];
         let b = path[(i + 1).min(n - 1)];
-        let Some(t) = norm([b[0] - a[0], b[1] - a[1], 0.0]) else { return None };
+        let Some(t) = norm([b[0] - a[0], b[1] - a[1], 0.0]) else {
+            return None;
+        };
         let nn = [-t[1], t[0]];
         let p = [path[i][0], path[i][1]];
-        sides.push(([p[0] - nn[0] * half, p[1] - nn[1] * half], [p[0] + nn[0] * half, p[1] + nn[1] * half]));
+        sides.push((
+            [p[0] - nn[0] * half, p[1] - nn[1] * half],
+            [p[0] + nn[0] * half, p[1] + nn[1] * half],
+        ));
     }
     let mut m = Mesh::default();
     let mut push = |q: [f64; 2], z: f64| -> u32 {
-        m.pos.push([(q[0] * FEET) as f32, (q[1] * FEET) as f32, (z * FEET) as f32]);
+        m.pos.push([
+            (q[0] * FEET) as f32,
+            (q[1] * FEET) as f32,
+            (z * FEET) as f32,
+        ]);
         (m.pos.len() - 1) as u32
     };
     // per vertex: inner bottom, inner top, outer bottom, outer top
-    let ids: Vec<[u32; 4]> = sides.iter().zip(path).map(|(&(a, b), p)| [push(a, p[2] + dz0), push(a, p[2] + dz1), push(b, p[2] + dz0), push(b, p[2] + dz1)]).collect();
+    let ids: Vec<[u32; 4]> = sides
+        .iter()
+        .zip(path)
+        .map(|(&(a, b), p)| {
+            [
+                push(a, p[2] + dz0),
+                push(a, p[2] + dz1),
+                push(b, p[2] + dz0),
+                push(b, p[2] + dz1),
+            ]
+        })
+        .collect();
     for i in 0..n - 1 {
         let (p, q) = (ids[i], ids[i + 1]);
         for (a, b) in [(0, 1), (2, 3), (0, 2), (1, 3)] {
@@ -1399,7 +2131,15 @@ fn swept_band(path: &[V3], half: f64, dz0: f64, dz1: f64) -> Option<Mesh> {
 /// The family solids stretched along the family x (about the middle of the solids) to
 /// width `w` and along z (from their bottom) to height `h` (metres), placed by `t`, when
 /// the result lies within the instance box `b` (± `tol`).
-fn sized(parts: &[Mesh], pb: &[Option<([f32; 3], [f32; 3])>], w: f64, h: f64, t: &Trf, b: ([f64; 3], [f64; 3]), tol: f64) -> Option<Mesh> {
+fn sized(
+    parts: &[Mesh],
+    pb: &[Option<([f32; 3], [f32; 3])>],
+    w: f64,
+    h: f64,
+    t: &Trf,
+    b: ([f64; 3], [f64; 3]),
+    tol: f64,
+) -> Option<Mesh> {
     let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
     for (l, u) in pb.iter().flatten() {
         for a in 0..3 {
@@ -1432,16 +2172,53 @@ fn sized(parts: &[Mesh], pb: &[Option<([f32; 3], [f32; 3])>], w: f64, h: f64, t:
 
 fn param(tr: &Tree, id: i64) -> Option<f64> {
     let set = tr.objs.get(tr.root.ptr("m_pParamValueSetDouble")?)?;
-    set.list("m_paramSet").iter().find(|p| p.int("m_paramId") == Some(id)).and_then(|p| match p.get("m_value") {
-        Some(G::F(v)) if v.is_finite() => Some(*v),
-        _ => None,
-    })
+    set.list("m_paramSet")
+        .iter()
+        .find(|p| p.int("m_paramId") == Some(id))
+        .and_then(|p| match p.get("m_value") {
+            Some(G::F(v)) if v.is_finite() => Some(*v),
+            _ => None,
+        })
 }
 
 impl Shapes {
     /// Element classes read.
-    const CLASSES: [&'static str; 31] = [
-        "ContFooting", "Rebar", "RebarInSystem", "RebarSystem", "RebarBarType", "SiteSurface", "Roof", "TopRail", "HandRail", "BaseRailing", "StairsRun", "StairsLanding", "PartMaker", "ProfileRoof", "SWall", "Floor", "Ceiling", "BuildingPad", "RoofSoffit", "Toposolid", "ExtrusionElem", "RevolutionElem", "SweepElem", "BlendElem", "Family", "FamilyInstance", "FamilySymbol", "VarSketch", "Sketch", "SketchPlane", "Path3d",
+    const CLASSES: [&'static str; 35] = [
+        "ContFooting",
+        "Rebar",
+        "RebarInSystem",
+        "RebarSystem",
+        "RebarBarType",
+        "SiteSurface",
+        "Roof",
+        "TopRail",
+        "HandRail",
+        "BaseRailing",
+        "StairsRun",
+        "StairsLanding",
+        "PartMaker",
+        "ProfileRoof",
+        "SWall",
+        "Floor",
+        "Ceiling",
+        "BuildingPad",
+        "RoofSoffit",
+        "Toposolid",
+        "ExtrusionElem",
+        "RevolutionElem",
+        "SweepElem",
+        "BlendElem",
+        "Family",
+        "FamilyInstance",
+        "FamilySymbol",
+        "VarSketch",
+        "Sketch",
+        "SketchPlane",
+        "Path3d",
+        "SysMullionFamSym",
+        "StairsSupport",
+        "FilledRegion",
+        "FormElem",
     ];
 
     /// Element classes read, by tag.
@@ -1471,7 +2248,9 @@ impl Shapes {
 
     pub fn partition(&mut self, s: &Schema, d: &[u8], w: usize) {
         let want = Self::wants(s);
-        elements(s, d, w, &|t| want[t as usize], |_, t, _, tr| self.take(s, t, &tr));
+        elements(s, d, w, &|t| want[t as usize], |_, t, _, tr| {
+            self.take(s, t, &tr)
+        });
     }
 
     /// `/Global/ContentDocuments`: one segment per family document stored in the project
@@ -1479,12 +2258,23 @@ impl Shapes {
     /// document's elements) follows the `NOBLE_SecondaryDataStorage` tag:
     /// `[tag] [root id] [-1] 01 00 00 00`.
     pub fn content_docs(&mut self, s: &Schema, d: &[u8]) {
-        let (Some(cm), Some(ck), Some(ns)) = (s.tag_of("ContentMarker"), s.tag_of("ContentKey"), s.tag_of("NOBLE_SecondaryDataStorage")) else { return };
+        let (Some(cm), Some(ck), Some(ns)) = (
+            s.tag_of("ContentMarker"),
+            s.tag_of("ContentKey"),
+            s.tag_of("NOBLE_SecondaryDataStorage"),
+        ) else {
+            return;
+        };
         let mut head = cm.to_le_bytes().to_vec();
         head.extend([0xff; 4]);
         head.extend(ck.to_le_bytes());
         head.extend([0xff; 4]);
-        let starts: Vec<usize> = d.windows(head.len()).enumerate().filter(|(_, w)| *w == &head[..]).map(|(i, _)| i).collect();
+        let starts: Vec<usize> = d
+            .windows(head.len())
+            .enumerate()
+            .filter(|(_, w)| *w == &head[..])
+            .map(|(i, _)| i)
+            .collect();
         let tag = ns.to_le_bytes();
         for (n, &p) in starts.iter().enumerate() {
             let end = starts.get(n + 1).copied().unwrap_or(d.len());
@@ -1493,19 +2283,23 @@ impl Shapes {
             }
             let guid: [u8; 16] = d[p + 12..p + 28].try_into().unwrap();
             let seg = &d[p + 28..end];
-            let root = seg.windows(2).enumerate().filter(|(_, w)| *w == tag).find_map(|(k, _)| {
-                [8usize, 4].into_iter().find_map(|w| {
-                    let a = k + 2;
-                    let b = seg.get(a..a + 2 * w + 4)?;
-                    if !b[w..2 * w].iter().all(|&x| x == 0xff) || b[2 * w..] != [1, 0, 0, 0] {
-                        return None;
-                    }
-                    let mut v = [0u8; 8];
-                    v[..w].copy_from_slice(&b[..w]);
-                    let id = i64::from_le_bytes(v);
-                    (id > 0 && id < 1 << 40).then_some(id)
-                })
-            });
+            let root = seg
+                .windows(2)
+                .enumerate()
+                .filter(|(_, w)| *w == tag)
+                .find_map(|(k, _)| {
+                    [8usize, 4].into_iter().find_map(|w| {
+                        let a = k + 2;
+                        let b = seg.get(a..a + 2 * w + 4)?;
+                        if !b[w..2 * w].iter().all(|&x| x == 0xff) || b[2 * w..] != [1, 0, 0, 0] {
+                            return None;
+                        }
+                        let mut v = [0u8; 8];
+                        v[..w].copy_from_slice(&b[..w]);
+                        let id = i64::from_le_bytes(v);
+                        (id > 0 && id < 1 << 40).then_some(id)
+                    })
+                });
             if let Some(r) = root {
                 self.content.insert(guid, r);
             }
@@ -1518,24 +2312,53 @@ impl Shapes {
             Some(G::F(v)) if v.is_finite() && *v > 1e-4 && *v < 100.0 => Some(*v),
             _ => None,
         };
-        let Some(w) = num("m_dWidthOrDiameter") else { return };
+        let Some(w) = num("m_dWidthOrDiameter") else {
+            return;
+        };
         let h = num("m_dHeight").unwrap_or(w);
-        let Some(c) = r.ptr("m_pCurveDriver").and_then(|i| tr.objs.get(i)).and_then(|d| d.ptr("m_pCrv")).and_then(|i| tr.objs.get(i)) else { return };
+        let Some(c) = r
+            .ptr("m_pCurveDriver")
+            .and_then(|i| tr.objs.get(i))
+            .and_then(|d| d.ptr("m_pCrv"))
+            .and_then(|i| tr.objs.get(i))
+        else {
+            return;
+        };
         if s.name(c.tag) != "GLine" {
             return;
         }
-        let (Some(o), Some(d)) = (v3(c.fs("m_origin")), v3(c.fs("m_dirVec"))) else { return };
-        let Some([t0, t1, ..]) = c.fs("m_endParams") else { return };
+        let (Some(o), Some(d)) = (v3(c.fs("m_origin")), v3(c.fs("m_dirVec"))) else {
+            return;
+        };
+        let Some([t0, t1, ..]) = c.fs("m_endParams") else {
+            return;
+        };
         let Some(d) = norm(d) else { return };
-        let up = v3(r.fs("m_vNormal")).and_then(norm).unwrap_or([0.0, 0.0, 1.0]);
+        let up = v3(r.fs("m_vNormal"))
+            .and_then(norm)
+            .unwrap_or([0.0, 0.0, 1.0]);
         // round: pipes and conduits; ducts when their size reads as a diameter
-        let size = tr.objs.iter().find(|o| s.name(o.tag).ends_with("DesignPropertyManager")).and_then(|o| match o.get("m_sOverallSize") {
-            Some(G::S(t)) => Some(t.clone()),
-            _ => None,
-        });
-        let round = cls.contains("Pipe") || (cls.contains("Conduit") && !cls.contains("CableTray")) || size.is_some_and(|t| t.contains(['ø', 'Ø', '⌀']));
+        let size = tr
+            .objs
+            .iter()
+            .find(|o| s.name(o.tag).ends_with("DesignPropertyManager"))
+            .and_then(|o| match o.get("m_sOverallSize") {
+                Some(G::S(t)) => Some(t.clone()),
+                _ => None,
+            });
+        let round = cls.contains("Pipe")
+            || (cls.contains("Conduit") && !cls.contains("CableTray"))
+            || size.is_some_and(|t| t.contains(['ø', 'Ø', '⌀']));
         let at = |t: f64| [o[0] + d[0] * t, o[1] + d[1] * t, o[2] + d[2] * t];
-        self.mep.push(Mep { id: tr.id, a: at(*t0), b: at(*t1), w, h, up, round });
+        self.mep.push(Mep {
+            id: tr.id,
+            a: at(*t0),
+            b: at(*t1),
+            w,
+            h,
+            up,
+            round,
+        });
     }
 
     fn element(&mut self, s: &Schema, cls: &str, tr: &Tree) {
@@ -1543,8 +2366,17 @@ impl Shapes {
         match cls {
             "ContFooting" => {
                 // each segment: its profile loop swept along its straight driver line
-                for seg in tr.objs.iter().filter(|o| s.name(o.tag) == "ContFootingSegment") {
-                    let (Some(pl), Some(dc)) = (seg.ptr("m_pProfile").and_then(|k| tr.objs.get(k)), seg.ptr("m_pDriverCurve").and_then(|k| tr.objs.get(k))) else { continue };
+                for seg in tr
+                    .objs
+                    .iter()
+                    .filter(|o| s.name(o.tag) == "ContFootingSegment")
+                {
+                    let (Some(pl), Some(dc)) = (
+                        seg.ptr("m_pProfile").and_then(|k| tr.objs.get(k)),
+                        seg.ptr("m_pDriverCurve").and_then(|k| tr.objs.get(k)),
+                    ) else {
+                        continue;
+                    };
                     let path = curve_points(dc, s);
                     let prof = loop_points(pl, tr, s);
                     if path.len() == 2 && prof.len() >= 3 {
@@ -1561,14 +2393,30 @@ impl Shapes {
             }
             "Rebar" => {
                 // the first bar's centre line, repeated at each included bar position
-                let Some(ri) = tr.objs.iter().find(|o| s.name(o.tag) == "RebarInstance") else { return };
-                let Some(cache) = ri.ptr("m_oCacheData").and_then(|k| tr.objs.get(k)) else { return };
-                let one = ["m_noSelfIntersectingCenterlineCurves", "m_selfIntersectingCenterlineCurves"]
-                    .iter()
-                    .find_map(|f| cache.ptrs(f).first().and_then(|&k| tr.objs.get(k)));
+                let Some(ri) = tr.objs.iter().find(|o| s.name(o.tag) == "RebarInstance") else {
+                    return;
+                };
+                let Some(cache) = ri.ptr("m_oCacheData").and_then(|k| tr.objs.get(k)) else {
+                    // no cached centre lines (older files): the set rebuilt from its box later
+                    let n = ri.int("m_numberOfBarPositions").unwrap_or(1).max(1);
+                    let sp = ri.float("m_maxSpacing").unwrap_or(0.0);
+                    self.rebar_sets
+                        .push((id, ri.int("m_barTypeId").unwrap_or(-1), n, sp));
+                    return;
+                };
+                let one = [
+                    "m_noSelfIntersectingCenterlineCurves",
+                    "m_selfIntersectingCenterlineCurves",
+                ]
+                .iter()
+                .find_map(|f| cache.ptrs(f).first().and_then(|&k| tr.objs.get(k)));
                 let Some(one) = one else { return };
                 let mut line: Vec<V3> = Vec::new();
-                for c in one.ptrs("m_centerlineCurves").iter().filter_map(|&k| tr.objs.get(k)) {
+                for c in one
+                    .ptrs("m_centerlineCurves")
+                    .iter()
+                    .filter_map(|&k| tr.objs.get(k))
+                {
                     chain_onto(&mut line, curve_points(c, s));
                 }
                 if line.len() < 2 {
@@ -1578,8 +2426,16 @@ impl Shapes {
                     Some(G::Is(v)) => v.clone(),
                     _ => vec![],
                 };
-                let pos: Vec<Option<Trf>> = ri.list("m_barPositionsRelativeToFirstBarArr").iter().map(Trf::from).collect();
-                let ind: Vec<Option<Trf>> = ri.list("m_individualBarsTrf").iter().map(Trf::from).collect();
+                let pos: Vec<Option<Trf>> = ri
+                    .list("m_barPositionsRelativeToFirstBarArr")
+                    .iter()
+                    .map(Trf::from)
+                    .collect();
+                let ind: Vec<Option<Trf>> = ri
+                    .list("m_individualBarsTrf")
+                    .iter()
+                    .map(Trf::from)
+                    .collect();
                 let mut bars = Vec::new();
                 for k in 0..pos.len().max(1) {
                     if inc.get(k).is_some_and(|&v| v == 0) {
@@ -1588,18 +2444,28 @@ impl Shapes {
                     let b: Vec<V3> = line
                         .iter()
                         .map(|&p| {
-                            let p = ind.get(k).and_then(|t| t.as_ref()).map_or(p, |t| t.apply(p));
-                            pos.get(k).and_then(|t| t.as_ref()).map_or(p, |t| t.apply(p))
+                            let p = ind
+                                .get(k)
+                                .and_then(|t| t.as_ref())
+                                .map_or(p, |t| t.apply(p));
+                            pos.get(k)
+                                .and_then(|t| t.as_ref())
+                                .map_or(p, |t| t.apply(p))
                         })
                         .collect();
                     bars.push(b);
                 }
-                self.rebar.push((id, ri.int("m_barTypeId").unwrap_or(-1), bars));
+                self.rebar
+                    .push((id, ri.int("m_barTypeId").unwrap_or(-1), bars));
             }
             "RebarSystem" => {
                 for (li, l) in tr.root.list("m_layers").iter().enumerate() {
                     let bt = l.int("m_barType").unwrap_or(-1);
-                    let trf: Vec<Option<Trf>> = l.list("m_individualLineTrf").iter().map(Trf::from).collect();
+                    let trf: Vec<Option<Trf>> = l
+                        .list("m_individualLineTrf")
+                        .iter()
+                        .map(Trf::from)
+                        .collect();
                     let curves = match l.get("m_uncutCurves") {
                         Some(G::Ps(v)) => v.clone(),
                         _ => vec![],
@@ -1629,6 +2495,13 @@ impl Shapes {
                         Some(G::Ps(v)) => v.clone(),
                         _ => vec![],
                     };
+                    if insts.is_empty() && lines.is_empty() {
+                        let n = l.int("m_numberOfLines").unwrap_or(1).max(1);
+                        self.system_sets.insert(
+                            (id, li as i64, 0),
+                            (bt, n, l.float("m_spacing").unwrap_or(0.0)),
+                        );
+                    }
                     let mut at = 0usize;
                     for (k, inst) in insts.iter().enumerate() {
                         let n = if insts.len() == 1 {
@@ -1639,35 +2512,109 @@ impl Shapes {
                                 .unwrap_or(0)
                                 .max(0) as usize
                         };
+                        if lines.is_empty() {
+                            // no stored bar lines (older files): the set rebuilt from its box later
+                            let o = inst.and_then(|i| tr.objs.get(i));
+                            let n = o
+                                .and_then(|o| o.int("m_numberOfBarPositions"))
+                                .or_else(|| l.int("m_numberOfLines"))
+                                .unwrap_or(1)
+                                .max(1);
+                            let sp = l
+                                .float("m_spacing")
+                                .or_else(|| o.and_then(|o| o.float("m_maxSpacing")))
+                                .unwrap_or(0.0);
+                            self.system_sets
+                                .insert((id, li as i64, k as i64), (bt, n, sp));
+                            continue;
+                        }
                         let end = (at + n).min(lines.len());
-                        let group: Vec<Vec<V3>> = lines[at..end].iter().flatten().cloned().collect();
+                        let group: Vec<Vec<V3>> =
+                            lines[at..end].iter().flatten().cloned().collect();
                         at = end;
                         if !group.is_empty() {
-                            self.system_bars.insert((id, li as i64, k as i64), (bt, group));
+                            self.system_bars
+                                .insert((id, li as i64, k as i64), (bt, group));
                         }
                     }
                 }
             }
             "RebarInSystem" => {
                 if let (Some(sys), Some(key)) = (tr.root.int("m_systemId"), tr.root.obj("m_key")) {
-                    self.bars_in_system.push((id, sys, key.int("m_layer").unwrap_or(0), key.int("m_index").unwrap_or(0)));
+                    self.bars_in_system.push((
+                        id,
+                        sys,
+                        key.int("m_layer").unwrap_or(0),
+                        key.int("m_index").unwrap_or(0),
+                    ));
                 }
             }
             "SiteSurface" => {
                 // the surveyed points of the latest triangulation of each driver
                 let mut m = Mesh::default();
-                for d in tr.root.ptrs("m_drivers").iter().filter_map(|&i| tr.objs.get(i)) {
-                    let Some(mm) = d.ptrs("m_pMementos").last().and_then(|&i| tr.objs.get(i)) else { continue };
-                    let pts: Vec<V3> = mm.list("m_fixedVerts").iter().filter_map(|v| v3(v.fs("m_loc"))).collect();
-                    let bnd: Vec<usize> = mm.list("m_boundary").first().map(|b| match b.get("m_boundary") {
-                        Some(G::Is(v)) => v.iter().filter_map(|&k| usize::try_from(k).ok()).collect(),
-                        _ => vec![],
-                    }).unwrap_or_default();
+                for d in tr
+                    .root
+                    .ptrs("m_drivers")
+                    .iter()
+                    .filter_map(|&i| tr.objs.get(i))
+                {
+                    let Some(mm) = d.ptrs("m_pMementos").last().and_then(|&i| tr.objs.get(i))
+                    else {
+                        continue;
+                    };
+                    let pts: Vec<V3> = mm
+                        .list("m_fixedVerts")
+                        .iter()
+                        .filter_map(|v| {
+                            v3(v.fs("m_loc"))
+                                .or_else(|| v.obj("m_locXYZ").and_then(|o| v3(o.fs("m_xyz"))))
+                        })
+                        .collect();
+                    let bnd: Vec<usize> = mm
+                        .list("m_boundary")
+                        .first()
+                        .map(|b| match b.get("m_boundary") {
+                            Some(G::Is(v)) => {
+                                v.iter().filter_map(|&k| usize::try_from(k).ok()).collect()
+                            }
+                            _ => vec![],
+                        })
+                        .unwrap_or_default();
                     if let Some(t) = terrain(&pts, &bnd) {
                         let base = m.pos.len() as u32;
                         m.pos.extend(t.pos);
-                        m.tri.extend(t.tri.iter().map(|x| [x[0] + base, x[1] + base, x[2] + base]));
+                        m.tri.extend(
+                            t.tri
+                                .iter()
+                                .map(|x| [x[0] + base, x[1] + base, x[2] + base]),
+                        );
                     }
+                }
+                if m.tri.is_empty() {
+                    // the triangulation not read (a faceted topology of another layout): the
+                    // surface rebuilt from its cached contour lines (they run to its edge)
+                    let mut pts: Vec<V3> = tr
+                        .objs
+                        .iter()
+                        .filter(|o| s.name(o.tag) == "SurfaceContourData")
+                        .flat_map(|o| o.list("m_arr"))
+                        .flat_map(|c| c.list("m_arrXYZ"))
+                        .filter_map(|q| v3(q.fs("m_xyz")))
+                        .collect();
+                    if pts.len() > 20000 {
+                        let k = pts.len().div_ceil(20000);
+                        pts = pts.into_iter().step_by(k).collect();
+                    }
+                    if let Some(t) = terrain(&pts, &[]) {
+                        m = t;
+                    }
+                }
+                if m.tri.is_empty() && std::env::var_os("RVT_FORM_DEBUG").is_some() {
+                    eprintln!(
+                        "SITE FAIL {id} failed {:?} objs {:?}",
+                        tr.failed.map(|x| s.name(x)),
+                        tr.objs.iter().map(|o| s.name(o.tag)).collect::<Vec<_>>()
+                    );
                 }
                 if !m.tri.is_empty() {
                     self.breps.push((id, m));
@@ -1679,14 +2626,103 @@ impl Shapes {
                 }
             }
             "TopRail" | "HandRail" => {
-                if let Some(p) = tr.objs.iter().find(|o| s.name(o.tag) == "Path3dRailPathProvider").and_then(|o| o.int("m_path3dId")) {
+                if let Some(p) = tr
+                    .objs
+                    .iter()
+                    .find(|o| s.name(o.tag) == "Path3dRailPathProvider")
+                    .and_then(|o| o.int("m_path3dId"))
+                {
                     self.rails.push((id, p));
                 }
             }
             "BaseRailing" => {
                 if let Some(sk) = tr.root.int("m_sketchId") {
-                    let rails = tr.root.list("m_continuousRailIds").iter().filter_map(|r| r.int("second")).collect();
+                    let rails = tr
+                        .root
+                        .list("m_continuousRailIds")
+                        .iter()
+                        .filter_map(|r| r.int("second"))
+                        .collect();
                     self.railings.push((id, sk, rails));
+                }
+            }
+            "FormElem" => {
+                // a conceptual form: its edge lines; two equal parallel loops offset along
+                // their normal are an extrusion
+                if not_in_family(tr, s) {
+                    return;
+                }
+                let curves: Vec<Vec<V3>> = tr
+                    .objs
+                    .iter()
+                    .filter(|o| {
+                        s.name(o.tag) == "GLine"
+                            && o.obj("m_GInfo")
+                                .and_then(|g| g.int("m_categoryId"))
+                                .is_some_and(|c| c != -1)
+                    })
+                    .map(|o| curve_points(o, s))
+                    .filter(|p| p.len() == 2)
+                    .collect();
+                let (closed, _) = loops_from(&curves);
+                if let [a, b] = closed.as_slice() {
+                    let strip = |l: &Vec<V3>| -> Vec<V3> {
+                        let mut l = l.clone();
+                        if l.len() > 3
+                            && dot(sub(l[0], *l.last().unwrap()), sub(l[0], *l.last().unwrap()))
+                                < 1e-10
+                        {
+                            l.pop();
+                        }
+                        l
+                    };
+                    let (a, b) = (strip(a), strip(b));
+                    let cen = |l: &[V3]| {
+                        mul(
+                            l.iter().fold([0.0; 3], |c, &p| add(c, p)),
+                            1.0 / l.len() as f64,
+                        )
+                    };
+                    let d = sub(cen(&b), cen(&a));
+                    let mut nn = [0.0; 3];
+                    for i in 0..a.len() {
+                        nn = add(nn, cross(a[i], a[(i + 1) % a.len()]));
+                    }
+                    let same = a.len() == b.len()
+                        && a.iter().all(|&p| {
+                            b.iter()
+                                .any(|&q| dot(sub(add(p, d), q), sub(add(p, d), q)) < 1e-6)
+                        });
+                    if let (true, Some(nz)) = (same && a.len() >= 3, norm(nn)) {
+                        let h = dot(d, nz);
+                        if h.abs() > 1e-6 && dot(d, d).sqrt() - h.abs() < 1e-6 {
+                            self.forms.push(Form {
+                                id,
+                                fam: tr.root.int("m_famId").unwrap_or(-1),
+                                vis: vis_flags(tr),
+                                sketch: -1,
+                                loops: vec![a],
+                                start: 0.0,
+                                end: h,
+                            });
+                        }
+                    }
+                }
+            }
+            "FilledRegion" => {
+                // a family's plan symbol: kept as a stand-in for families with no solids
+                if let (Some(fam), Some(sk)) = (
+                    tr.root.int("m_famId").filter(|&f| f > 0),
+                    tr.root.int("m_sketchId"),
+                ) {
+                    self.regions.push((id, fam, sk));
+                }
+            }
+            "StairsSupport" => {
+                if let Some(m) = stored_brep(s, tr) {
+                    self.breps.push((id, m));
+                } else if let Some(m) = stringer(s, tr) {
+                    self.stringers.push((id, m));
                 }
             }
             "PartMaker" => {
@@ -1700,7 +2736,13 @@ impl Shapes {
                 }
             }
             "StairsRun" | "StairsLanding" | "ProfileRoof" => {
-                if let Some(g) = tr.objs.iter().find(|o| s.name(o.tag) == "StairsElementMembership").and_then(|o| o.int("m_groupId")).filter(|&g| g > 0) {
+                if let Some(g) = tr
+                    .objs
+                    .iter()
+                    .find(|o| s.name(o.tag) == "StairsElementMembership")
+                    .and_then(|o| o.int("m_groupId"))
+                    .filter(|&g| g > 0)
+                {
                     self.stair_parts.push((id, g));
                 }
                 if let Some(m) = stored_brep(s, tr) {
@@ -1708,8 +2750,12 @@ impl Shapes {
                 }
             }
             "SWall" => {
-                let Some(dr) = tr.objs.iter().find(|o| s.name(o.tag) == "VWallDriver") else { return };
-                let Some(c) = dr.ptr("m_pCrv").and_then(|i| tr.objs.get(i)) else { return };
+                let Some(dr) = tr.objs.iter().find(|o| s.name(o.tag) == "VWallDriver") else {
+                    return;
+                };
+                let Some(c) = dr.ptr("m_pCrv").and_then(|i| tr.objs.get(i)) else {
+                    return;
+                };
                 if s.name(c.tag) != "GLine" {
                     // curved wall: its location curve swept by the wall's thickness (twice the
                     // key reference offset, about the curve) between its bottom and top faces
@@ -1719,11 +2765,14 @@ impl Shapes {
                         _ => 0.25,
                     };
                     if path.len() >= 2 {
-                        self.curved_walls.push((id, path, half, planes_of(&tr, "m_pRefFaces")));
+                        self.curved_walls
+                            .push((id, path, half, planes_of(&tr, "m_pRefFaces")));
                     }
                     return;
                 }
-                let (Some(o), Some(dv)) = (v3(c.fs("m_origin")), v3(c.fs("m_dirVec"))) else { return };
+                let (Some(o), Some(dv)) = (v3(c.fs("m_origin")), v3(c.fs("m_dirVec"))) else {
+                    return;
+                };
                 let ends = match c.fs("m_endParams") {
                     Some([a, b, ..]) if a.is_finite() && b.is_finite() => (*a, *b),
                     _ => return,
@@ -1736,44 +2785,94 @@ impl Shapes {
                     .filter_map(|o| o.int("m_instId"))
                     .filter(|&i| i > 0)
                     .collect();
-                let curtain = tr.objs.iter().any(|o| s.name(o.tag).contains("Curtain") || s.name(o.tag).contains("Mullion"));
-                self.walls.push(Wall { id, o, d: dv, ends, loops, planes: planes_of(&tr, "m_pRefFaces"), cutters, curtain });
+                let curtain = tr.objs.iter().any(|o| {
+                    s.name(o.tag).contains("Curtain") || s.name(o.tag).contains("Mullion")
+                });
+                self.walls.push(Wall {
+                    id,
+                    o,
+                    d: dv,
+                    ends,
+                    loops,
+                    planes: planes_of(&tr, "m_pRefFaces"),
+                    cutters,
+                    curtain,
+                });
             }
             "Floor" | "Ceiling" | "BuildingPad" | "RoofSoffit" | "Toposolid" => {
                 let loops = helper_loops(&tr, s, "ExtrusionHelper");
                 let range = match (tr.root.get("m_bottom"), tr.root.get("m_top")) {
-                    (Some(G::F(b)), Some(G::F(t))) if b.is_finite() && t.is_finite() && t - b > 1e-6 && (t - b) < 1e3 => Some((*b, *t)),
+                    (Some(G::F(b)), Some(G::F(t)))
+                        if b.is_finite() && t.is_finite() && t - b > 1e-6 && (t - b) < 1e3 =>
+                    {
+                        Some((*b, *t))
+                    }
                     _ => None,
                 };
                 if !loops.is_empty() {
-                    self.slabs.push(Slab { id, loops, range, planes: planes_of(&tr, "m_pRefFaces") });
+                    self.slabs.push(Slab {
+                        id,
+                        loops,
+                        range,
+                        planes: planes_of(&tr, "m_pRefFaces"),
+                    });
                 }
             }
             "ExtrusionElem" => {
                 if tr.root.int("m_cutting").unwrap_or(0) != 0 || not_in_family(tr, s) {
                     return;
                 }
-                let Some(h) = tr.objs.iter().find(|o| s.name(o.tag) == "ExtrusionElemExtrusionHelper") else { return };
+                let Some(h) = tr
+                    .objs
+                    .iter()
+                    .find(|o| s.name(o.tag) == "ExtrusionElemExtrusionHelper")
+                else {
+                    return;
+                };
                 let loops = helper_loops(&tr, s, "ExtrusionElemExtrusionHelper");
                 if loops.is_empty() {
                     return;
                 }
                 let start = param(&tr, -1001800).unwrap_or(0.0);
                 let end = param(&tr, -1001801).unwrap_or(1.0);
-                self.forms.push(Form { id, fam: tr.root.int("m_famId").unwrap_or(-1), vis: vis_flags(tr), sketch: h.int("m_sketchId").unwrap_or(-1), loops, start, end });
+                self.forms.push(Form {
+                    id,
+                    fam: tr.root.int("m_famId").unwrap_or(-1),
+                    vis: vis_flags(tr),
+                    sketch: h.int("m_sketchId").unwrap_or(-1),
+                    loops,
+                    start,
+                    end,
+                });
             }
             "VarSketch" | "Sketch" => {
                 let mut plane = None;
                 if let Some(p) = tr.root.ptr("m_pPlane").and_then(|i| tr.objs.get(i)) {
-                    if let (Some(o), Some(x), Some(y)) = (v3(p.fs("m_origin")), v3(p.fs("m_xVec")), v3(p.fs("m_yVec"))) {
+                    if let (Some(o), Some(x), Some(y)) =
+                        (v3(p.fs("m_origin")), v3(p.fs("m_xVec")), v3(p.fs("m_yVec")))
+                    {
                         self.sketch_planes.insert(id, (o, x, y));
                         plane = Some((o, x, y));
                     }
                 }
                 let user = tr.root.int("m_userId").unwrap_or(-1);
                 if user > 0 {
-                    let curves = tr.root.ptrs("m_absorbedCurves").iter().filter_map(|&i| tr.objs.get(i)).map(|c| curve_points(c, s)).filter(|p| p.len() >= 2).collect();
-                    self.sketches.insert(id, SketchData { user, plane, curves });
+                    let curves = tr
+                        .root
+                        .ptrs("m_absorbedCurves")
+                        .iter()
+                        .filter_map(|&i| tr.objs.get(i))
+                        .map(|c| curve_points(c, s))
+                        .filter(|p| p.len() >= 2)
+                        .collect();
+                    self.sketches.insert(
+                        id,
+                        SketchData {
+                            user,
+                            plane,
+                            curves,
+                        },
+                    );
                 }
             }
             "Path3d" => {
@@ -1790,7 +2889,14 @@ impl Shapes {
                     .filter(|p| p.len() >= 2)
                     .collect();
                 if user > 0 && !curves.is_empty() {
-                    self.sketches.insert(id, SketchData { user, plane: None, curves });
+                    self.sketches.insert(
+                        id,
+                        SketchData {
+                            user,
+                            plane: None,
+                            curves,
+                        },
+                    );
                 }
             }
             "RevolutionElem" | "SweepElem" | "BlendElem" => {
@@ -1798,28 +2904,66 @@ impl Shapes {
                     return;
                 }
                 let fam = tr.root.int("m_famId").unwrap_or(-1);
-                let kind = match cls {
-                    "RevolutionElem" => Kind::Revolution { sketch: tr.root.int("m_sketchId").unwrap_or(-1), a0: param(tr, -1001802).unwrap_or(0.0), a1: param(tr, -1001803).unwrap_or(std::f64::consts::TAU) },
-                    "SweepElem" => {
-                        let Some(pd) = tr.root.obj("m_profileData").or_else(|| tr.root.ptr("m_profileData").and_then(|i| tr.objs.get(i))) else { return };
-                        Kind::Sweep { profile: pd.int("m_profileSketchId").unwrap_or(-1), path: tr.root.int("m_pathSketchId").filter(|&v| v > 0).or_else(|| tr.root.int("m_path3dId")).unwrap_or(-1) }
-                    }
-                    _ => Kind::Blend { first: param(tr, -1001804).unwrap_or(0.0), second: param(tr, -1001805).unwrap_or(1.0) },
-                };
-                self.forms2.push(Form2 { id, fam, vis: vis_flags(tr), kind });
+                let kind =
+                    match cls {
+                        "RevolutionElem" => Kind::Revolution {
+                            sketch: tr.root.int("m_sketchId").unwrap_or(-1),
+                            a0: param(tr, -1001802).unwrap_or(0.0),
+                            a1: param(tr, -1001803).unwrap_or(std::f64::consts::TAU),
+                        },
+                        "SweepElem" => {
+                            let Some(pd) = tr.root.obj("m_profileData").or_else(|| {
+                                tr.root.ptr("m_profileData").and_then(|i| tr.objs.get(i))
+                            }) else {
+                                return;
+                            };
+                            Kind::Sweep {
+                                profile: pd.int("m_profileSketchId").unwrap_or(-1),
+                                path: tr
+                                    .root
+                                    .int("m_pathSketchId")
+                                    .filter(|&v| v > 0)
+                                    .or_else(|| tr.root.int("m_path3dId"))
+                                    .unwrap_or(-1),
+                                sym: pd.int("m_profileFamSymId").unwrap_or(-1),
+                                off: [
+                                    pd.float("m_xOffset").unwrap_or(0.0),
+                                    pd.float("m_yOffset").unwrap_or(0.0),
+                                    pd.float("m_angle").unwrap_or(0.0),
+                                ],
+                                flip: pd.int("m_flippedX").unwrap_or(0) != 0,
+                            }
+                        }
+                        _ => Kind::Blend {
+                            first: param(tr, -1001804).unwrap_or(0.0),
+                            second: param(tr, -1001805).unwrap_or(1.0),
+                        },
+                    };
+                self.forms2.push(Form2 {
+                    id,
+                    fam,
+                    vis: vis_flags(tr),
+                    kind,
+                });
             }
             "Family" => {
-                let guid = tr.root.ptr("m_oFamDoc").and_then(|i| tr.objs.get(i)).and_then(|o| {
-                    let g = o.get("m_contentDocGUID")?;
-                    let g = match g {
-                        G::O(x) => x.get("m_guid")?,
-                        _ => g,
-                    };
-                    match g {
-                        G::Raw(b) if b.len() == 16 => Some(<[u8; 16]>::try_from(&b[..]).unwrap()),
-                        _ => None,
-                    }
-                });
+                let guid = tr
+                    .root
+                    .ptr("m_oFamDoc")
+                    .and_then(|i| tr.objs.get(i))
+                    .and_then(|o| {
+                        let g = o.get("m_contentDocGUID")?;
+                        let g = match g {
+                            G::O(x) => x.get("m_guid")?,
+                            _ => g,
+                        };
+                        match g {
+                            G::Raw(b) if b.len() == 16 => {
+                                Some(<[u8; 16]>::try_from(&b[..]).unwrap())
+                            }
+                            _ => None,
+                        }
+                    });
                 if let Some(g) = guid {
                     self.fam_guid.insert(id, g);
                 }
@@ -1830,7 +2974,13 @@ impl Shapes {
                         .iter()
                         .filter_map(|p| match p.get("first")? {
                             G::I(v) => Some(*v),
-                            G::O(x) => x.fields.iter().find_map(|(_, g)| if let G::I(v) = g { Some(*v) } else { None }),
+                            G::O(x) => x.fields.iter().find_map(|(_, g)| {
+                                if let G::I(v) = g {
+                                    Some(*v)
+                                } else {
+                                    None
+                                }
+                            }),
                             _ => None,
                         })
                         .filter(|&v| v > 0)
@@ -1842,42 +2992,150 @@ impl Shapes {
                 }
             }
             "FamilyInstance" => {
-                let Some(ii) = tr.root.ptr("m_pInstanceInfo").and_then(|i| tr.objs.get(i)) else { return };
-                let Some(t) = ii.obj("m_Trf").and_then(Trf::from) else { return };
+                let Some(ii) = tr.root.ptr("m_pInstanceInfo").and_then(|i| tr.objs.get(i)) else {
+                    return;
+                };
+                let Some(t) = ii.obj("m_Trf").and_then(Trf::from) else {
+                    return;
+                };
                 let sym = ii.int("m_symbolId").unwrap_or(-1);
-                self.instances.push((id, sym, tr.root.int("m_famId").unwrap_or(-1), t));
+                self.instances
+                    .push((id, sym, tr.root.int("m_famId").unwrap_or(-1), t));
                 // geometry stored in the instance itself (masses, copied geometry)
-                if let Some(g) = tr.objs.iter().position(|o| s.name(o.tag) == "Geometry" && !o.ptrs("m_pFaces").is_empty()) {
+                if let Some(g) = tr
+                    .objs
+                    .iter()
+                    .position(|o| s.name(o.tag) == "Geometry" && !o.ptrs("m_pFaces").is_empty())
+                {
                     if let Some(m) = brep_of(s, tr, g) {
                         self.own_geom.push((id, m));
                     }
                 }
-                if tr.objs.iter().any(|o| matches!(s.name(o.tag), "MullionFamRef" | "CurtainCellFamRef")) {
+                if tr
+                    .objs
+                    .iter()
+                    .any(|o| matches!(s.name(o.tag), "MullionFamRef" | "CurtainCellFamRef"))
+                {
                     self.curtain.push((id, t.clone()));
                 }
                 // beams and braces: the location line, for a box along it when the family solids are not found
-                let crv = tr.root.ptr("m_pCurveDriver").and_then(|i| tr.objs.get(i)).and_then(|d| {
-                    let sb = d.fs("m_setbacks").map(|s| s.to_vec()).unwrap_or_default();
-                    d.ptr("m_pCrv").and_then(|i| tr.objs.get(i)).map(|c| (c, sb))
-                });
+                let crv = tr
+                    .root
+                    .ptr("m_pCurveDriver")
+                    .and_then(|i| tr.objs.get(i))
+                    .and_then(|d| {
+                        let sb = d.fs("m_setbacks").map(|s| s.to_vec()).unwrap_or_default();
+                        d.ptr("m_pCrv")
+                            .and_then(|i| tr.objs.get(i))
+                            .map(|c| (c, sb))
+                    });
                 if let Some((c, sb)) = crv {
-                    if let (Some(o), Some(dv), Some([t0, t1, ..])) = (v3(c.fs("m_origin")), v3(c.fs("m_dirVec")), c.fs("m_endParams")) {
-                        let (s0, s1) = (sb.first().copied().unwrap_or(0.0).max(0.0), sb.get(1).copied().unwrap_or(0.0).max(0.0));
+                    if let (Some(o), Some(dv), Some([t0, t1, ..])) = (
+                        v3(c.fs("m_origin")),
+                        v3(c.fs("m_dirVec")),
+                        c.fs("m_endParams"),
+                    ) {
+                        let (s0, s1) = (
+                            sb.first().copied().unwrap_or(0.0).max(0.0),
+                            sb.get(1).copied().unwrap_or(0.0).max(0.0),
+                        );
                         let (a, b) = (t0 + s0, t1 - s1);
                         if b - a > 1e-3 {
-                            self.framing.push((id, add(o, mul(dv, a)), add(o, mul(dv, b))));
+                            self.framing
+                                .push((id, add(o, mul(dv, a)), add(o, mul(dv, b))));
                         }
                     }
                 }
             }
+            "SysMullionFamSym" => {
+                // centre line and section of a system mullion (rectangular or circular)
+                let Some(r) = tr.objs.iter().find(|o| s.name(o.tag) == "MullionSymFamRef") else {
+                    return;
+                };
+                let Some(c) = r.ptr("m_pCurve").and_then(|k| tr.objs.get(k)) else {
+                    return;
+                };
+                let line = curve_points(c, s);
+                let Some(dd) = v3(r.fs("m_pathNorm")).and_then(norm) else {
+                    return;
+                };
+                let pv = tr
+                    .root
+                    .ptr("m_pParamValueSetDouble")
+                    .and_then(|k| tr.objs.get(k));
+                let get = |pid: i64| {
+                    pv.and_then(|o| {
+                        o.list("m_paramSet")
+                            .iter()
+                            .find(|p| p.int("m_paramId") == Some(pid))
+                            .and_then(|p| match p.get("m_value") {
+                                Some(G::F(v)) if v.is_finite() => Some(*v),
+                                _ => None,
+                            })
+                    })
+                };
+                let prof = tr
+                    .root
+                    .ptr("m_sysProfile")
+                    .and_then(|k| tr.objs.get(k))
+                    .map(|o| s.name(o.tag).to_string())
+                    .unwrap_or_default();
+                let round = prof.contains("Circ");
+                // MULLION_WIDTH1, MULLION_WIDTH2, MULLION_THICK, MULLION_OFFSET
+                // (circular: MULLION_RADIUS for both)
+                let (w1, w2, depth) = if round {
+                    let r = get(-1007302).or(get(-1007300)).unwrap_or(0.1);
+                    (r, r, 2.0 * r)
+                } else {
+                    (
+                        get(-1007300).unwrap_or(0.08),
+                        get(-1007301).unwrap_or(0.08),
+                        get(-1007304).unwrap_or(0.3),
+                    )
+                };
+                if line.len() >= 2 && w1 + w2 > 1e-4 && depth > 1e-4 {
+                    self.mullion_syms.insert(
+                        id,
+                        MullionSym {
+                            line,
+                            depth_dir: dd,
+                            w1,
+                            w2,
+                            depth,
+                            offset: get(-1007351).unwrap_or(0.0),
+                            round,
+                        },
+                    );
+                }
+            }
             "FamilySymbol" => {
-                self.symbols.insert(id, (tr.root.int("m_famId").unwrap_or(-1), tr.root.int("m_familyId").unwrap_or(-1)));
+                self.symbols.insert(
+                    id,
+                    (
+                        tr.root.int("m_famId").unwrap_or(-1),
+                        tr.root.int("m_familyId").unwrap_or(-1),
+                    ),
+                );
+                // a profile family's symbol keeps its profile as curve loops
+                let loops: Vec<Vec<V3>> = tr
+                    .objs
+                    .iter()
+                    .filter(|o| s.name(o.tag) == "CurveLoop")
+                    .map(|l| loop_points(l, tr, s))
+                    .filter(|l| l.len() >= 3 && l.iter().all(|p| p[2].abs() < 1e-6))
+                    .collect();
+                if !loops.is_empty() {
+                    self.sym_profile.insert(id, loops);
+                }
                 if let Some(ps) = tr.root.ptr("m_pParams").and_then(|k| tr.objs.get(k)) {
                     let get = |pid: i64| {
-                        ps.list("m_params").iter().find(|p| p.int("m_paramId") == Some(pid)).and_then(|p| match p.get("m_value") {
-                            Some(G::F(v)) if v.is_finite() && *v > 0.05 => Some(*v),
-                            _ => None,
-                        })
+                        ps.list("m_params")
+                            .iter()
+                            .find(|p| p.int("m_paramId") == Some(pid))
+                            .and_then(|p| match p.get("m_value") {
+                                Some(G::F(v)) if v.is_finite() && *v > 0.05 => Some(*v),
+                                _ => None,
+                            })
                     };
                     // FAMILY_WIDTH_PARAM, FAMILY_HEIGHT_PARAM
                     if let (Some(w), Some(h)) = (get(-1001301), get(-1001300)) {
@@ -1885,10 +3143,17 @@ impl Shapes {
                     }
                     // a rectangular footing (STRUCTURAL_FOUNDATION_WIDTH and _LENGTH): its
                     // outline is its solid when the outline has those sizes
-                    if let (Some(w), Some(l), Some([x0, y0, z0, x1, y1, z1])) = (get(-1001568), get(-1001569), tr.root.obj("m_outline").and_then(|o| o.fs("m_minmax"))) {
+                    if let (Some(w), Some(l), Some([x0, y0, z0, x1, y1, z1])) = (
+                        get(-1001568),
+                        get(-1001569),
+                        tr.root.obj("m_outline").and_then(|o| o.fs("m_minmax")),
+                    ) {
                         let ok = |a: f64, b: f64| (a - b).abs() < 0.01;
-                        if (ok(x1 - x0, w) && ok(y1 - y0, l) || ok(x1 - x0, l) && ok(y1 - y0, w)) && z1 - z0 > 0.01 {
-                            self.footing_outline.insert(id, ([*x0, *y0, *z0], [*x1, *y1, *z1]));
+                        if (ok(x1 - x0, w) && ok(y1 - y0, l) || ok(x1 - x0, l) && ok(y1 - y0, w))
+                            && z1 - z0 > 0.01
+                        {
+                            self.footing_outline
+                                .insert(id, ([*x0, *y0, *z0], [*x1, *y1, *z1]));
                         }
                     }
                 }
@@ -1899,17 +3164,32 @@ impl Shapes {
 
     /// Builds the meshes, by element id. `boxes`: the element boxes (metres) by id, for the
     /// openings cut in the walls and to check the placed family solids.
-    pub fn finish(self, boxes: &HashMap<i64, ([f64; 3], [f64; 3])>, family_doc: bool) -> HashMap<i64, Mesh> {
+    pub fn finish(
+        self,
+        boxes: &HashMap<i64, ([f64; 3], [f64; 3])>,
+        family_doc: bool,
+    ) -> HashMap<i64, Mesh> {
         let mut out: HashMap<i64, Mesh> = HashMap::new();
         let t0 = std::time::Instant::now();
         if std::env::var_os("RVT_SHAPE_DEBUG").is_some() {
-            eprintln!("walls {} slabs {} forms {} sketches {} instances {} symbols {}", self.walls.len(), self.slabs.len(), self.forms.len(), self.sketch_planes.len(), self.instances.len(), self.symbols.len());
+            eprintln!(
+                "walls {} slabs {} forms {} sketches {} instances {} symbols {}",
+                self.walls.len(),
+                self.slabs.len(),
+                self.forms.len(),
+                self.sketch_planes.len(),
+                self.instances.len(),
+                self.symbols.len()
+            );
         }
         for (id, m) in &self.breps {
             let mut m = m.clone();
             // a flat sheet (a roof's top face) in a thicker box: thickened down to the box
             if let (Some((lo, hi)), Some((blo, bhi))) = (m.bbox(), boxes.get(id)) {
-                if hi[2] - lo[2] < 0.01 && bhi[2] - blo[2] > 0.02 && (hi[2] as f64 - bhi[2]).abs() < 0.05 {
+                if hi[2] - lo[2] < 0.01
+                    && bhi[2] - blo[2] > 0.02
+                    && (hi[2] as f64 - bhi[2]).abs() < 0.05
+                {
                     thicken_down(&mut m, blo[2] as f32);
                 }
             }
@@ -1927,10 +3207,19 @@ impl Shapes {
         }
         for (id, path, half, planes) in &self.curved_walls {
             // bottom and top: the horizontal reference faces, else the element box
-            let zs: Vec<f64> = planes.iter().filter(|(_, x, y, _)| norm(cross(*x, *y)).is_some_and(|n| n[2].abs() > 0.99)).map(|(o, ..)| o[2]).collect();
-            let (mut z0, mut z1) = (zs.iter().copied().fold(f64::INFINITY, f64::min), zs.iter().copied().fold(f64::NEG_INFINITY, f64::max));
+            let zs: Vec<f64> = planes
+                .iter()
+                .filter(|(_, x, y, _)| norm(cross(*x, *y)).is_some_and(|n| n[2].abs() > 0.99))
+                .map(|(o, ..)| o[2])
+                .collect();
+            let (mut z0, mut z1) = (
+                zs.iter().copied().fold(f64::INFINITY, f64::min),
+                zs.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+            );
             if !(z1 - z0 > 1e-3) {
-                let Some((lo, hi)) = boxes.get(id) else { continue };
+                let Some((lo, hi)) = boxes.get(id) else {
+                    continue;
+                };
                 (z0, z1) = (lo[2] / FEET, hi[2] / FEET);
             }
             if let Some(m) = swept_wall(path, *half, z0, z1) {
@@ -1944,7 +3233,11 @@ impl Shapes {
                 let e = stairs.entry(g).or_default();
                 let base = e.pos.len() as u32;
                 e.pos.extend(&m.pos);
-                e.tri.extend(m.tri.iter().map(|t| [t[0] + base, t[1] + base, t[2] + base]));
+                e.tri.extend(
+                    m.tri
+                        .iter()
+                        .map(|t| [t[0] + base, t[1] + base, t[2] + base]),
+                );
             }
         }
         for (g, m) in stairs {
@@ -1973,6 +3266,63 @@ impl Shapes {
                 }
             }
         }
+        // rebar sets without stored centre lines: parallel bars (or closed ties) laid out in
+        // the element's box at the set's count and spacing
+        let sets = self
+            .rebar_sets
+            .iter()
+            .map(|&(id, bt, n, sp)| (id, bt, n, sp))
+            .chain(
+                self.bars_in_system
+                    .iter()
+                    .filter_map(|&(id, sys, layer, k)| {
+                        if self.system_bars.contains_key(&(sys, layer, k)) {
+                            return None;
+                        }
+                        // a set of its own, else one bar (bars cut by an area's boundary are one per element)
+                        self.system_sets
+                            .get(&(sys, layer, k))
+                            .map(|&(bt, n, sp)| (id, bt, n, sp))
+                            .or_else(|| {
+                                let bt = self
+                                    .system_sets
+                                    .iter()
+                                    .find(|(key, _)| key.0 == sys && key.1 == layer)
+                                    .or_else(|| {
+                                        self.system_sets.iter().find(|(key, _)| key.0 == sys)
+                                    })
+                                    .map_or(-1, |(_, v)| v.0);
+                                Some((id, bt, 1, 0.0))
+                            })
+                    }),
+            );
+        let sets: Vec<_> = sets.collect();
+        for (id, bt, n, sp) in sets {
+            if out.contains_key(&id) {
+                continue;
+            }
+            let Some(&(lo, hi)) = boxes.get(&id) else {
+                continue;
+            };
+            let r = diam(bt) / 2.0;
+            let mut m = Mesh::default();
+            for b in box_bars(mul(lo, 1.0 / FEET), mul(hi, 1.0 / FEET), n, sp, r) {
+                tube(&mut m, &b, r);
+            }
+            if !m.tri.is_empty() {
+                out.insert(id, m);
+            }
+        }
+        for (id, m) in &self.stringers {
+            let mut m = m.clone();
+            // trimmed at the floor and landing it bears on: the box's bottom
+            if let Some((lo, _)) = boxes.get(id) {
+                for p in &mut m.pos {
+                    p[2] = p[2].max(lo[2] as f32);
+                }
+            }
+            out.entry(*id).or_insert(m);
+        }
         for sl in &self.slabs {
             if let Some(m) = slab(sl) {
                 out.insert(sl.id, m);
@@ -1980,12 +3330,23 @@ impl Shapes {
         }
         if std::env::var_os("RVT_SHAPE_DEBUG").is_some() {
             let mut h: HashMap<i64, usize> = HashMap::new();
-            for v in self.forms.iter().map(|f| f.vis).chain(self.forms2.iter().map(|f| f.vis)) {
+            for v in self
+                .forms
+                .iter()
+                .map(|f| f.vis)
+                .chain(self.forms2.iter().map(|f| f.vis))
+            {
                 *h.entry(v).or_default() += 1;
             }
             let mut h: Vec<_> = h.into_iter().collect();
             h.sort_by_key(|x| std::cmp::Reverse(x.1));
-            eprintln!("form visibility flags {:?}", &h[..h.len().min(16)].iter().map(|(v, n)| format!("{v:#x}:{n}")).collect::<Vec<_>>());
+            eprintln!(
+                "form visibility flags {:?}",
+                &h[..h.len().min(16)]
+                    .iter()
+                    .map(|(v, n)| format!("{v:#x}:{n}"))
+                    .collect::<Vec<_>>()
+            );
         }
         // family solids, in their family's coordinates
         let mut by_fam: HashMap<i64, Vec<Mesh>> = HashMap::new();
@@ -2001,13 +3362,31 @@ impl Shapes {
         }
         for f in self.forms2.iter() {
             let m = match f.kind {
-                Kind::Revolution { sketch, a0, a1 } => self.sketches.get(&sketch).and_then(|sk| revolution(sk, a0, a1)),
-                Kind::Sweep { profile, path } => match (self.sketches.get(&profile), self.sketches.get(&path)) {
+                Kind::Revolution { sketch, a0, a1 } => self
+                    .sketches
+                    .get(&sketch)
+                    .and_then(|sk| revolution(sk, a0, a1)),
+                Kind::Sweep {
+                    profile,
+                    path,
+                    sym,
+                    off,
+                    flip,
+                } => match (self.sketches.get(&profile), self.sketches.get(&path)) {
                     (Some(a), Some(b)) => sweep(a, b),
+                    (None, Some(b)) => self
+                        .sym_profile
+                        .get(&sym)
+                        .and_then(|l| profile_on_path(l, off, flip, b))
+                        .and_then(|a| sweep(&a, b)),
                     _ => None,
                 },
                 Kind::Blend { first, second } => {
-                    let mut sk: Vec<(&i64, &SketchData)> = self.sketches.iter().filter(|(_, d)| d.user == f.id).collect();
+                    let mut sk: Vec<(&i64, &SketchData)> = self
+                        .sketches
+                        .iter()
+                        .filter(|(_, d)| d.user == f.id)
+                        .collect();
                     sk.sort_by_key(|(id, _)| **id);
                     match sk.as_slice() {
                         [(_, a), (_, b)] => blend(a, b, first, second),
@@ -2015,6 +3394,21 @@ impl Shapes {
                     }
                 }
             };
+            if m.is_none() && std::env::var_os("RVT_FORM_DEBUG").is_some() {
+                let kind = match f.kind {
+                    Kind::Revolution { sketch, .. } => format!(
+                        "revolution sketch {sketch} known {}",
+                        self.sketches.contains_key(&sketch)
+                    ),
+                    Kind::Sweep { profile, path, .. } => format!(
+                        "sweep profile {profile} {} path {path} {}",
+                        self.sketches.contains_key(&profile),
+                        self.sketches.contains_key(&path)
+                    ),
+                    Kind::Blend { .. } => "blend".into(),
+                };
+                eprintln!("FORM2 FAIL {} fam {} {kind}", f.id, f.fam);
+            }
             if let Some(m) = m {
                 if family_doc {
                     out.insert(f.id, m);
@@ -2026,6 +3420,39 @@ impl Shapes {
         if family_doc {
             return out;
         }
+        // families drawn only as plan symbols (no solids): their filled regions as 1 cm plates
+        let solid: std::collections::HashSet<i64> = by_fam.keys().copied().collect();
+        for &(id, fam, sk) in &self.regions {
+            if solid.contains(&fam) {
+                continue;
+            }
+            let Some(sd) = self.sketches.get(&sk) else {
+                continue;
+            };
+            let (closed, _) = loops_from(&sd.curves);
+            if closed.is_empty() {
+                continue;
+            }
+            let f = Form {
+                id,
+                fam,
+                vis: 0,
+                sketch: sk,
+                loops: closed,
+                start: 0.0,
+                end: 0.01 / FEET,
+            };
+            if let Some(m) = self.form(&f) {
+                by_fam.entry(fam).or_default().push(m);
+            }
+        }
+        let plan_only: std::collections::HashSet<i64> = self
+            .regions
+            .iter()
+            .map(|r| r.1)
+            .filter(|f| !solid.contains(f) && by_fam.contains_key(f))
+            .collect();
+        let mut plan_insts: Vec<i64> = Vec::new();
         if std::env::var_os("RVT_SHAPE_DEBUG").is_some() {
             eprintln!("forms built in {:?}", t0.elapsed());
         }
@@ -2047,26 +3474,61 @@ impl Shapes {
         let root_of = |fam: i64| {
             self.fam_small
                 .get(&fam)
-                .and_then(|v| v.iter().find_map(|s| owner.get(s).copied().filter(|&r| r > 0)))
-                .or_else(|| self.fam_guid.get(&fam).and_then(|g| self.content.get(g)).copied())
+                .and_then(|v| {
+                    v.iter()
+                        .find_map(|s| owner.get(s).copied().filter(|&r| r > 0))
+                })
+                .or_else(|| {
+                    self.fam_guid
+                        .get(&fam)
+                        .and_then(|g| self.content.get(g))
+                        .copied()
+                })
         };
         if std::env::var_os("RVT_SHAPE_DEBUG").is_some() {
-            let roots = self.fam_guid.keys().filter(|f| root_of(**f).is_some()).count();
-            eprintln!("families {} content docs {} resolved {} solids by doc {} forms2 {}", self.fam_guid.len(), self.content.len(), roots, by_fam.len(), self.forms2.len());
+            let roots = self
+                .fam_guid
+                .keys()
+                .filter(|f| root_of(**f).is_some())
+                .count();
+            eprintln!(
+                "families {} content docs {} resolved {} solids by doc {} forms2 {}",
+                self.fam_guid.len(),
+                self.content.len(),
+                roots,
+                by_fam.len(),
+                self.forms2.len()
+            );
             let hex = |g: &[u8; 16]| g.iter().map(|b| format!("{b:02x}")).collect::<String>();
             for (f, g) in self.fam_guid.iter().take(6) {
-                eprintln!("  family {f} guid {} root {:?} solids {}", hex(g), root_of(*f), root_of(*f).is_some_and(|r| by_fam.contains_key(&r)));
+                eprintln!(
+                    "  family {f} guid {} root {:?} solids {}",
+                    hex(g),
+                    root_of(*f),
+                    root_of(*f).is_some_and(|r| by_fam.contains_key(&r))
+                );
             }
             for (g, r) in self.content.iter().take(4) {
                 eprintln!("  content {} → {r}", hex(g));
             }
-            eprintln!("  solids keys {:?}", by_fam.keys().take(12).collect::<Vec<_>>());
+            eprintln!(
+                "  solids keys {:?}",
+                by_fam.keys().take(12).collect::<Vec<_>>()
+            );
         }
         // instances: family doc of the symbol, nested instances inside family docs
-        let hosts: std::collections::HashSet<i64> = self.instances.iter().map(|i| i.2).filter(|&o| o > 0).collect();
+        let hosts: std::collections::HashSet<i64> = self
+            .instances
+            .iter()
+            .map(|i| i.2)
+            .filter(|&o| o > 0)
+            .collect();
         let fam_of = |sym: i64| -> Option<i64> {
             let &(_, b) = self.symbols.get(&sym)?;
-            [root_of(b), Some(b)].into_iter().flatten().find(|f| *f > 0 && (by_fam.contains_key(f) || hosts.contains(f)))
+            [root_of(b), Some(b)]
+                .into_iter()
+                .flatten()
+                .find(|f| *f > 0 && (by_fam.contains_key(f) || hosts.contains(f)))
         };
         let mut nested: HashMap<i64, Vec<(i64, Trf)>> = HashMap::new();
         for &(_, sym, owner, t) in &self.instances {
@@ -2080,7 +3542,13 @@ impl Shapes {
         // (memoized: nested families repeat; the size is capped against runaway nesting)
         const CAP: usize = 400_000;
         type Parts = std::rc::Rc<Vec<Mesh>>;
-        fn flat(fam: i64, by_fam: &HashMap<i64, Vec<Mesh>>, nested: &HashMap<i64, Vec<(i64, Trf)>>, depth: u32, memo: &mut HashMap<i64, Parts>) -> Parts {
+        fn flat(
+            fam: i64,
+            by_fam: &HashMap<i64, Vec<Mesh>>,
+            nested: &HashMap<i64, Vec<(i64, Trf)>>,
+            depth: u32,
+            memo: &mut HashMap<i64, Parts>,
+        ) -> Parts {
             if let Some(m) = memo.get(&fam) {
                 return m.clone();
             }
@@ -2107,7 +3575,11 @@ impl Shapes {
         fn placed_box(b: ([f32; 3], [f32; 3]), t: &Trf) -> ([f64; 3], [f64; 3]) {
             let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
             for k in 0..8 {
-                let c = [if k & 1 == 0 { b.0[0] } else { b.1[0] }, if k & 2 == 0 { b.0[1] } else { b.1[1] }, if k & 4 == 0 { b.0[2] } else { b.1[2] }];
+                let c = [
+                    if k & 1 == 0 { b.0[0] } else { b.1[0] },
+                    if k & 2 == 0 { b.0[1] } else { b.1[1] },
+                    if k & 4 == 0 { b.0[2] } else { b.1[2] },
+                ];
                 let q = t.apply([c[0] as f64 / FEET, c[1] as f64 / FEET, c[2] as f64 / FEET]);
                 for a in 0..3 {
                     lo[a] = lo[a].min(q[a] * FEET);
@@ -2118,7 +3590,8 @@ impl Shapes {
         }
         let cover = 0.6;
         let mut memo: HashMap<i64, Parts> = HashMap::new();
-        let mut part_boxes: HashMap<i64, std::rc::Rc<Vec<Option<([f32; 3], [f32; 3])>>>> = HashMap::new();
+        let mut part_boxes: HashMap<i64, std::rc::Rc<Vec<Option<([f32; 3], [f32; 3])>>>> =
+            HashMap::new();
         let dbg = std::env::var_os("RVT_SHAPE_DEBUG").is_some();
         let mut st = [0usize; 6];
         for &(id, sym, owner, t) in &self.instances {
@@ -2130,17 +3603,29 @@ impl Shapes {
                 if dbg {
                     let sy = self.symbols.get(&sym);
                     let r = sy.and_then(|&(_, b)| root_of(b));
-                    eprintln!("NOFAM {id} sym {sym} {:?} root {:?} guid {} content-root-known {}", sy, r, sy.is_some_and(|&(_, b)| self.fam_guid.contains_key(&b)), r.is_some_and(|r| by_fam.contains_key(&r) || hosts.contains(&r)));
+                    eprintln!(
+                        "NOFAM {id} sym {sym} {:?} root {:?} guid {} content-root-known {}",
+                        sy,
+                        r,
+                        sy.is_some_and(|&(_, b)| self.fam_guid.contains_key(&b)),
+                        r.is_some_and(|r| by_fam.contains_key(&r) || hosts.contains(&r))
+                    );
                 }
                 continue;
             };
             st[1] += 1;
+            if plan_only.contains(&f) {
+                plan_insts.push(id);
+            }
             let parts = flat(f, &by_fam, &nested, 0, &mut memo);
             if parts.iter().all(|m| m.tri.is_empty()) {
                 continue;
             }
             st[2] += 1;
-            let pb = part_boxes.entry(f).or_insert_with(|| std::rc::Rc::new(parts.iter().map(|m| m.bbox()).collect())).clone();
+            let pb = part_boxes
+                .entry(f)
+                .or_insert_with(|| std::rc::Rc::new(parts.iter().map(|m| m.bbox()).collect()))
+                .clone();
             let Some(&(blo, bhi)) = boxes.get(&id) else {
                 let mut m = Mesh::default();
                 for p in parts.iter() {
@@ -2155,9 +3640,14 @@ impl Shapes {
             // the box are left out, and the instance keeps its box when what remains does not
             // fill it
             let tol = 0.05 + 0.1 * (0..3).map(|a| bhi[a] - blo[a]).fold(0.0, f64::max);
-            let inside = |(lo, hi): ([f64; 3], [f64; 3])| (0..3).all(|a| lo[a] >= blo[a] - tol && hi[a] <= bhi[a] + tol);
-            let placed: Vec<Option<([f64; 3], [f64; 3])>> = pb.iter().map(|b| b.map(|b| placed_box(b, &t))).collect();
-            let keep: Vec<usize> = (0..parts.len()).filter(|&k| placed[k].is_some_and(inside)).collect();
+            let inside = |(lo, hi): ([f64; 3], [f64; 3])| {
+                (0..3).all(|a| lo[a] >= blo[a] - tol && hi[a] <= bhi[a] + tol)
+            };
+            let placed: Vec<Option<([f64; 3], [f64; 3])>> =
+                pb.iter().map(|b| b.map(|b| placed_box(b, &t))).collect();
+            let keep: Vec<usize> = (0..parts.len())
+                .filter(|&k| placed[k].is_some_and(inside))
+                .collect();
             let (mut ulo, mut uhi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
             for &k in &keep {
                 let (lo, hi) = placed[k].unwrap();
@@ -2175,7 +3665,8 @@ impl Shapes {
             // all three axes, or two when the solids lie inside the box: a door or window
             // whose box also holds its swing, frame depth or opening (the panel and trims
             // span the width and height but not the whole depth)
-            let covers = !keep.is_empty() && (covered == 3 || (covered == 2 && keep.len() == parts.len()));
+            let covers =
+                !keep.is_empty() && (covered == 3 || (covered == 2 && keep.len() == parts.len()));
             if covers {
                 let mut m = Mesh::default();
                 for &k in &keep {
@@ -2187,9 +3678,54 @@ impl Shapes {
                 out.insert(id, m);
                 continue;
             }
+            // the rotation read the other way round (rows for columns): some placements
+            // store it so (the parts land mirrored about the insertion point)
+            {
+                let m3 = t.m;
+                let t2 = Trf::new(
+                    [
+                        m3[0], m3[3], m3[6], m3[1], m3[4], m3[7], m3[2], m3[5], m3[8],
+                    ],
+                    t.or,
+                );
+                let placed2: Vec<Option<([f64; 3], [f64; 3])>> =
+                    pb.iter().map(|b| b.map(|b| placed_box(b, &t2))).collect();
+                let keep2: Vec<usize> = (0..parts.len())
+                    .filter(|&k| placed2[k].is_some_and(inside))
+                    .collect();
+                let (mut lo2, mut hi2) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+                for &k in &keep2 {
+                    let (lo, hi) = placed2[k].unwrap();
+                    for a in 0..3 {
+                        lo2[a] = lo2[a].min(lo[a]);
+                        hi2[a] = hi2[a].max(hi[a]);
+                    }
+                }
+                let with_box = placed2.iter().filter(|p| p.is_some()).count();
+                let cov2 = (0..3)
+                    .filter(|&a| {
+                        let e = bhi[a] - blo[a];
+                        e < 0.1 || hi2[a] - lo2[a] >= cover * e
+                    })
+                    .count();
+                if keep2.len() > keep.len() && (cov2 == 3 || (cov2 == 2 && keep2.len() == with_box))
+                {
+                    let mut m = Mesh::default();
+                    for &k in &keep2 {
+                        append(&mut m, &parts[k], &t2);
+                    }
+                    st[5] += 1;
+                    out.insert(id, m);
+                    continue;
+                }
+            }
             if dbg {
                 eprintln!("OFFBOX {id} sym {sym} fam {f} aligned {} parts {} in box {} box {blo:?} {bhi:?}", t.axis_aligned(), parts.len(), keep.len());
-                if std::env::var_os("RVT_SHAPE_DEBUG2").is_some() { for b in placed.iter().flatten() { eprintln!("   part {:?} {:?}", b.0, b.1); } }
+                if std::env::var_os("RVT_SHAPE_DEBUG2").is_some() {
+                    for b in placed.iter().flatten() {
+                        eprintln!("   part {:?} {:?}", b.0, b.1);
+                    }
+                }
             }
             st[4] += 1;
             // a door or window of another type: the solids of the family's default type
@@ -2228,18 +3764,62 @@ impl Shapes {
             }
             // else, when every solid lies in the box (a box that also holds a light's
             // throw or a fixture's clearance), the solids as placed
-            if keep.len() == parts.len() && !self.framing.iter().any(|f| f.0 == id) && !self.curtain.iter().any(|c| c.0 == id) {
+            let with_box = placed.iter().filter(|p| p.is_some()).count();
+            let not_driven =
+                !self.framing.iter().any(|f| f.0 == id) && !self.curtain.iter().any(|c| c.0 == id);
+            if !keep.is_empty() && keep.len() == with_box && not_driven {
                 let mut m = Mesh::default();
                 for p in parts.iter() {
                     append(&mut m, p, &t);
                 }
                 st[5] += 1;
                 out.insert(id, m);
+                continue;
+            }
+            // else nearly every solid in the box (a fixture of another type whose few
+            // extra solids stick out): the solids in the box
+            if keep.len() * 10 >= with_box * 9 && keep.len() >= 3 && not_driven {
+                let mut m = Mesh::default();
+                for &k in &keep {
+                    append(&mut m, &parts[k], &t);
+                }
+                st[5] += 1;
+                out.insert(id, m);
+                continue;
+            }
+            // else the solids, turned as placed, fit in the box but lie beside it (an
+            // insertion point stored for another host face): moved to the box's centre
+            if not_driven {
+                let mut m = Mesh::default();
+                for p in parts.iter() {
+                    append(&mut m, p, &t);
+                }
+                if let Some((lo, hi)) = m.bbox() {
+                    let fits = (0..3).all(|a| {
+                        let (e, be) = ((hi[a] - lo[a]) as f64, bhi[a] - blo[a]);
+                        e <= be + 0.02 && (be < 0.1 || e >= 0.4 * be)
+                    });
+                    if fits {
+                        let d: [f64; 3] = std::array::from_fn(|a| {
+                            (blo[a] + bhi[a]) / 2.0 - (lo[a] + hi[a]) as f64 / 2.0
+                        });
+                        for v in m.pos.iter_mut() {
+                            for a in 0..3 {
+                                v[a] += d[a] as f32;
+                            }
+                        }
+                        st[5] += 1;
+                        out.insert(id, m);
+                    }
+                }
             }
         }
         if dbg {
             eprintln!("instances placed in {:?}", t0.elapsed());
-            eprintln!("instances top {} family found {} solids {} trimmed {} off box {} fitted {}", st[0], st[1], st[2], st[3], st[4], st[5]);
+            eprintln!(
+                "instances top {} family found {} solids {} trimmed {} off box {} fitted {}",
+                st[0], st[1], st[2], st[3], st[4], st[5]
+            );
         }
         // wall footings: the profile swept along the driver line; the driver stops at the
         // wall's ends, the footing at its joins, so an axis-aligned sweep is extended or
@@ -2262,7 +3842,24 @@ impl Shapes {
                 let e = out.entry(*id).or_default();
                 let b = e.pos.len() as u32;
                 e.pos.extend(m.pos);
-                e.tri.extend(m.tri.iter().map(|t| [t[0] + b, t[1] + b, t[2] + b]));
+                e.tri
+                    .extend(m.tri.iter().map(|t| [t[0] + b, t[1] + b, t[2] + b]));
+            }
+        }
+        // plan-symbol plates: the family document holds one type's sizes, the instance's
+        // box its own: the plate stretched over the box's footprint
+        for id in plan_insts {
+            let (Some(m), Some(&(blo, bhi))) = (out.get_mut(&id), boxes.get(&id)) else {
+                continue;
+            };
+            let Some((lo, hi)) = m.bbox() else { continue };
+            for p in &mut m.pos {
+                for a in 0..2 {
+                    let e = (hi[a] - lo[a]) as f64;
+                    if e > 1e-4 {
+                        p[a] = (blo[a] + (p[a] - lo[a]) as f64 / e * (bhi[a] - blo[a])) as f32;
+                    }
+                }
             }
         }
         // rectangular isolated footings with no family solids: their type's outline
@@ -2289,10 +3886,69 @@ impl Shapes {
             if out.contains_key(id) {
                 continue;
             }
-            let Some(&(lo, hi)) = boxes.get(id) else { continue };
+            let Some(&(lo, hi)) = boxes.get(id) else {
+                continue;
+            };
             if let Some(m) = framing_box(*a, *b, lo, hi) {
                 nf += 1;
                 out.insert(*id, m);
+            }
+        }
+        // system mullions: their type's centre line and section, placed
+        let mut nm = 0;
+        for &(id, sym, owner, t) in &self.instances {
+            if owner > 0 || out.contains_key(&id) {
+                continue;
+            }
+            let Some(ms) = self.mullion_syms.get(&sym) else {
+                continue;
+            };
+            let Some(local) = mullion(ms) else { continue };
+            // the placement of a mullion holds the transposed rotation
+            let m3 = t.m;
+            let tt = Trf::new(
+                [
+                    m3[0], m3[3], m3[6], m3[1], m3[4], m3[7], m3[2], m3[5], m3[8],
+                ],
+                t.or,
+            );
+            let mut m = Mesh::default();
+            append(&mut m, &local, &tt);
+            if dbg {
+                eprintln!(
+                    "MULLION {id} sym {sym} mesh {:?} box {:?} trf {:?}",
+                    m.bbox(),
+                    boxes.get(&id),
+                    t.m
+                );
+            }
+            // the section's position across the line (border mullions sit inside the edge)
+            // and the end trims come from the box: the mullion is centred on it when its
+            // sizes are the box's within the trims
+            let ok = match (m.bbox(), boxes.get(&id)) {
+                (Some((lo, hi)), Some((blo, bhi))) => {
+                    let fits =
+                        (0..3).all(|k| ((hi[k] - lo[k]) as f64 - (bhi[k] - blo[k])).abs() <= 0.06);
+                    if fits {
+                        let d: Vec<f32> = (0..3)
+                            .map(|k| {
+                                ((blo[k] + bhi[k]) * 0.5 - (lo[k] + hi[k]) as f64 * 0.5) as f32
+                            })
+                            .collect();
+                        for p in &mut m.pos {
+                            for k in 0..3 {
+                                p[k] += d[k];
+                            }
+                        }
+                    }
+                    fits
+                }
+                (_, None) => true,
+                _ => false,
+            };
+            if ok {
+                nm += 1;
+                out.insert(id, m);
             }
         }
         let mut nc = 0;
@@ -2300,27 +3956,42 @@ impl Shapes {
             if out.contains_key(id) {
                 continue;
             }
-            let Some(&(lo, hi)) = boxes.get(id) else { continue };
+            let Some(&(lo, hi)) = boxes.get(id) else {
+                continue;
+            };
             if let Some(m) = oriented_box(t, lo, hi) {
                 nc += 1;
                 out.insert(*id, m);
             }
         }
         if dbg {
-            eprintln!("framing boxes {nf} of {}, curtain boxes {nc} of {}", self.framing.len(), self.curtain.len());
+            eprintln!(
+                "framing boxes {nf} of {}, curtain boxes {nc} of {}, system mullions {nm}",
+                self.framing.len(),
+                self.curtain.len()
+            );
         }
         out
     }
 
     /// Rails: a 5 cm square bar hanging under their top line; railings: balusters along
     /// their top rail (else their path sketch) down to the bottom of their box.
-    fn rails_and_railings(&self, boxes: &HashMap<i64, ([f64; 3], [f64; 3])>, out: &mut HashMap<i64, Mesh>) {
+    fn rails_and_railings(
+        &self,
+        boxes: &HashMap<i64, ([f64; 3], [f64; 3])>,
+        out: &mut HashMap<i64, Mesh>,
+    ) {
         let path_of = |id: i64| -> Vec<V3> {
-            let Some(sk) = self.sketches.get(&id) else { return vec![] };
+            let Some(sk) = self.sketches.get(&id) else {
+                return vec![];
+            };
             let mut pts: Vec<V3> = Vec::new();
             for c in &sk.curves {
                 for &p in c {
-                    if pts.last().is_none_or(|q| dot(sub(*q, p), sub(*q, p)).sqrt() > 1e-6) {
+                    if pts
+                        .last()
+                        .is_none_or(|q| dot(sub(*q, p), sub(*q, p)).sqrt() > 1e-6)
+                    {
                         pts.push(p);
                     }
                 }
@@ -2337,7 +4008,9 @@ impl Shapes {
             }
         }
         for (id, sk, rails) in &self.railings {
-            let Some(&(blo, bhi)) = boxes.get(id) else { continue };
+            let Some(&(blo, bhi)) = boxes.get(id) else {
+                continue;
+            };
             let (zlo, zhi) = (blo[2] / FEET, bhi[2] / FEET);
             // posts from the top rail's line (less the bar), else from the sketch up to the box top
             let (top, drop) = match rails.iter().find_map(|r| rail_path.get(r)) {
@@ -2350,12 +4023,19 @@ impl Shapes {
                     if p.is_empty() {
                         continue;
                     }
-                    let base = p.iter().map(|q| q[2]).fold(f64::INFINITY, f64::min).max(zlo);
+                    let base = p
+                        .iter()
+                        .map(|q| q[2])
+                        .fold(f64::INFINITY, f64::min)
+                        .max(zlo);
                     let h = zhi - base;
                     if !(h > 0.1) {
                         continue;
                     }
-                    (p.iter().map(|q| [q[0], q[1], q[2] - base + zhi]).collect(), h)
+                    (
+                        p.iter().map(|q| [q[0], q[1], q[2] - base + zhi]).collect(),
+                        h,
+                    )
                 }
             };
             let post = 0.02 / FEET;
@@ -2375,7 +4055,11 @@ impl Shapes {
                     if let Some(q) = swept_band(&pst, post, -drop, -bar.min(drop * 0.5)) {
                         let base = m.pos.len() as u32;
                         m.pos.extend(q.pos);
-                        m.tri.extend(q.tri.iter().map(|t| [t[0] + base, t[1] + base, t[2] + base]));
+                        m.tri.extend(
+                            q.tri
+                                .iter()
+                                .map(|t| [t[0] + base, t[1] + base, t[2] + base]),
+                        );
                     }
                 }
             }
@@ -2389,12 +4073,19 @@ impl Shapes {
         let z = [0.0, 0.0, 1.0];
         let d = norm([w.d[0], w.d[1], 0.0])?;
         let n = norm(cross(d, z))?;
-        let f = Frame { o: w.o, u: d, v: z, n };
+        let f = Frame {
+            o: w.o,
+            u: d,
+            v: z,
+            n,
+        };
         // thickness: side faces (normal ∥ n) and the faces across the wall (ends, top, bottom)
         let mut lo = f64::INFINITY;
         let mut hi = f64::NEG_INFINITY;
         for &(o, x, y, env) in &w.planes {
-            let Some(pn) = norm(cross(x, y)) else { continue };
+            let Some(pn) = norm(cross(x, y)) else {
+                continue;
+            };
             let off = dot(sub(o, w.o), n);
             if dot(pn, n).abs() > 0.99 {
                 lo = lo.min(off);
@@ -2415,7 +4106,9 @@ impl Shapes {
         let (mut e0, mut e1) = (f64::INFINITY, f64::NEG_INFINITY);
         let (mut z0, mut z1) = (f64::INFINITY, f64::NEG_INFINITY);
         for &(o, x, y, env) in &w.planes {
-            let Some(pn) = norm(cross(x, y)) else { continue };
+            let Some(pn) = norm(cross(x, y)) else {
+                continue;
+            };
             for (axis, (a, b)) in [(x, (env[0], env[2])), (y, (env[1], env[3]))] {
                 if !(a.is_finite() && b.is_finite() && (b - a).abs() < 3e3) {
                     continue;
@@ -2446,7 +4139,11 @@ impl Shapes {
         if std::env::var_os("RVT_SHAPE_DEBUG").is_some() {
             eprintln!("wall {} planes {} thick {lo}..{hi} ends {t0}..{t1} faces {e0}..{e1} z {z0}..{z1} loops {}", w.id, w.planes.len(), w.loops.len());
         }
-        let mut loops: Vec<Vec<[f64; 2]>> = w.loops.iter().map(|l| l.iter().map(|&p| f.uv(p)).collect()).collect();
+        let mut loops: Vec<Vec<[f64; 2]>> = w
+            .loops
+            .iter()
+            .map(|l| l.iter().map(|&p| f.uv(p)).collect())
+            .collect();
         if loops.is_empty() {
             if !(z1 - z0 > 1e-3 && z1 - z0 < 3e3) {
                 return None;
@@ -2454,8 +4151,16 @@ impl Shapes {
             loops.push(vec![[t0, z0], [t1, z0], [t1, z1], [t0, z1]]);
         }
         // move the profile's end points to the end faces when those lie a little beyond (joins)
-        let umin = loops.iter().flatten().map(|p| p[0]).fold(f64::INFINITY, f64::min);
-        let umax = loops.iter().flatten().map(|p| p[0]).fold(f64::NEG_INFINITY, f64::max);
+        let umin = loops
+            .iter()
+            .flatten()
+            .map(|p| p[0])
+            .fold(f64::INFINITY, f64::min);
+        let umax = loops
+            .iter()
+            .flatten()
+            .map(|p| p[0])
+            .fold(f64::NEG_INFINITY, f64::max);
         let reach = (hi - lo) * 3.0 + 0.3;
         // joins are not stored with the wall; along a grid axis the element box shows them
         if let Some((bmin, bmax)) = boxes.get(&w.id) {
@@ -2466,8 +4171,16 @@ impl Shapes {
                 e1 = e1.max(a.max(b));
             }
         }
-        let lo_end = if e0 < umin && umin - e0 < reach { e0 } else { umin };
-        let hi_end = if e1 > umax && e1 - umax < reach { e1 } else { umax };
+        let lo_end = if e0 < umin && umin - e0 < reach {
+            e0
+        } else {
+            umin
+        };
+        let hi_end = if e1 > umax && e1 - umax < reach {
+            e1
+        } else {
+            umax
+        };
         for p in loops.iter_mut().flatten() {
             if (p[0] - umin).abs() < 1e-6 {
                 p[0] = lo_end;
@@ -2476,19 +4189,39 @@ impl Shapes {
             }
         }
         // the loops must lie in the wall's plane
-        if w.loops.iter().flatten().any(|&p| dot(sub(p, w.o), n).abs() > (hi - lo).abs() + 1.0) {
+        if w.loops
+            .iter()
+            .flatten()
+            .any(|&p| dot(sub(p, w.o), n).abs() > (hi - lo).abs() + 1.0)
+        {
             return None;
         }
         let mut cuts = Vec::new();
         for c in &w.cutters {
-            let Some((blo, bhi)) = boxes.get(c) else { continue };
-            let mut r = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+            let Some((blo, bhi)) = boxes.get(c) else {
+                continue;
+            };
+            let mut r = [
+                f64::INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+            ];
             let mut wr = (f64::INFINITY, f64::NEG_INFINITY);
             for k in 0..8 {
-                let p = [if k & 1 == 0 { blo[0] } else { bhi[0] }, if k & 2 == 0 { blo[1] } else { bhi[1] }, if k & 4 == 0 { blo[2] } else { bhi[2] }];
+                let p = [
+                    if k & 1 == 0 { blo[0] } else { bhi[0] },
+                    if k & 2 == 0 { blo[1] } else { bhi[1] },
+                    if k & 4 == 0 { blo[2] } else { bhi[2] },
+                ];
                 let p = mul(p, 1.0 / FEET);
                 let q = f.uv(p);
-                r = [r[0].min(q[0]), r[1].min(q[1]), r[2].max(q[0]), r[3].max(q[1])];
+                r = [
+                    r[0].min(q[0]),
+                    r[1].min(q[1]),
+                    r[2].max(q[0]),
+                    r[3].max(q[1]),
+                ];
                 let o = dot(sub(p, w.o), n);
                 wr = (wr.0.min(o), wr.1.max(o));
             }
@@ -2521,10 +4254,19 @@ impl Shapes {
         let nz = norm(cross(x, y))?;
         let v = cross(nz, u);
         let f = Frame { o, u, v, n: nz };
-        if fm.loops.iter().flatten().any(|&p| dot(sub(p, o), nz).abs() > 1e-3 * (1.0 + dot(sub(p, o), sub(p, o)).sqrt())) {
+        if fm
+            .loops
+            .iter()
+            .flatten()
+            .any(|&p| dot(sub(p, o), nz).abs() > 1e-3 * (1.0 + dot(sub(p, o), sub(p, o)).sqrt()))
+        {
             return None;
         }
-        let loops: Vec<Vec<[f64; 2]>> = fm.loops.iter().map(|l| l.iter().map(|&p| f.uv(p)).collect()).collect();
+        let loops: Vec<Vec<[f64; 2]>> = fm
+            .loops
+            .iter()
+            .map(|l| l.iter().map(|&p| f.uv(p)).collect())
+            .collect();
         if !((fm.end - fm.start).abs() > 1e-6 && (fm.end - fm.start).abs() < 1e4) {
             return None;
         }
@@ -2536,7 +4278,12 @@ impl Shapes {
 /// The parts (family frame, metres) placed by `t` and scaled about the insertion point by the
 /// factor that best matches their world box (`placed`: the unscaled one per part) to `to`;
 /// `None` when no single factor gives that box (within 2 cm + 8 % of its size).
-fn uniform_fit(parts: &[Mesh], placed: &[Option<([f64; 3], [f64; 3])>], t: &Trf, to: ([f64; 3], [f64; 3])) -> Option<Mesh> {
+fn uniform_fit(
+    parts: &[Mesh],
+    placed: &[Option<([f64; 3], [f64; 3])>],
+    t: &Trf,
+    to: ([f64; 3], [f64; 3]),
+) -> Option<Mesh> {
     let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
     for (l, h) in placed.iter().flatten() {
         for a in 0..3 {
@@ -2546,7 +4293,10 @@ fn uniform_fit(parts: &[Mesh], placed: &[Option<([f64; 3], [f64; 3])>], t: &Trf,
     }
     let o = [t.or[0] * FEET, t.or[1] * FEET, t.or[2] * FEET];
     // factor per axis from the box size, on the axes with some extent
-    let mut ks: Vec<f64> = (0..3).filter(|&a| hi[a] - lo[a] > 0.01 && to.1[a] - to.0[a] > 0.01).map(|a| (to.1[a] - to.0[a]) / (hi[a] - lo[a])).collect();
+    let mut ks: Vec<f64> = (0..3)
+        .filter(|&a| hi[a] - lo[a] > 0.01 && to.1[a] - to.0[a] > 0.01)
+        .map(|a| (to.1[a] - to.0[a]) / (hi[a] - lo[a]))
+        .collect();
     if ks.is_empty() {
         return None;
     }
@@ -2568,10 +4318,24 @@ fn uniform_fit(parts: &[Mesh], placed: &[Option<([f64; 3], [f64; 3])>], t: &Trf,
     for p in parts {
         let base = m.pos.len() as u32;
         for q in &p.pos {
-            let w = t.apply([q[0] as f64 * k / FEET, q[1] as f64 * k / FEET, q[2] as f64 * k / FEET]);
-            m.pos.push([(w[0] * FEET) as f32, (w[1] * FEET) as f32, (w[2] * FEET) as f32]);
+            let w = t.apply([
+                q[0] as f64 * k / FEET,
+                q[1] as f64 * k / FEET,
+                q[2] as f64 * k / FEET,
+            ]);
+            m.pos.push([
+                (w[0] * FEET) as f32,
+                (w[1] * FEET) as f32,
+                (w[2] * FEET) as f32,
+            ]);
         }
-        m.tri.extend(p.tri.iter().map(|tr| if flip { [tr[0] + base, tr[2] + base, tr[1] + base] } else { [tr[0] + base, tr[1] + base, tr[2] + base] }));
+        m.tri.extend(p.tri.iter().map(|tr| {
+            if flip {
+                [tr[0] + base, tr[2] + base, tr[1] + base]
+            } else {
+                [tr[0] + base, tr[1] + base, tr[2] + base]
+            }
+        }));
     }
     Some(m)
 }
@@ -2596,7 +4360,11 @@ fn fit(m: &mut Mesh, from: ([f32; 3], [f32; 3]), to: ([f64; 3], [f64; 3])) -> bo
     for p in &mut m.pos {
         for a in 0..3 {
             let s = (from.1[a] - from.0[a]) as f64;
-            p[a] = if s < 1e-4 { ((to.0[a] + to.1[a]) * 0.5) as f32 } else { (to.0[a] + (p[a] - from.0[a]) as f64 * k[a]) as f32 };
+            p[a] = if s < 1e-4 {
+                ((to.0[a] + to.1[a]) * 0.5) as f32
+            } else {
+                (to.0[a] + (p[a] - from.0[a]) as f64 * k[a]) as f32
+            };
         }
     }
     true
@@ -2607,7 +4375,12 @@ fn slab(sl: &Slab) -> Option<Mesh> {
         Some(r) => r,
         None => {
             // horizontal faces
-            let zs: Vec<f64> = sl.planes.iter().filter(|(_, x, y, _)| norm(cross(*x, *y)).is_some_and(|n| n[2].abs() > 0.99)).map(|(o, _, _, _)| o[2]).collect();
+            let zs: Vec<f64> = sl
+                .planes
+                .iter()
+                .filter(|(_, x, y, _)| norm(cross(*x, *y)).is_some_and(|n| n[2].abs() > 0.99))
+                .map(|(o, _, _, _)| o[2])
+                .collect();
             let lo = zs.iter().copied().fold(f64::INFINITY, f64::min);
             let hi = zs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
             if hi - lo > 1e-4 {
@@ -2624,8 +4397,17 @@ fn slab(sl: &Slab) -> Option<Mesh> {
     if sl.loops.iter().flatten().any(|p| (p[2] - z0).abs() > 1e-3) {
         return None;
     }
-    let f = Frame { o: [0.0; 3], u: [1.0, 0.0, 0.0], v: [0.0, 1.0, 0.0], n: [0.0, 0.0, 1.0] };
-    let loops: Vec<Vec<[f64; 2]>> = sl.loops.iter().map(|l| l.iter().map(|p| [p[0], p[1]]).collect()).collect();
+    let f = Frame {
+        o: [0.0; 3],
+        u: [1.0, 0.0, 0.0],
+        v: [0.0, 1.0, 0.0],
+        n: [0.0, 0.0, 1.0],
+    };
+    let loops: Vec<Vec<[f64; 2]>> = sl
+        .loops
+        .iter()
+        .map(|l| l.iter().map(|p| [p[0], p[1]]).collect())
+        .collect();
     let m = solid(&f, &loops, &[], b, t, None);
     (!m.tri.is_empty()).then_some(m)
 }
@@ -2639,36 +4421,58 @@ pub fn classes() -> &'static [&'static str] {
 mod tests {
     #[test]
     fn prism_box() {
-        let prof = vec![[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 0.0, 1.0], [0.0, 0.0, 1.0]];
+        let prof = vec![
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [2.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0],
+        ];
         let m = prism(&prof, &[[0.0, 0.0, 0.0], [0.0, 5.0, 0.0]]).unwrap();
-        let vol: f64 = m.tri.iter().map(|t| {
-            let p = |k: u32| m.pos[k as usize].map(|x| x as f64 / FEET);
-            dot(p(t[0]), cross(p(t[1]), p(t[2]))) / 6.0
-        }).sum();
-        assert!((vol - 10.0).abs() < 1e-3, "{vol} {} {:?}", m.tri.len(), m.pos);
+        let vol: f64 = m
+            .tri
+            .iter()
+            .map(|t| {
+                let p = |k: u32| m.pos[k as usize].map(|x| x as f64 / FEET);
+                dot(p(t[0]), cross(p(t[1]), p(t[2]))) / 6.0
+            })
+            .sum();
+        assert!(
+            (vol - 10.0).abs() < 1e-3,
+            "{vol} {} {:?}",
+            m.tri.len(),
+            m.pos
+        );
         let c = cuboid([0.0; 3], [1.0, 2.0, 3.0]);
         assert_eq!(c.tri.len(), 12);
     }
 
     #[test]
     fn delaunay_grid() {
-        let p: Vec<[f64; 2]> = (0..25).map(|k| [(k % 5) as f64, (k / 5) as f64 + 0.01 * (k % 3) as f64]).collect();
+        let p: Vec<[f64; 2]> = (0..25)
+            .map(|k| [(k % 5) as f64, (k / 5) as f64 + 0.01 * (k % 3) as f64])
+            .collect();
         let t = super::delaunay(&p);
         // the triangles tile the convex hull (about 4 x 4), counter-clockwise
-        let area: f64 = t.iter().map(|t| {
-            let (a, b, c) = (p[t[0]], p[t[1]], p[t[2]]);
-            0.5 * ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]))
-        }).inspect(|&a| assert!(a > 0.0)).sum();
+        let area: f64 = t
+            .iter()
+            .map(|t| {
+                let (a, b, c) = (p[t[0]], p[t[1]], p[t[2]]);
+                0.5 * ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]))
+            })
+            .inspect(|&a| assert!(a > 0.0))
+            .sum();
         assert!((area - 16.0).abs() < 0.1, "{area}");
     }
 
     #[test]
     fn curved_wall_band() {
         // quarter circle of radius 10 ft, 1 ft thick, 10 ft high
-        let path: Vec<[f64; 3]> = (0..=16).map(|k| {
-            let a = std::f64::consts::FRAC_PI_2 * k as f64 / 16.0;
-            [10.0 * a.cos(), 10.0 * a.sin(), 0.0]
-        }).collect();
+        let path: Vec<[f64; 3]> = (0..=16)
+            .map(|k| {
+                let a = std::f64::consts::FRAC_PI_2 * k as f64 / 16.0;
+                [10.0 * a.cos(), 10.0 * a.sin(), 0.0]
+            })
+            .collect();
         let m = super::swept_wall(&path, 0.5, 0.0, 10.0).unwrap();
         let (lo, hi) = m.bbox().unwrap();
         assert!((hi[2] - 3.048).abs() < 1e-4 && lo[2].abs() < 1e-6);
@@ -2679,7 +4483,14 @@ mod tests {
     use super::*;
 
     fn volume(pts: &[V3], tri: &[[u32; 3]]) -> f64 {
-        tri.iter().map(|t| dot(pts[t[0] as usize], cross(pts[t[1] as usize], pts[t[2] as usize])) / 6.0).sum()
+        tri.iter()
+            .map(|t| {
+                dot(
+                    pts[t[0] as usize],
+                    cross(pts[t[1] as usize], pts[t[2] as usize]),
+                ) / 6.0
+            })
+            .sum()
     }
 
     #[test]
@@ -2704,7 +4515,11 @@ mod tests {
 
     #[test]
     fn chain_reorients() {
-        let c = vec![vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], vec![[1.0, 1.0, 0.0], [1.0, 0.0, 0.0]], vec![[1.0, 1.0, 0.0], [0.0, 0.0, 0.0]]];
+        let c = vec![
+            vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            vec![[1.0, 1.0, 0.0], [1.0, 0.0, 0.0]],
+            vec![[1.0, 1.0, 0.0], [0.0, 0.0, 0.0]],
+        ];
         let l = chain(c);
         assert_eq!(l.len(), 3);
         assert_eq!(l[2], [1.0, 1.0, 0.0]);
@@ -2722,7 +4537,11 @@ fn ellipsoid(m: &mut Mesh, c: [f64; 3], r: [f64; 3]) {
         let (z, s) = (-th.cos(), th.sin());
         for k in 0..LON {
             let ph = std::f64::consts::TAU * k as f64 / LON as f64;
-            m.pos.push([(c[0] + r[0] * s * ph.cos()) as f32, (c[1] + r[1] * s * ph.sin()) as f32, (c[2] + r[2] * z) as f32]);
+            m.pos.push([
+                (c[0] + r[0] * s * ph.cos()) as f32,
+                (c[1] + r[1] * s * ph.sin()) as f32,
+                (c[2] + r[2] * z) as f32,
+            ]);
         }
     }
     let top = m.pos.len() as u32;
@@ -2734,7 +4553,12 @@ fn ellipsoid(m: &mut Mesh, c: [f64; 3], r: [f64; 3]) {
     }
     for i in 0..LAT - 2 {
         for k in 0..LON {
-            let (a, b, c2, d) = (ring(i, k), ring(i, k + 1), ring(i + 1, k), ring(i + 1, k + 1));
+            let (a, b, c2, d) = (
+                ring(i, k),
+                ring(i, k + 1),
+                ring(i + 1, k),
+                ring(i + 1, k + 1),
+            );
             m.tri.push([a, b, d]);
             m.tri.push([a, d, c2]);
         }
@@ -2746,7 +4570,11 @@ fn block(m: &mut Mesh, lo: [f64; 3], hi: [f64; 3]) {
     let c = cuboid(mul(lo, 1.0 / FEET), mul(hi, 1.0 / FEET));
     let base = m.pos.len() as u32;
     m.pos.extend(c.pos);
-    m.tri.extend(c.tri.iter().map(|t| [t[0] + base, t[1] + base, t[2] + base]));
+    m.tri.extend(
+        c.tri
+            .iter()
+            .map(|t| [t[0] + base, t[1] + base, t[2] + base]),
+    );
 }
 
 /// A simple stand-in for planting and entourage (RPC content: Revit stores a picture and a
@@ -2764,24 +4592,51 @@ pub fn proxy(category: i64, lo: [f64; 3], hi: [f64; 3]) -> Option<Mesh> {
         -2001360 => {
             let trunk_top = lo[2] + d[2] * 0.4;
             let r = (d[0].min(d[1]) * 0.06).clamp(0.03, 0.4);
-            tube(&mut m, &[mul([c[0], c[1], lo[2]], 1.0 / FEET), mul([c[0], c[1], trunk_top + d[2] * 0.1], 1.0 / FEET)], r / FEET);
+            tube(
+                &mut m,
+                &[
+                    mul([c[0], c[1], lo[2]], 1.0 / FEET),
+                    mul([c[0], c[1], trunk_top + d[2] * 0.1], 1.0 / FEET),
+                ],
+                r / FEET,
+            );
             let rz = (hi[2] - trunk_top) * 0.5;
-            ellipsoid(&mut m, [c[0], c[1], trunk_top + rz], [d[0] * 0.5, d[1] * 0.5, rz]);
+            ellipsoid(
+                &mut m,
+                [c[0], c[1], trunk_top + rz],
+                [d[0] * 0.5, d[1] * 0.5, rz],
+            );
         }
         -2001370 if d[2] > d[0].max(d[1]) => {
             // a standing person: body then head
             let head = (d[2] * 0.12).min(d[0].min(d[1]) * 0.5);
             let body_top = hi[2] - head * 2.0;
-            ellipsoid(&mut m, [c[0], c[1], (lo[2] + body_top) * 0.5], [d[0] * 0.4, d[1] * 0.4, (body_top - lo[2]) * 0.5]);
+            ellipsoid(
+                &mut m,
+                [c[0], c[1], (lo[2] + body_top) * 0.5],
+                [d[0] * 0.4, d[1] * 0.4, (body_top - lo[2]) * 0.5],
+            );
             ellipsoid(&mut m, [c[0], c[1], hi[2] - head], [head, head, head]);
         }
         -2001370 => {
             // a vehicle: body on the lower half, a narrower cabin above
             let mid = lo[2] + d[2] * 0.5;
-            block(&mut m, [lo[0], lo[1], lo[2] + d[2] * 0.12], [hi[0], hi[1], mid]);
-            let (ax, sx, sy) = if d[0] >= d[1] { (0, d[0] * 0.2, d[1] * 0.06) } else { (1, d[0] * 0.06, d[1] * 0.2) };
+            block(
+                &mut m,
+                [lo[0], lo[1], lo[2] + d[2] * 0.12],
+                [hi[0], hi[1], mid],
+            );
+            let (ax, sx, sy) = if d[0] >= d[1] {
+                (0, d[0] * 0.2, d[1] * 0.06)
+            } else {
+                (1, d[0] * 0.06, d[1] * 0.2)
+            };
             let _ = ax;
-            block(&mut m, [lo[0] + sx, lo[1] + sy, mid], [hi[0] - sx, hi[1] - sy, hi[2]]);
+            block(
+                &mut m,
+                [lo[0] + sx, lo[1] + sy, mid],
+                [hi[0] - sx, hi[1] - sy, hi[2]],
+            );
         }
         _ => return None,
     }

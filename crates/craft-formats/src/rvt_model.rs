@@ -87,7 +87,13 @@ fn inflate_one(b: &[u8], cap: usize) -> Option<(Vec<u8>, usize, bool)> {
         }
         out.reserve((256 << 10).min(cap - out.len()).max(1));
         let before = d.total_in();
-        let st = d.decompress_vec(&src[d.total_in() as usize..], &mut out, flate2::FlushDecompress::None).ok()?;
+        let st = d
+            .decompress_vec(
+                &src[d.total_in() as usize..],
+                &mut out,
+                flate2::FlushDecompress::None,
+            )
+            .ok()?;
         match st {
             flate2::Status::StreamEnd => break,
             _ if d.total_in() == before && out.len() < out.capacity() => return None,
@@ -115,7 +121,11 @@ pub struct Inflated {
 
 /// Inflates the gzip members of `b` one after the other, keeping only those whose trailer
 /// matches. `keep_going` sees the data so far after each member and can stop early.
-pub fn inflate_members(b: &[u8], cap: usize, mut keep_going: impl FnMut(&[u8]) -> bool) -> Inflated {
+pub fn inflate_members(
+    b: &[u8],
+    cap: usize,
+    mut keep_going: impl FnMut(&[u8]) -> bool,
+) -> Inflated {
     let mut r = Inflated::default();
     let mut i = 0;
     while let Some(j) = find(b, &[0x1f, 0x8b, 8], i) {
@@ -136,7 +146,10 @@ pub fn inflate_members(b: &[u8], cap: usize, mut keep_going: impl FnMut(&[u8]) -
 }
 
 fn find(h: &[u8], n: &[u8], from: usize) -> Option<usize> {
-    h.get(from..)?.windows(n.len()).position(|w| w == n).map(|p| p + from)
+    h.get(from..)?
+        .windows(n.len())
+        .position(|w| w == n)
+        .map(|p| p + from)
 }
 
 /// Reads a stream, depages it when that makes its gzip members check, and inflates them.
@@ -177,7 +190,11 @@ pub fn schema_inline_tag(schema: &[u8], name: &str) -> Option<u16> {
     while let Some(j) = find(schema, &pat, i) {
         i = j + 1;
         // the name must end there (not a prefix of a longer name)
-        if schema.get(j + pat.len()).is_some_and(|c| c.is_ascii_alphanumeric()) || j < 4 {
+        if schema
+            .get(j + pat.len())
+            .is_some_and(|c| c.is_ascii_alphanumeric())
+            || j < 4
+        {
             continue;
         }
         let t = u16::from_le_bytes([schema[j - 4], schema[j - 3]]);
@@ -216,12 +233,16 @@ pub fn until_chain_end() -> impl FnMut(&[u8]) -> bool {
             },
         };
         w = Some(width);
-        let (Some(size), Some(c)) = (u32_at(p, o + width), u16_at(p, o + width + 4)) else { return true };
+        let (Some(size), Some(c)) = (u32_at(p, o + width), u16_at(p, o + width + 4)) else {
+            return true;
+        };
         let size = size as usize;
         if size < 16 || k.is_some_and(|x| x != c) {
             return false;
         }
-        let Some(tr) = u32_at(p, o + size + width + 4) else { return true };
+        let Some(tr) = u32_at(p, o + size + width + 4) else {
+            return true;
+        };
         if tr as usize != size {
             return false;
         }
@@ -274,14 +295,22 @@ pub fn walk_chain(p: &[u8]) -> Chain {
     c.id_width = w;
     let mut o = 0usize;
     loop {
-        let id = if w == 8 { u64_at(p, o) } else { u32_at(p, o).map(u64::from) };
-        let (Some(id), Some(size), Some(k)) = (id, u32_at(p, o + w), u16_at(p, o + w + 4)) else { break };
+        let id = if w == 8 {
+            u64_at(p, o)
+        } else {
+            u32_at(p, o).map(u64::from)
+        };
+        let (Some(id), Some(size), Some(k)) = (id, u32_at(p, o + w), u16_at(p, o + w + 4)) else {
+            break;
+        };
         let size = size as usize;
         if size < 16 || c.constant.is_some_and(|x| x != k) {
             c.closed = true;
             break;
         }
-        let Some(tr) = u32_at(p, o + size + w + 4) else { break };
+        let Some(tr) = u32_at(p, o + size + w + 4) else {
+            break;
+        };
         if tr as usize != size {
             c.closed = true;
             break;
@@ -316,7 +345,10 @@ pub struct Scan {
 /// the placed ones with a box that is finite, ordered, within Revit's area and not empty in
 /// two or more directions. Duplicates (same category and box) are dropped.
 pub fn scan_boxes(p: &[u8], chain: &Chain, outline: u16, max_boxes: usize) -> Scan {
-    let mut s = Scan { records: chain.records.len(), ..Default::default() };
+    let mut s = Scan {
+        records: chain.records.len(),
+        ..Default::default()
+    };
     if chain.constant.is_none() {
         return s;
     }
@@ -332,17 +364,35 @@ pub fn scan_boxes(p: &[u8], chain: &Chain, outline: u16, max_boxes: usize) -> Sc
             *tags.entry(t).or_default() += 1;
         }
     }
-    let Some(tag) = tags.into_iter().max_by_key(|&(t, n)| (n, t)).map(|(t, _)| t) else { return s };
+    let Some(tag) = tags
+        .into_iter()
+        .max_by_key(|&(t, n)| (n, t))
+        .map(|(t, _)| t)
+    else {
+        return s;
+    };
     mk.extend_from_slice(&tag.to_le_bytes());
-    let (cat_back, wide) = if chain.id_width == 4 { (0x26, false) } else { (0x3e, true) };
+    let (cat_back, wide) = if chain.id_width == 4 {
+        (0x26, false)
+    } else {
+        (0x3e, true)
+    };
     let mut seen = std::collections::HashSet::new();
     let mut i = 0;
     while let Some(j) = find(region, &mk, i) {
         i = j + 1;
-        let (Some(c), Some(k)) = (j.checked_sub(cat_back), j.checked_sub(0x0e)) else { continue };
+        let (Some(c), Some(k)) = (j.checked_sub(cat_back), j.checked_sub(0x0e)) else {
+            continue;
+        };
         s.frames += 1;
-        let cat = if wide { u64_at(region, c).map(|x| x as i64) } else { u32_at(region, c).map(|x| x as i32 as i64) };
-        let (Some(cat), Some(kind)) = (cat, u32_at(region, k)) else { continue };
+        let cat = if wide {
+            u64_at(region, c).map(|x| x as i64)
+        } else {
+            u32_at(region, c).map(|x| x as i32 as i64)
+        };
+        let (Some(cat), Some(kind)) = (cat, u32_at(region, k)) else {
+            continue;
+        };
         if kind != PLACED || !(cat == -1 || (-2_100_000..-1_000_000).contains(&cat)) {
             continue;
         }
@@ -354,7 +404,10 @@ pub fn scan_boxes(p: &[u8], chain: &Chain, outline: u16, max_boxes: usize) -> Sc
                 _ => ok = false,
             }
         }
-        if !ok || (0..3).any(|a| v[a] > v[a + 3]) || (0..3).filter(|&a| v[a + 3] - v[a] > 1e-4).count() < 2 {
+        if !ok
+            || (0..3).any(|a| v[a] > v[a + 3])
+            || (0..3).filter(|&a| v[a + 3] - v[a] > 1e-4).count() < 2
+        {
             continue;
         }
         if !seen.insert((cat, v.map(f64::to_bits))) {
@@ -365,7 +418,12 @@ pub fn scan_boxes(p: &[u8], chain: &Chain, outline: u16, max_boxes: usize) -> Sc
             0 => 0,
             k => chain.records[k - 1].1 as i64,
         };
-        s.boxes.push(ElemBox { id, category: cat, min: [v[0] * FEET, v[1] * FEET, v[2] * FEET], max: [v[3] * FEET, v[4] * FEET, v[5] * FEET] });
+        s.boxes.push(ElemBox {
+            id,
+            category: cat,
+            min: [v[0] * FEET, v[1] * FEET, v[2] * FEET],
+            max: [v[3] * FEET, v[4] * FEET, v[5] * FEET],
+        });
         if s.boxes.len() >= max_boxes {
             break;
         }
@@ -455,7 +513,9 @@ pub fn category(cat: i64) -> Option<(&'static str, [f32; 4])> {
         -2008055 => ("Accessoires de canalisation", c(0x4f, 0xa8, 0x6b, 1.0)),
         -2008126 => ("Raccords de chemin de câbles", c(0xe0, 0xa0, 0x40, 1.0)),
         -2008128 => ("Raccords de conduit", c(0xe0, 0xa0, 0x40, 1.0)),
-        -2008075 | -2008077 | -2008079 | -2008081 | -2008083 | -2008085 | -2008087 | -2001055 => ("Dispositifs électriques", c(0xe0, 0xa0, 0x40, 1.0)),
+        -2008075 | -2008077 | -2008079 | -2008081 | -2008083 | -2008085 | -2008087 | -2001055 => {
+            ("Dispositifs électriques", c(0xe0, 0xa0, 0x40, 1.0))
+        }
         _ => return None,
     })
 }
@@ -479,7 +539,10 @@ fn drawn(b: &ElemBox) -> ([f64; 3], [f64; 3]) {
 /// Origin (min corner) and size of the box as drawn, for a unit cube placed by a matrix.
 pub fn box_extent(b: &ElemBox) -> ([f32; 3], [f32; 3]) {
     let (lo, hi) = drawn(b);
-    (lo.map(|v| v as f32), std::array::from_fn(|a| (hi[a] - lo[a]) as f32))
+    (
+        lo.map(|v| v as f32),
+        std::array::from_fn(|a| (hi[a] - lo[a]) as f32),
+    )
 }
 
 pub fn push_box(b: &ElemBox, pos: &mut Vec<[f32; 3]>, tri: &mut Vec<[u32; 3]>) {
@@ -493,7 +556,14 @@ pub fn push_box(b: &ElemBox, pos: &mut Vec<[f32; 3]>, tri: &mut Vec<[u32; 3]>) {
         ]);
     }
     // outward-facing (counter-clockwise seen from outside)
-    const F: [[u32; 4]; 6] = [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [2, 6, 7, 3], [0, 4, 6, 2], [1, 3, 7, 5]];
+    const F: [[u32; 4]; 6] = [
+        [0, 2, 3, 1],
+        [4, 5, 7, 6],
+        [0, 1, 5, 4],
+        [2, 6, 7, 3],
+        [0, 4, 6, 2],
+        [1, 3, 7, 5],
+    ];
     for q in F {
         tri.push([base + q[0], base + q[1], base + q[2]]);
         tri.push([base + q[0], base + q[2], base + q[3]]);
@@ -506,7 +576,9 @@ mod tests {
 
     #[test]
     fn depage_strips_runs() {
-        let mut b: Vec<u8> = (0..PAGE * 2 + 10).map(|i| if i % PAGE >= PAGE_DATA { 0xEE } else { 1 }).collect();
+        let mut b: Vec<u8> = (0..PAGE * 2 + 10)
+            .map(|i| if i % PAGE >= PAGE_DATA { 0xEE } else { 1 })
+            .collect();
         depage(&mut b);
         assert_eq!(b.len(), PAGE_DATA * 2 + 10);
         assert!(b.iter().all(|&c| c == 1));
@@ -549,7 +621,8 @@ mod tests {
             r[8..12].copy_from_slice(&size.to_le_bytes());
             r[12..14].copy_from_slice(&0x5c7u16.to_le_bytes());
             r[0x12..0x1a].copy_from_slice(&cat.to_le_bytes());
-            r[0x42..0x46].copy_from_slice(&(if placed { PLACED } else { 0xffff8080 }).to_le_bytes());
+            r[0x42..0x46]
+                .copy_from_slice(&(if placed { PLACED } else { 0xffff8080 }).to_le_bytes());
             r[0x50..0x52].copy_from_slice(&0x159u16.to_le_bytes());
             r[0x52..0x56].copy_from_slice(&[0xff; 4]);
             r[0x56..0x58].copy_from_slice(&0x5d3u16.to_le_bytes());
@@ -586,7 +659,8 @@ mod tests {
             r[4..8].copy_from_slice(&size.to_le_bytes());
             r[8..10].copy_from_slice(&0x4ebu16.to_le_bytes());
             r[m - 0x26..m - 0x22].copy_from_slice(&cat.to_le_bytes());
-            r[m - 0x0e..m - 0x0a].copy_from_slice(&(if placed { PLACED } else { 0xffff8080 }).to_le_bytes());
+            r[m - 0x0e..m - 0x0a]
+                .copy_from_slice(&(if placed { PLACED } else { 0xffff8080 }).to_le_bytes());
             r[m..m + 2].copy_from_slice(&0x109u16.to_le_bytes());
             r[m + 2..m + 6].copy_from_slice(&[0xff; 4]);
             r[m + 6..m + 8].copy_from_slice(&0x4f4u16.to_le_bytes());
@@ -605,7 +679,10 @@ mod tests {
         let c = walk_chain(&p);
         assert_eq!((c.records.len(), c.id_width, c.records[1].1), (3, 4, 8));
         let s = scan_boxes(&p, &c, 0x109, 100);
-        assert_eq!(s.boxes.iter().map(|b| b.category).collect::<Vec<_>>(), [-2000032, -2000011]);
+        assert_eq!(
+            s.boxes.iter().map(|b| b.category).collect::<Vec<_>>(),
+            [-2000032, -2000011]
+        );
         let mut stop = until_chain_end();
         assert!(!stop(&p));
     }

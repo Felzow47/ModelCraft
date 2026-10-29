@@ -35,14 +35,27 @@ fn main() {
     for m in &s.meshes {
         println!(
             "  mesh {:30} faces={:4} tris={:6} edges={:6} bbox={:?}..{:?} {:?}",
-            m.name, m.mesh.face_count, m.mesh.triangle_count(), m.mesh.edges.len() / 2, m.mesh.bbox_min, m.mesh.bbox_max, m.source
+            m.name,
+            m.mesh.face_count,
+            m.mesh.triangle_count(),
+            m.mesh.edges.len() / 2,
+            m.mesh.bbox_min,
+            m.mesh.bbox_max,
+            m.source
         );
     }
     for c in &s.components {
         let w = &c.world;
         println!(
             "  {}{} mesh={:?} sup={} hid={} t=({:.3},{:.3},{:.3})",
-            "  ".repeat(c.depth), c.name, c.mesh, c.suppressed, c.hidden, w[12], w[13], w[14]
+            "  ".repeat(c.depth),
+            c.name,
+            c.mesh,
+            c.suppressed,
+            c.hidden,
+            w[12],
+            w[13],
+            w[14]
         );
     }
     for w in &s.warnings {
@@ -61,7 +74,14 @@ fn main() {
                 writeln!(f, "v {} {} {}", q.x, q.y, q.z).unwrap();
             }
             for t in m.indices.chunks_exact(3) {
-                writeln!(f, "f {} {} {}", t[0] as usize + base, t[1] as usize + base, t[2] as usize + base).unwrap();
+                writeln!(
+                    f,
+                    "f {} {} {}",
+                    t[0] as usize + base,
+                    t[1] as usize + base,
+                    t[2] as usize + base
+                )
+                .unwrap();
             }
             base += m.positions.len();
         }

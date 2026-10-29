@@ -31,11 +31,20 @@ struct Group {
 
 impl Group {
     fn new(name: &str, material: &str) -> Group {
-        Group { name: name.to_string(), material: material.to_string(), corners: Vec::new(), polys: Vec::new() }
+        Group {
+            name: name.to_string(),
+            material: material.to_string(),
+            corners: Vec::new(),
+            polys: Vec::new(),
+        }
     }
     fn poly(&self, k: usize) -> &[Corner] {
         let a = self.polys[k] as usize;
-        let b = self.polys.get(k + 1).map(|&x| x as usize).unwrap_or(self.corners.len());
+        let b = self
+            .polys
+            .get(k + 1)
+            .map(|&x| x as usize)
+            .unwrap_or(self.corners.len());
         &self.corners[a..b]
     }
 }
@@ -67,7 +76,10 @@ pub fn load(path: &Path, bytes: &[u8]) -> Result<Loaded, String> {
     let mut cur_obj = stem(path);
     let mut cur_mat = String::new();
     // Blender writes metres ("# Blender 4.2.0" / "# Blender v2.93 OBJ File"); CAD exports mm
-    let blender = text.lines().take(5).any(|l| l.starts_with('#') && l.contains("Blender"));
+    let blender = text
+        .lines()
+        .take(5)
+        .any(|l| l.starts_with('#') && l.contains("Blender"));
     for line in text.lines() {
         let line = line.trim();
         let mut it = line.split_ascii_whitespace();
@@ -96,7 +108,13 @@ pub fn load(path: &Path, bytes: &[u8]) -> Result<Loaded, String> {
                 let start = g.corners.len();
                 for tok in it {
                     let mut f = tok.split('/');
-                    let mut idx = |len: usize| f.next().filter(|s| !s.is_empty()).and_then(|s| s.parse::<i64>().ok()).map(|i| resolve(i, len)).unwrap_or(NONE);
+                    let mut idx = |len: usize| {
+                        f.next()
+                            .filter(|s| !s.is_empty())
+                            .and_then(|s| s.parse::<i64>().ok())
+                            .map(|i| resolve(i, len))
+                            .unwrap_or(NONE)
+                    };
                     let c = [idx(v.len()), idx(vt.len()), idx(vn.len())];
                     if c[0] != NONE {
                         g.corners.push(c);
@@ -139,7 +157,9 @@ pub fn load(path: &Path, bytes: &[u8]) -> Result<Loaded, String> {
                     parse_mtl(&t, f.parent().unwrap_or(dir), &mut mats);
                 }
             }
-            None if !lib.is_empty() && text.contains("mtllib") => warnings.push(format!("bibliothèque de matériaux introuvable : {lib}")),
+            None if !lib.is_empty() && text.contains("mtllib") => {
+                warnings.push(format!("bibliothèque de matériaux introuvable : {lib}"))
+            }
             None => {}
         }
     }
@@ -147,13 +167,18 @@ pub fn load(path: &Path, bytes: &[u8]) -> Result<Loaded, String> {
     let mut textures: HashMap<PathBuf, Option<Arc<Rgba>>> = HashMap::new();
     for m in mats.values() {
         if let Some(t) = &m.texture {
-            textures.entry(t.clone()).or_insert_with(|| load_texture(t).map(Arc::new));
+            textures
+                .entry(t.clone())
+                .or_insert_with(|| load_texture(t).map(Arc::new));
         }
     }
     // merge groups by (object, material)
     let mut merged: Vec<Group> = Vec::new();
     for g in groups.into_iter().filter(|g| !g.polys.is_empty()) {
-        match merged.iter_mut().find(|m| m.name == g.name && m.material == g.material) {
+        match merged
+            .iter_mut()
+            .find(|m| m.name == g.name && m.material == g.material)
+        {
             Some(m) => {
                 let off = m.corners.len() as u32;
                 m.polys.extend(g.polys.iter().map(|p| p + off));
@@ -165,7 +190,7 @@ pub fn load(path: &Path, bytes: &[u8]) -> Result<Loaded, String> {
     let mut s = empty_scene(path, "OBJ");
     s.warnings.extend(warnings);
     s.up_z = false; // OBJ is conventionally Y-up (Blender's default export too)
-    // OBJ has no unit: CAD exports are almost always millimetres, Blender works in metres
+                    // OBJ has no unit: CAD exports are almost always millimetres, Blender works in metres
     let scale = if blender { 1.0 } else { 0.001 };
     let objects: Vec<String> = {
         let mut o: Vec<String> = Vec::new();
@@ -187,7 +212,9 @@ pub fn load(path: &Path, bytes: &[u8]) -> Result<Loaded, String> {
         };
         for g in parts {
             let mat = mats.get(&g.material);
-            let tex = mat.and_then(|m| m.texture.as_ref()).and_then(|t| textures.get(t).cloned().flatten());
+            let tex = mat
+                .and_then(|m| m.texture.as_ref())
+                .and_then(|t| textures.get(t).cloned().flatten());
             // texture coordinates that are not a real unwrap (Blender text converted to mesh:
             // every cap triangle squashed onto one line of the image) would paint random texels
             // and holes from the alpha: such a group is drawn in its plain material colour
@@ -195,7 +222,11 @@ pub fn load(path: &Path, bytes: &[u8]) -> Result<Loaded, String> {
             let tex = tex.filter(|t| !has_vt || uv_usable(g, &v, &vt, t));
             let mut mesh = build_group(g, &v, &vt, &vn, scale, tex.clone());
             // a texture without texture coordinates can only tint the part with its average colour
-            let avg = if mesh.texture.is_none() && !has_vt { tex.as_deref().map(average) } else { None };
+            let avg = if mesh.texture.is_none() && !has_vt {
+                tex.as_deref().map(average)
+            } else {
+                None
+            };
             let tex = if mesh.texture.is_none() { None } else { tex };
             // no drawn edges on textured materials: the image carries the detail, and CAD edges
             // on lettering or decals turn into a lace over it (the global switch still applies
@@ -211,13 +242,32 @@ pub fn load(path: &Path, bytes: &[u8]) -> Result<Loaded, String> {
                     (None, _) => [if m.texture.is_some() { 1.0 } else { 0.8 }; 3],
                 };
                 let a = avg.unwrap_or([1.0; 3]);
-                let kd = if avg.is_some() && m.kd.map_or(true, |k| k == [0.8; 3]) { a } else { [kd[0] * a[0], kd[1] * a[1], kd[2] * a[2]] };
+                let kd = if avg.is_some() && m.kd.map_or(true, |k| k == [0.8; 3]) {
+                    a
+                } else {
+                    [kd[0] * a[0], kd[1] * a[1], kd[2] * a[2]]
+                };
                 [kd[0], kd[1], kd[2], m.alpha]
             });
-            let label = if g.material.is_empty() { g.name.clone() } else { format!("{} [{}]", g.name, g.material) };
-            s.meshes.push(SceneMesh { name: label.clone(), mesh, source: MeshSource::Embedded, color });
+            let label = if g.material.is_empty() {
+                g.name.clone()
+            } else {
+                format!("{} [{}]", g.name, g.material)
+            };
+            s.meshes.push(SceneMesh {
+                name: label.clone(),
+                mesh,
+                source: MeshSource::Embedded,
+                color,
+            });
             let depth = if parent.is_some() { 1 } else { 0 };
-            s.components.push(component(&label, depth, parent, false, Some(s.meshes.len() - 1)));
+            s.components.push(component(
+                &label,
+                depth,
+                parent,
+                false,
+                Some(s.meshes.len() - 1),
+            ));
         }
     }
     s.timings.mesh = tm.elapsed();
@@ -231,7 +281,11 @@ fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
-    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
@@ -270,15 +324,22 @@ pub(crate) fn triangulate(p: &[[f32; 3]], out: &mut Vec<[u32; 3]>) {
     }
     let nrm = poly_normal(p);
     // 2D projection dropping the dominant axis, keeping the winding counter-clockwise
-    let ax = (0..3).max_by(|&a, &b| nrm[a].abs().total_cmp(&nrm[b].abs())).unwrap_or(2);
+    let ax = (0..3)
+        .max_by(|&a, &b| nrm[a].abs().total_cmp(&nrm[b].abs()))
+        .unwrap_or(2);
     let (i, j) = match ax {
         0 => (1, 2),
         1 => (2, 0),
         _ => (0, 1),
     };
     let flip = nrm[ax] < 0.0;
-    let q: Vec<[f32; 2]> = p.iter().map(|v| if flip { [v[j], v[i]] } else { [v[i], v[j]] }).collect();
-    let area2 = |a: [f32; 2], b: [f32; 2], c: [f32; 2]| (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+    let q: Vec<[f32; 2]> = p
+        .iter()
+        .map(|v| if flip { [v[j], v[i]] } else { [v[i], v[j]] })
+        .collect();
+    let area2 = |a: [f32; 2], b: [f32; 2], c: [f32; 2]| {
+        (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    };
     let fan = |out: &mut Vec<[u32; 3]>, idx: &[u32]| {
         for k in 1..idx.len() - 1 {
             out.push([idx[0], idx[k], idx[k + 1]]);
@@ -289,7 +350,9 @@ pub(crate) fn triangulate(p: &[[f32; 3]], out: &mut Vec<[u32; 3]>) {
         return;
     }
     let mut idx: Vec<u32> = (0..n as u32).collect();
-    let inside = |p: [f32; 2], a: [f32; 2], b: [f32; 2], c: [f32; 2]| area2(a, b, p) >= 0.0 && area2(b, c, p) >= 0.0 && area2(c, a, p) >= 0.0;
+    let inside = |p: [f32; 2], a: [f32; 2], b: [f32; 2], c: [f32; 2]| {
+        area2(a, b, p) >= 0.0 && area2(b, c, p) >= 0.0 && area2(c, a, p) >= 0.0
+    };
     let mut guard = 0usize;
     let mut k = 0usize;
     while idx.len() > 3 {
@@ -334,7 +397,14 @@ pub(crate) fn triangulate(p: &[[f32; 3]], out: &mut Vec<[u32; 3]>) {
 }
 
 /// Mesh of one (object, material) group.
-fn build_group(g: &Group, v: &[[f32; 3]], vt: &[[f32; 2]], vn: &[[f32; 3]], scale: f32, texture: Option<Arc<Rgba>>) -> TriMesh {
+fn build_group(
+    g: &Group,
+    v: &[[f32; 3]],
+    vt: &[[f32; 2]],
+    vn: &[[f32; 3]],
+    scale: f32,
+    texture: Option<Arc<Rgba>>,
+) -> TriMesh {
     let sc = |p: [f32; 3]| [p[0] * scale, p[1] * scale, p[2] * scale];
     let np = g.polys.len();
     let has_attr = g.corners.iter().any(|c| c[1] != NONE || c[2] != NONE);
@@ -364,7 +434,10 @@ fn build_group(g: &Group, v: &[[f32; 3]], vt: &[[f32; 2]], vn: &[[f32; 3]], scal
         return sw_format::mesh::build_from_triangles(&pos, &tris, 30.0, true);
     }
     // per-corner vertices (position, uv, normal), one face per polygon
-    let mut m = TriMesh { texture: texture.clone(), ..TriMesh::default() };
+    let mut m = TriMesh {
+        texture: texture.clone(),
+        ..TriMesh::default()
+    };
     let textured = texture.is_some();
     let mut vmap: HashMap<(u32, u32, u32, u32), u32> = HashMap::new();
     let mut first_of_pos: HashMap<u32, u32> = HashMap::new();
@@ -388,13 +461,26 @@ fn build_group(g: &Group, v: &[[f32; 3]], vt: &[[f32; 2]], vn: &[[f32; 3]], scal
             for &i in t {
                 let c = poly[i as usize];
                 // without a file normal, the corner is flat-shaded with its polygon
-                let key = (c[0], if textured { c[1] } else { NONE }, c[2], if c[2] == NONE { k as u32 } else { NONE });
+                let key = (
+                    c[0],
+                    if textured { c[1] } else { NONE },
+                    c[2],
+                    if c[2] == NONE { k as u32 } else { NONE },
+                );
                 let idx = *vmap.entry(key).or_insert_with(|| {
                     m.positions.push(sc(v[c[0] as usize]));
-                    let n = if c[2] != NONE { normalize(vn[c[2] as usize]) } else { fnrm };
+                    let n = if c[2] != NONE {
+                        normalize(vn[c[2] as usize])
+                    } else {
+                        fnrm
+                    };
                     m.normals.push(n);
                     if textured {
-                        let uv = if c[1] != NONE { vt[c[1] as usize] } else { [0.0, 0.0] };
+                        let uv = if c[1] != NONE {
+                            vt[c[1] as usize]
+                        } else {
+                            [0.0, 0.0]
+                        };
                         // OBJ v grows upward, image rows downward
                         m.uvs.push([uv[0], 1.0 - uv[1]]);
                     }
@@ -459,8 +545,16 @@ fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
     }
     let base = name.rsplit('/').next().unwrap_or(&name).to_string();
     let lower = base.to_lowercase();
-    for d in [dir.to_path_buf(), dir.join("textures"), dir.join("Textures"), dir.join("textures").join(".."), dir.join("..").join("textures")] {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+    for d in [
+        dir.to_path_buf(),
+        dir.join("textures"),
+        dir.join("Textures"),
+        dir.join("textures").join(".."),
+        dir.join("..").join("textures"),
+    ] {
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.flatten() {
             if e.file_name().to_string_lossy().to_lowercase() == lower {
                 return Some(e.path());
@@ -479,10 +573,18 @@ fn load_texture(path: &Path) -> Option<Rgba> {
     }
     let mut img = image::open(path).ok()?;
     if img.width() > MAX_TEXTURE || img.height() > MAX_TEXTURE {
-        img = img.resize(MAX_TEXTURE, MAX_TEXTURE, image::imageops::FilterType::Triangle);
+        img = img.resize(
+            MAX_TEXTURE,
+            MAX_TEXTURE,
+            image::imageops::FilterType::Triangle,
+        );
     }
     let rgba = img.to_rgba8();
-    Some(Rgba { width: rgba.width(), height: rgba.height(), pixels: rgba.into_raw() })
+    Some(Rgba {
+        width: rgba.width(),
+        height: rgba.height(),
+        pixels: rgba.into_raw(),
+    })
 }
 
 /// Whether a group's texture coordinates map its surface onto the image: false when most of
@@ -500,7 +602,10 @@ fn uv_usable(g: &Group, v: &[[f32; 3]], vt: &[[f32; 2]], t: &Rgba) -> bool {
             total += a3;
             let uv = c.map(|c| vt.get(c[1] as usize).copied());
             let auv = match uv {
-                [Some(a), Some(b), Some(c)] => (((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])) as f64).abs() * 0.5,
+                [Some(a), Some(b), Some(c)] => {
+                    (((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])) as f64).abs()
+                        * 0.5
+                }
                 _ => 0.0,
             };
             if auv < min_uv {
@@ -542,9 +647,15 @@ fn linear_to_srgb(c: f32) -> f32 {
 
 fn parse_mtl(t: &str, dir: &Path, out: &mut HashMap<String, Material>) {
     // Blender writes its (scene-linear) base colour as Kd; the viewer works in sRGB
-    let linear = t.lines().take(3).any(|l| l.starts_with('#') && l.contains("Blender"));
+    let linear = t
+        .lines()
+        .take(3)
+        .any(|l| l.starts_with('#') && l.contains("Blender"));
     let mut cur = String::new();
-    let new = || Material { alpha: 1.0, ..Default::default() };
+    let new = || Material {
+        alpha: 1.0,
+        ..Default::default()
+    };
     for line in t.lines() {
         let line = line.trim();
         let mut it = line.split_ascii_whitespace();
@@ -558,7 +669,11 @@ fn parse_mtl(t: &str, dir: &Path, out: &mut HashMap<String, Material>) {
                 let c: Vec<f32> = it.filter_map(|s| s.parse().ok()).collect();
                 if c.len() >= 3 {
                     let k = [c[0], c[1], c[2]].map(|x| x.clamp(0.0, 1.0));
-                    let k = if linear && k != [0.8; 3] { k.map(linear_to_srgb) } else { k };
+                    let k = if linear && k != [0.8; 3] {
+                        k.map(linear_to_srgb)
+                    } else {
+                        k
+                    };
                     out.entry(cur.clone()).or_insert_with(new).kd = Some(k);
                 }
             }
@@ -613,12 +728,25 @@ mod tests {
         let p = dir.join("cube.obj");
         std::fs::write(&p, obj).unwrap();
         let s = load(&p, obj.as_bytes()).unwrap();
-        let col = |m: &str| s.meshes.iter().find(|x| x.name.contains(m)).and_then(|x| x.color).unwrap();
+        let col = |m: &str| {
+            s.meshes
+                .iter()
+                .find(|x| x.name.contains(m))
+                .and_then(|x| x.color)
+                .unwrap()
+        };
         assert_eq!(col("Blue"), [0.0, 0.0, 1.0, 0.5]);
         let t = col("Tex");
-        assert!(t[0] > 0.95 && t[1] < 0.05 && t[2] < 0.05, "texture average {t:?}");
+        assert!(
+            t[0] > 0.95 && t[1] < 0.05 && t[2] < 0.05,
+            "texture average {t:?}"
+        );
         // Blender works in metres: a 2 m quad stays 2 m
-        let hi = s.meshes.iter().map(|m| m.mesh.bbox_max[0]).fold(0f32, f32::max);
+        let hi = s
+            .meshes
+            .iter()
+            .map(|m| m.mesh.bbox_max[0])
+            .fold(0f32, f32::max);
         assert!((hi - 2.0).abs() < 1e-4, "{hi}");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -627,7 +755,11 @@ mod tests {
         m.indices
             .chunks_exact(3)
             .map(|t| {
-                let (a, b, c) = (m.positions[t[0] as usize], m.positions[t[1] as usize], m.positions[t[2] as usize]);
+                let (a, b, c) = (
+                    m.positions[t[0] as usize],
+                    m.positions[t[1] as usize],
+                    m.positions[t[2] as usize],
+                );
                 let n = cross(sub(b, a), sub(c, a));
                 dot(n, n).sqrt() / 2.0
             })
@@ -661,7 +793,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mut img = image::RgbaImage::new(4, 2);
         for (x, _, p) in img.enumerate_pixels_mut() {
-            *p = if x < 2 { image::Rgba([255, 0, 0, 255]) } else { image::Rgba([0, 255, 0, 255]) };
+            *p = if x < 2 {
+                image::Rgba([255, 0, 0, 255])
+            } else {
+                image::Rgba([0, 255, 0, 255])
+            };
         }
         img.save(dir.join("board.png")).unwrap();
         std::fs::write(dir.join("b.mtl"), "# Blender 4.2 MTL File: 'None'\nnewmtl Board\nKd 0.8 0.8 0.8\nmap_Kd board.png\nnewmtl Grey\nKd 0.214041 0.214041 0.214041\n").unwrap();
@@ -674,11 +810,22 @@ mod tests {
         assert_eq!((t.width, t.height), (4, 2));
         assert_eq!(b.mesh.uvs.len(), b.mesh.positions.len());
         // v is flipped for image rows
-        let i = b.mesh.positions.iter().position(|p| *p == [0.0, 1.0, 0.0]).unwrap();
+        let i = b
+            .mesh
+            .positions
+            .iter()
+            .position(|p| *p == [0.0, 1.0, 0.0])
+            .unwrap();
         assert_eq!(b.mesh.uvs[i], [0.0, 0.0]);
         assert_eq!(b.color, Some([1.0, 1.0, 1.0, 1.0]));
         // linear 0.214 is sRGB 0.5
-        let g = s.meshes.iter().find(|m| m.name.contains("Grey")).unwrap().color.unwrap();
+        let g = s
+            .meshes
+            .iter()
+            .find(|m| m.name.contains("Grey"))
+            .unwrap()
+            .color
+            .unwrap();
         assert!((g[0] - 0.5).abs() < 0.01, "{g:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -686,16 +833,31 @@ mod tests {
     /// Private Blender export (SW_SAMPLES5=dir with Uv2.obj/.mtl/texture.png); skipped if absent.
     #[test]
     fn private_blender_totem() {
-        let Some(dir) = std::env::var_os("SW_SAMPLES5") else { return };
+        let Some(dir) = std::env::var_os("SW_SAMPLES5") else {
+            return;
+        };
         let p = std::path::Path::new(&dir).join("Uv2.obj");
         let Ok(bytes) = std::fs::read(&p) else { return };
         let s = load(&p, &bytes).unwrap();
-        let (lo, hi) = s.meshes.iter().fold(([f32::MAX; 3], [f32::MIN; 3]), |(lo, hi), m| {
-            (std::array::from_fn(|k| lo[k].min(m.mesh.bbox_min[k])), std::array::from_fn(|k| hi[k].max(m.mesh.bbox_max[k])))
-        });
+        let (lo, hi) = s
+            .meshes
+            .iter()
+            .fold(([f32::MAX; 3], [f32::MIN; 3]), |(lo, hi), m| {
+                (
+                    std::array::from_fn(|k| lo[k].min(m.mesh.bbox_min[k])),
+                    std::array::from_fn(|k| hi[k].max(m.mesh.bbox_max[k])),
+                )
+            });
         // upright: the totem is tallest along +Y
-        assert!(hi[1] - lo[1] > 3.0 * (hi[0] - lo[0]).max(hi[2] - lo[2]), "{lo:?} {hi:?}");
-        let tex: Vec<_> = s.meshes.iter().filter(|m| m.name.contains("Material.002")).collect();
+        assert!(
+            hi[1] - lo[1] > 3.0 * (hi[0] - lo[0]).max(hi[2] - lo[2]),
+            "{lo:?} {hi:?}"
+        );
+        let tex: Vec<_> = s
+            .meshes
+            .iter()
+            .filter(|m| m.name.contains("Material.002"))
+            .collect();
         assert!(!tex.is_empty());
         if std::path::Path::new(&dir).join("texture.png").exists() {
             // boards and logo are mapped; the lettering (flattened UVs) is plain white
@@ -710,8 +872,16 @@ mod tests {
                 }
             }
         }
-        let red = s.meshes.iter().find(|m| m.name.contains("Material.001")).and_then(|m| m.color).unwrap();
-        assert!(red[0] > 0.7 && red[1] < 0.05, "linear 0.52 red shown as sRGB {red:?}");
+        let red = s
+            .meshes
+            .iter()
+            .find(|m| m.name.contains("Material.001"))
+            .and_then(|m| m.color)
+            .unwrap();
+        assert!(
+            red[0] > 0.7 && red[1] < 0.05,
+            "linear 0.52 red shown as sRGB {red:?}"
+        );
     }
 
     #[test]
@@ -721,20 +891,39 @@ mod tests {
         let mut img = image::RgbaImage::new(4, 4);
         img.put_pixel(3, 0, image::Rgba([255, 255, 255, 255]));
         img.save(dir.join("atlas.png")).unwrap();
-        std::fs::write(dir.join("t.mtl"), "# Blender MTL File\nnewmtl Atlas\nmap_Kd atlas.png\nmap_d atlas.png\n").unwrap();
+        std::fs::write(
+            dir.join("t.mtl"),
+            "# Blender MTL File\nnewmtl Atlas\nmap_Kd atlas.png\nmap_d atlas.png\n",
+        )
+        .unwrap();
         // "lettering": the cap's UVs all lie on the line v = 1 (zero area)
         let obj = "# Blender 4.2\nmtllib t.mtl\no Text\nv 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nvt 0 1\nvt 0.5 1\nvt 1 1\nvn 0 0 1\nusemtl Atlas\nf 1/1/1 2/2/1 3/3/1 4/1/1\n\
                    o Board\nv 0 0 1\nv 1 0 1\nv 1 1 1\nv 0 1 1\nvt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\nf 5/4/1 6/5/1 7/6/1 8/7/1\n";
         let p = dir.join("t.obj");
         std::fs::write(&p, obj).unwrap();
         let s = load(&p, obj.as_bytes()).unwrap();
-        let t = s.meshes.iter().find(|m| m.name.starts_with("Text")).unwrap();
+        let t = s
+            .meshes
+            .iter()
+            .find(|m| m.name.starts_with("Text"))
+            .unwrap();
         assert!(t.mesh.texture.is_none(), "flattened UVs are not mapped");
-        assert_eq!(t.color, Some([1.0, 1.0, 1.0, 1.0]), "plain (white) material colour");
+        assert_eq!(
+            t.color,
+            Some([1.0, 1.0, 1.0, 1.0]),
+            "plain (white) material colour"
+        );
         assert!(t.mesh.edges.is_empty());
-        let b = s.meshes.iter().find(|m| m.name.starts_with("Board")).unwrap();
+        let b = s
+            .meshes
+            .iter()
+            .find(|m| m.name.starts_with("Board"))
+            .unwrap();
         assert!(b.mesh.texture.is_some());
-        assert!(b.mesh.edges.is_empty(), "no CAD edges over a textured material");
+        assert!(
+            b.mesh.edges.is_empty(),
+            "no CAD edges over a textured material"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

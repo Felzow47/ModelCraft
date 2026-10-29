@@ -4,11 +4,17 @@ use crate::{single_mesh_scene, Loaded};
 use std::path::Path;
 
 pub fn load(path: &Path, bytes: &[u8]) -> Result<Loaded, String> {
-    let (pos, color) = if is_binary(bytes) { binary(bytes)? } else { ascii(bytes)? };
+    let (pos, color) = if is_binary(bytes) {
+        binary(bytes)?
+    } else {
+        ascii(bytes)?
+    };
     if pos.is_empty() {
         return Err("aucun triangle dans le fichier STL".into());
     }
-    let tris: Vec<[u32; 3]> = (0..pos.len() as u32 / 3).map(|i| [3 * i, 3 * i + 1, 3 * i + 2]).collect();
+    let tris: Vec<[u32; 3]> = (0..pos.len() as u32 / 3)
+        .map(|i| [3 * i, 3 * i + 1, 3 * i + 2])
+        .collect();
     Ok(single_mesh_scene(path, "STL", &pos, &tris, color, 0.001))
 }
 
@@ -31,7 +37,14 @@ fn binary(b: &[u8]) -> Result<Soup, String> {
     let n = u32::from_le_bytes([b[80], b[81], b[82], b[83]]) as usize;
     let n = n.min((b.len() - 84) / 50);
     // Magics/SolidView put "COLOR=" + RGBA in the header for a default colour.
-    let color = b[..80].windows(10).find(|w| &w[..6] == b"COLOR=").map(|w| [w[6] as f32 / 255.0, w[7] as f32 / 255.0, w[8] as f32 / 255.0, 1.0]);
+    let color = b[..80].windows(10).find(|w| &w[..6] == b"COLOR=").map(|w| {
+        [
+            w[6] as f32 / 255.0,
+            w[7] as f32 / 255.0,
+            w[8] as f32 / 255.0,
+            1.0,
+        ]
+    });
     let mut pos = Vec::with_capacity(n * 3);
     let f = |o: usize| f32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
     for i in 0..n {
@@ -52,7 +65,10 @@ fn ascii(b: &[u8]) -> Result<Soup, String> {
         if tok.eq_ignore_ascii_case("vertex") {
             let mut p = [0f32; 3];
             for c in &mut p {
-                *c = it.next().and_then(|s| s.parse().ok()).ok_or("STL ASCII : coordonnée invalide")?;
+                *c = it
+                    .next()
+                    .and_then(|s| s.parse().ok())
+                    .ok_or("STL ASCII : coordonnée invalide")?;
             }
             pos.push(p);
         }

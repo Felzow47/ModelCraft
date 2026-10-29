@@ -24,7 +24,11 @@ pub struct LoadProgress {
 }
 
 pub enum DocState {
-    Loading { rx: mpsc::Receiver<LoadResult>, progress: Arc<Mutex<LoadProgress>>, started: Instant },
+    Loading {
+        rx: mpsc::Receiver<LoadResult>,
+        progress: Arc<Mutex<LoadProgress>>,
+        started: Instant,
+    },
     Ready,
     Failed(String),
 }
@@ -207,7 +211,8 @@ const UNDO_MAX: usize = 100;
 impl Drop for Document {
     fn drop(&mut self) {
         // closing / reloading a tab stops its loader
-        self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -216,7 +221,10 @@ static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new
 impl Document {
     pub fn open(path: &Path, opts: craft_formats::Options, ctx: &egui::Context) -> Document {
         let (tx, rx) = mpsc::channel();
-        let progress = Arc::new(Mutex::new(LoadProgress { stage: "Lecture du fichier…".into(), ..Default::default() }));
+        let progress = Arc::new(Mutex::new(LoadProgress {
+            stage: "Lecture du fichier…".into(),
+            ..Default::default()
+        }));
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mut opts = opts;
         opts.cancel = Some(cancel.clone());
@@ -246,42 +254,58 @@ impl Document {
         }
         let p = path.to_path_buf();
         let ctx2 = ctx.clone();
-        let spawned = std::thread::Builder::new().name("loader".into()).spawn(move || {
-            crate::crash::set_current_file(Some(&p));
-            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                craft_formats::load_any(&p, &opts).map(|mut s| {
-                    // a single part with several bodies: one child per body (explode / opacity by body)
-                    if let Some(pr) = &opts.progress {
-                        pr.report(0.97, "Séparation des corps…");
-                    }
-                    if sw_format::bodies::split_single_part(&mut s) == 0 {
-                        // CAD assemblies (SolidWorks, STEP, IGES): bodies inside each part too;
-                        // mesh formats already come split into objects
-                        let cad = match &s.container {
-                            sw_format::ContainerKind::Other(f) => matches!(*f, "STEP" | "IGES"),
-                            _ => true,
-                        };
-                        if cad {
-                            sw_format::bodies::split_assembly_parts(&mut s);
+        let spawned = std::thread::Builder::new()
+            .name("loader".into())
+            .spawn(move || {
+                crate::crash::set_current_file(Some(&p));
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    craft_formats::load_any(&p, &opts).map(|mut s| {
+                        // a single part with several bodies: one child per body (explode / opacity by body)
+                        if let Some(pr) = &opts.progress {
+                            pr.report(0.97, "Séparation des corps…");
                         }
-                    }
-                    s
-                })
-            }))
-                .unwrap_or_else(|e| Err(format!("le lecteur a planté sur ce fichier (erreur interne : {})", crate::crash::panic_text(&*e))));
-            crate::crash::set_current_file(None);
-            let _ = tx.send(r);
-            ctx2.request_repaint();
-        });
-        let failed = spawned.err().map(|e| format!("impossible de lancer le chargement : {e}"));
+                        if sw_format::bodies::split_single_part(&mut s) == 0 {
+                            // CAD assemblies (SolidWorks, STEP, IGES): bodies inside each part too;
+                            // mesh formats already come split into objects
+                            let cad = match &s.container {
+                                sw_format::ContainerKind::Other(f) => matches!(*f, "STEP" | "IGES"),
+                                _ => true,
+                            };
+                            if cad {
+                                sw_format::bodies::split_assembly_parts(&mut s);
+                            }
+                        }
+                        s
+                    })
+                }))
+                .unwrap_or_else(|e| {
+                    Err(format!(
+                        "le lecteur a planté sur ce fichier (erreur interne : {})",
+                        crate::crash::panic_text(&*e)
+                    ))
+                });
+                crate::crash::set_current_file(None);
+                let _ = tx.send(r);
+                ctx2.request_repaint();
+            });
+        let failed = spawned
+            .err()
+            .map(|e| format!("impossible de lancer le chargement : {e}"));
         Document {
             id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             path: path.to_path_buf(),
-            title: path.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
+            title: path
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default(),
             size: std::fs::metadata(path).map(|m| m.len()).unwrap_or(0),
             state: match failed {
                 Some(e) => DocState::Failed(e),
-                None => DocState::Loading { rx, progress, started: Instant::now() },
+                None => DocState::Loading {
+                    rx,
+                    progress,
+                    started: Instant::now(),
+                },
             },
             cancel,
             scene: None,
@@ -341,7 +365,9 @@ impl Document {
 
     pub fn progress(&self) -> Option<LoadProgress> {
         match &self.state {
-            DocState::Loading { progress, started, .. } => {
+            DocState::Loading {
+                progress, started, ..
+            } => {
                 let mut p = progress.lock().map(|p| p.clone()).unwrap_or_default();
                 p.secs = started.elapsed().as_secs_f32();
                 Some(p)
@@ -352,7 +378,8 @@ impl Document {
 
     /// Ask the loader to stop (it checks between steps and every few megabytes).
     pub fn cancel_load(&mut self) {
-        self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         if self.is_loading() {
             self.state = DocState::Failed("Chargement annulé".into());
         }
@@ -360,7 +387,9 @@ impl Document {
 
     /// Check the loader; returns true when the scene just arrived.
     pub fn poll(&mut self, device: &eframe::wgpu::Device, ctx: &egui::Context) -> bool {
-        let DocState::Loading { rx, started, .. } = &self.state else { return false };
+        let DocState::Loading { rx, started, .. } = &self.state else {
+            return false;
+        };
         let r = match rx.try_recv() {
             Ok(r) => r,
             Err(mpsc::TryRecvError::Empty) => return false,
@@ -383,8 +412,16 @@ impl Document {
     fn set_scene(&mut self, scene: Scene, device: &eframe::wgpu::Device, ctx: &egui::Context) {
         let n = scene.components.len();
         self.hidden = scene.components.iter().map(|c| c.hidden).collect();
-        let rot = if scene.up_z { Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2) } else { Mat4::IDENTITY };
-        let base: Vec<Mat4> = scene.components.iter().map(|c| rot * Mat4::from_cols_array(&c.world)).collect();
+        let rot = if scene.up_z {
+            Mat4::from_rotation_x(-std::f32::consts::FRAC_PI_2)
+        } else {
+            Mat4::IDENTITY
+        };
+        let base: Vec<Mat4> = scene
+            .components
+            .iter()
+            .map(|c| rot * Mat4::from_cols_array(&c.world))
+            .collect();
         self.asm = crate::assembly::Assembly::new(&scene, base.clone());
         self.acc = vec![Mat4::IDENTITY; n];
         self.display = base;
@@ -401,11 +438,24 @@ impl Document {
         // a Revit project opens on its project browser, sections unfolded (as in Revit)
         if !scene.browser.is_empty() && self.browser_open.is_empty() {
             self.show_browser = true;
-            self.browser_open = scene.browser.iter().enumerate().filter(|(_, r)| r.depth == 0).map(|(i, _)| i).collect();
+            self.browser_open = scene
+                .browser
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| r.depth == 0)
+                .map(|(i, _)| i)
+                .collect();
         }
         if let Some(p) = &scene.preview {
-            let img = egui::ColorImage::from_rgba_unmultiplied([p.width as usize, p.height as usize], &p.pixels);
-            self.preview = Some(ctx.load_texture(format!("preview-{}", self.id), img, egui::TextureOptions::LINEAR));
+            let img = egui::ColorImage::from_rgba_unmultiplied(
+                [p.width as usize, p.height as usize],
+                &p.pixels,
+            );
+            self.preview = Some(ctx.load_texture(
+                format!("preview-{}", self.id),
+                img,
+                egui::TextureOptions::LINEAR,
+            ));
         }
         self.sheet_tex.clear();
         for sh in &scene.sheets {
@@ -414,23 +464,36 @@ impl Document {
                 .iter()
                 .enumerate()
                 .map(|(k, i)| {
-                    let img = egui::ColorImage::from_rgba_unmultiplied([i.image.width as usize, i.image.height as usize], &i.image.pixels);
-                    ctx.load_texture(format!("sheet-{}-{}-{k}", self.id, sh.id), img, egui::TextureOptions::LINEAR)
+                    let img = egui::ColorImage::from_rgba_unmultiplied(
+                        [i.image.width as usize, i.image.height as usize],
+                        &i.image.pixels,
+                    );
+                    ctx.load_texture(
+                        format!("sheet-{}-{}-{k}", self.id, sh.id),
+                        img,
+                        egui::TextureOptions::LINEAR,
+                    )
                 })
                 .collect();
             self.sheet_tex.insert(sh.id, tex);
         }
         let before = crate::crash::gpu_errors().0;
-        let up = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| GpuScene::upload(device, &scene)));
+        let up = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            GpuScene::upload(device, &scene)
+        }));
         let (after, msg) = crate::crash::gpu_errors();
         match up {
             Ok(g) if after == before => self.gpu = Some(g),
             Ok(_) => {
-                self.state = DocState::Failed(format!("la carte graphique a refusé le modèle ({msg})"));
+                self.state =
+                    DocState::Failed(format!("la carte graphique a refusé le modèle ({msg})"));
                 return;
             }
             Err(e) => {
-                self.state = DocState::Failed(format!("envoi au GPU impossible ({})", crate::crash::panic_text(&*e)));
+                self.state = DocState::Failed(format!(
+                    "envoi au GPU impossible ({})",
+                    crate::crash::panic_text(&*e)
+                ));
                 return;
             }
         }
@@ -447,15 +510,35 @@ impl Document {
     /// 2D-only browser rows (sheets, drafting views, legends, schedules): no 3D camera.
     pub fn view_is_flat(&self, row: usize) -> bool {
         use sw_format::BrowserKind as K;
-        self.scene.as_ref().and_then(|s| s.browser.get(row)).is_some_and(|r| matches!(r.kind, K::Sheet | K::Drafting | K::Legend | K::Schedule))
+        self.scene
+            .as_ref()
+            .and_then(|s| s.browser.get(row))
+            .is_some_and(|r| matches!(r.kind, K::Sheet | K::Drafting | K::Legend | K::Schedule))
     }
 
     /// Can this browser row be opened like a Revit view (double-click in Revit)?
     pub fn view_openable(&self, row: usize) -> bool {
         use sw_format::BrowserKind as K;
-        self.scene.as_ref().and_then(|s| s.browser.get(row)).is_some_and(|r| {
-            r.id > 0 && matches!(r.kind, K::Plan | K::CeilingPlan | K::View3d | K::Section | K::Elevation | K::Detail | K::Drafting | K::Rendering | K::Legend | K::Schedule | K::Sheet)
-        })
+        self.scene
+            .as_ref()
+            .and_then(|s| s.browser.get(row))
+            .is_some_and(|r| {
+                r.id > 0
+                    && matches!(
+                        r.kind,
+                        K::Plan
+                            | K::CeilingPlan
+                            | K::View3d
+                            | K::Section
+                            | K::Elevation
+                            | K::Detail
+                            | K::Drafting
+                            | K::Rendering
+                            | K::Legend
+                            | K::Schedule
+                            | K::Sheet
+                    )
+            })
     }
 
     /// Opens a view or sheet of the project browser: selects and reveals its row, then puts
@@ -463,7 +546,9 @@ impl Document {
     /// front, both orthographic; 3D views in 3D; sheets and other 2D views on their sheet).
     pub fn activate_view(&mut self, row: usize, animate: bool) {
         use sw_format::BrowserKind as K;
-        let Some(b) = self.scene.as_ref().map(|s| &s.browser) else { return };
+        let Some(b) = self.scene.as_ref().map(|s| &s.browser) else {
+            return;
+        };
         let Some(r) = b.get(row) else { return };
         let kind = r.kind;
         // unfold the parents
@@ -494,13 +579,30 @@ impl Document {
         self.view_box = None;
         self.view_clip = None;
         self.view_clip_off = false;
-        let id = self.scene.as_ref().and_then(|s| s.browser.get(row)).map_or(-1, |r| r.id);
+        let id = self
+            .scene
+            .as_ref()
+            .and_then(|s| s.browser.get(row))
+            .map_or(-1, |r| r.id);
         let up_z = self.scene.as_ref().is_some_and(|s| s.up_z);
-        let frame = self.scene.as_ref().and_then(|s| s.view_frames.iter().find(|f| f.id == id)).cloned();
-        let model_view = matches!(kind, K::Plan | K::CeilingPlan | K::Section | K::Elevation | K::Detail | K::View3d);
+        let frame = self
+            .scene
+            .as_ref()
+            .and_then(|s| s.view_frames.iter().find(|f| f.id == id))
+            .cloned();
+        let model_view = matches!(
+            kind,
+            K::Plan | K::CeilingPlan | K::Section | K::Elevation | K::Detail | K::View3d
+        );
         if let (Some(f), Some((_, ortho)), true) = (frame, goal, model_view) {
             // model (z up) to display (y up): (x, y, z) → (x, z, -y)
-            let disp = |v: [f32; 3]| if up_z { Vec3::new(v[0], v[2], -v[1]) } else { Vec3::from(v) };
+            let disp = |v: [f32; 3]| {
+                if up_z {
+                    Vec3::new(v[0], v[2], -v[1])
+                } else {
+                    Vec3::from(v)
+                }
+            };
             if let Some(yp) = view_yaw_pitch(disp(f.dir), disp(f.up)) {
                 goal = Some((yp, ortho));
             }
@@ -512,7 +614,11 @@ impl Document {
                 let o = disp(c.orig);
                 let ax = c.axes.map(|a| disp(a).normalize_or_zero());
                 let base: [f32; 3] = std::array::from_fn(|k| o.dot(ax[k]));
-                (ax.map(|a| a.to_array()), std::array::from_fn(|k| base[k] + c.lo[k]), std::array::from_fn(|k| base[k] + c.hi[k]))
+                (
+                    ax.map(|a| a.to_array()),
+                    std::array::from_fn(|k| base[k] + c.lo[k]),
+                    std::array::from_fn(|k| base[k] + c.hi[k]),
+                )
             });
         }
         if let Some(((y, p), ortho)) = goal {
@@ -544,7 +650,9 @@ impl Document {
         if self.asm.can_explode() {
             return false;
         }
-        let Some(mut scene) = self.scene.take() else { return false };
+        let Some(mut scene) = self.scene.take() else {
+            return false;
+        };
         if sw_format::bodies::split_single_part_faces(&mut scene) == 0 {
             self.scene = Some(scene);
             return false;
@@ -566,12 +674,25 @@ impl Document {
     /// stays, even when the whole model is one single body. Moves, opacity, visibility and the
     /// undo history of the other components are kept. Returns true when a face was detached;
     /// a face that is already a whole component just selects that component.
-    pub fn detach_selected_face(&mut self, device: &eframe::wgpu::Device, ctx: &egui::Context) -> bool {
+    pub fn detach_selected_face(
+        &mut self,
+        device: &eframe::wgpu::Device,
+        ctx: &egui::Context,
+    ) -> bool {
         let Some(f) = self.face_sel else { return false };
         let Some(face) = f.face else { return false };
-        let Some(scene) = self.scene.as_ref() else { return false };
-        let Some(mesh) = scene.components.get(f.comp).and_then(|c| c.mesh) else { return false };
-        if mesh != f.mesh || scene.meshes.get(mesh).is_none_or(|m| m.mesh.face_start.len() < 2) {
+        let Some(scene) = self.scene.as_ref() else {
+            return false;
+        };
+        let Some(mesh) = scene.components.get(f.comp).and_then(|c| c.mesh) else {
+            return false;
+        };
+        if mesh != f.mesh
+            || scene
+                .meshes
+                .get(mesh)
+                .is_none_or(|m| m.mesh.face_start.len() < 2)
+        {
             // the face is the whole component (e.g. already detached): move the component
             self.face_sel = None;
             self.select(Some(f.comp));
@@ -587,7 +708,11 @@ impl Document {
         // keep the viewer state of every component, with a neutral entry for the new one
         let mut user = std::mem::take(&mut self.asm.user);
         let mut opacity = std::mem::take(&mut self.asm.opacity);
-        let (explode, goal, lines) = (self.asm.explode, self.asm.explode_goal, self.asm.explode_lines);
+        let (explode, goal, lines) = (
+            self.asm.explode,
+            self.asm.explode_goal,
+            self.asm.explode_lines,
+        );
         let (global, others) = (self.asm.global_opacity, self.asm.others_transparent);
         let mut hidden = std::mem::take(&mut self.hidden);
         let ok = ins <= user.len() && ins <= opacity.len() && ins <= hidden.len();
@@ -603,7 +728,12 @@ impl Document {
                 st.hidden.insert(ins, false);
             }
         }
-        let expanded: HashSet<usize> = self.expanded.iter().map(|&i| if i >= ins { i + 1 } else { i }).chain([f.comp]).collect();
+        let expanded: HashSet<usize> = self
+            .expanded
+            .iter()
+            .map(|&i| if i >= ins { i + 1 } else { i })
+            .chain([f.comp])
+            .collect();
         let cam = self.camera.clone();
         let cursor = self.cursor3d;
         self.gpu = None;
@@ -708,7 +838,9 @@ impl Document {
     }
 
     pub fn redo(&mut self) -> bool {
-        let Some(s) = self.redo.pop() else { return false };
+        let Some(s) = self.redo.pop() else {
+            return false;
+        };
         self.undo.push(self.view_state());
         self.restore(s);
         true
@@ -755,9 +887,21 @@ impl Document {
             st.area += a * det.powf(2.0 / 3.0);
             for k in 0..8 {
                 let p = Vec3::new(
-                    if k & 1 == 0 { m.bbox_min[0] } else { m.bbox_max[0] },
-                    if k & 2 == 0 { m.bbox_min[1] } else { m.bbox_max[1] },
-                    if k & 4 == 0 { m.bbox_min[2] } else { m.bbox_max[2] },
+                    if k & 1 == 0 {
+                        m.bbox_min[0]
+                    } else {
+                        m.bbox_max[0]
+                    },
+                    if k & 2 == 0 {
+                        m.bbox_min[1]
+                    } else {
+                        m.bbox_max[1]
+                    },
+                    if k & 4 == 0 {
+                        m.bbox_min[2]
+                    } else {
+                        m.bbox_max[2]
+                    },
                 );
                 let q = w.transform_point3(p);
                 lo = lo.min(q);
@@ -787,7 +931,9 @@ impl Document {
     }
 
     pub fn has_children(&self, i: usize) -> bool {
-        self.scene.as_ref().is_some_and(|s| s.components.get(i + 1).is_some_and(|c| c.parent == Some(i)))
+        self.scene
+            .as_ref()
+            .is_some_and(|s| s.components.get(i + 1).is_some_and(|c| c.parent == Some(i)))
     }
 
     pub fn hide(&mut self, i: usize) {
@@ -868,11 +1014,20 @@ impl Document {
         }
         let (sel, hov): (HashSet<usize>, HashSet<usize>) = if self.instances_dirty {
             let s = self.scene.as_ref().unwrap();
-            (self.selected.map(|r| self.subtree_of(s, r)).unwrap_or_default(), self.hover.map(|r| self.subtree_of(s, r)).unwrap_or_default())
+            (
+                self.selected
+                    .map(|r| self.subtree_of(s, r))
+                    .unwrap_or_default(),
+                self.hover
+                    .map(|r| self.subtree_of(s, r))
+                    .unwrap_or_default(),
+            )
         } else {
             Default::default()
         };
-        let (Some(s), Some(gs)) = (&self.scene, self.gpu.as_mut()) else { return };
+        let (Some(s), Some(gs)) = (&self.scene, self.gpu.as_mut()) else {
+            return;
+        };
         if self.instances_dirty {
             self.instances_dirty = false;
             let mut items = Vec::new();
@@ -888,12 +1043,28 @@ impl Document {
                 } else {
                     [0.0; 4]
                 };
-                let color = c.color.or(s.meshes[mi].color).map(|c| [c[0], c[1], c[2], 1.0]).unwrap_or([0.0; 4]);
+                let color = c
+                    .color
+                    .or(s.meshes[mi].color)
+                    .map(|c| [c[0], c[1], c[2], 1.0])
+                    .unwrap_or([0.0; 4]);
                 // material transparency (glass in IFC / glTF / VRML) multiplies the viewer opacity
-                let mat_alpha = c.color.or(s.meshes[mi].color).map(|c| c[3]).unwrap_or(1.0).clamp(0.05, 1.0);
+                let mat_alpha = c
+                    .color
+                    .or(s.meshes[mi].color)
+                    .map(|c| c[3])
+                    .unwrap_or(1.0)
+                    .clamp(0.05, 1.0);
                 let opacity = effective_opacity(&self.asm, i, &sel) * mat_alpha;
                 let center = self.acc[i].transform_point3(self.asm.center0[i]).to_array();
-                items.push(InstanceDesc { mesh: mi, model: self.display[i].to_cols_array(), tint, color, opacity, center });
+                items.push(InstanceDesc {
+                    mesh: mi,
+                    model: self.display[i].to_cols_array(),
+                    tint,
+                    color,
+                    opacity,
+                    center,
+                });
             }
             gs.set_instances(device, items);
         }
@@ -909,14 +1080,21 @@ impl Document {
                             let vi = m.indices[t as usize * 3 + k] as usize;
                             tris.push(crate::render::Vertex {
                                 pos: w.transform_point3(Vec3::from(m.positions[vi])).to_array(),
-                                nrm: nm.transform_vector3(Vec3::from(m.normals[vi])).normalize_or_zero().to_array(),
+                                nrm: nm
+                                    .transform_vector3(Vec3::from(m.normals[vi]))
+                                    .normalize_or_zero()
+                                    .to_array(),
                                 uv: [0.0, 0.0],
                             });
                         }
                     }
                 }
             }
-            gs.set_highlight(device, &tris, [highlight[0], highlight[1], highlight[2], 0.8]);
+            gs.set_highlight(
+                device,
+                &tris,
+                [highlight[0], highlight[1], highlight[2], 0.8],
+            );
         }
     }
 
@@ -933,7 +1111,9 @@ impl Document {
         self.compute_stats();
         // keep moved / exploded parts inside the camera's clipping range
         if let Some((lo, hi)) = self.stats.bbox {
-            let r = (lo - self.camera.target).length().max((hi - self.camera.target).length());
+            let r = (lo - self.camera.target)
+                .length()
+                .max((hi - self.camera.target).length());
             if r.is_finite() && r > self.camera.radius {
                 self.camera.radius = r;
             }
@@ -955,7 +1135,11 @@ impl Document {
 
     /// World-space centre of the own geometry of `i` (subtree centre when it has none).
     pub fn object_center(&self, i: usize) -> Option<Vec3> {
-        Some(self.acc.get(i)?.transform_point3(*self.asm.own_center.get(i)?))
+        Some(
+            self.acc
+                .get(i)?
+                .transform_point3(*self.asm.own_center.get(i)?),
+        )
     }
 
     /// Point the gizmo of component `i` turns around, following [`PivotMode`].
@@ -1026,7 +1210,12 @@ impl Document {
     /// Explosion lines (world space) for the overlay.
     pub fn explode_lines(&self) -> Vec<(Vec3, Vec3)> {
         let Some(s) = &self.scene else { return vec![] };
-        let with_mesh: Vec<bool> = s.components.iter().enumerate().map(|(i, c)| c.mesh.is_some() && self.visible.get(i).copied().unwrap_or(true)).collect();
+        let with_mesh: Vec<bool> = s
+            .components
+            .iter()
+            .enumerate()
+            .map(|(i, c)| c.mesh.is_some() && self.visible.get(i).copied().unwrap_or(true))
+            .collect();
         self.asm.lines(&self.acc, &with_mesh)
     }
 
@@ -1047,7 +1236,8 @@ impl Document {
 
     /// The opened view's clip box when it applies (a view is open and not shown whole).
     pub fn active_view_clip(&self) -> Option<([[f32; 3]; 3], [f32; 3], [f32; 3])> {
-        self.view_clip.filter(|_| self.view_ctx.is_some() && !self.view_clip_off)
+        self.view_clip
+            .filter(|_| self.view_ctx.is_some() && !self.view_clip_off)
     }
 
     pub fn pick(&self, o: Vec3, d: Vec3) -> Option<measure::Hit> {
@@ -1056,7 +1246,9 @@ impl Document {
         let mut items = self.pick_items();
         // the opened view hides what is outside its box: step past hidden hits
         if let Some((ax, lo, hi)) = self.active_view_clip() {
-            let inside = |p: Vec3| (0..3).all(|k| (lo[k] - 1e-4..=hi[k] + 1e-4).contains(&p.dot(Vec3::from(ax[k]))));
+            let inside = |p: Vec3| {
+                (0..3).all(|k| (lo[k] - 1e-4..=hi[k] + 1e-4).contains(&p.dot(Vec3::from(ax[k]))))
+            };
             let sec = self.section_plane();
             let ok = |p: Vec3| inside(p) && sec.is_none_or(|s| p.dot(Vec3::from(s.0)) <= s.1);
             let mut from = o;
@@ -1079,7 +1271,8 @@ impl Document {
                 // step past the cut and retry once from there
                 let o2 = h.point + d.normalize() * 1e-6;
                 items.retain(|_| true);
-                return measure::pick(&meshes, &items, o2, d).filter(|h| h.point.dot(Vec3::from(sec.0)) <= sec.1);
+                return measure::pick(&meshes, &items, o2, d)
+                    .filter(|h| h.point.dot(Vec3::from(sec.0)) <= sec.1);
             }
             return None;
         }
@@ -1103,7 +1296,11 @@ impl Document {
     }
 
     pub fn fit(&mut self, aspect: f32) {
-        if let Some((lo, hi)) = self.view_box.filter(|_| self.view_ctx.is_some()).or(self.stats.bbox) {
+        if let Some((lo, hi)) = self
+            .view_box
+            .filter(|_| self.view_ctx.is_some())
+            .or(self.stats.bbox)
+        {
             self.camera.fit(lo, hi, aspect);
         }
         self.needs_fit = false;
@@ -1140,8 +1337,16 @@ mod view_tests {
         let check = |f: Vec3, up: Vec3| {
             let (y, p) = view_yaw_pitch(f, up).unwrap();
             let r = Camera::orientation(y.to_radians(), p.to_radians());
-            assert!(close(r * Vec3::Z, f.normalize()), "dir {f:?}: {:?}", r * Vec3::Z);
-            assert!(close(r * Vec3::Y, up.normalize()), "up {up:?}: {:?}", r * Vec3::Y);
+            assert!(
+                close(r * Vec3::Z, f.normalize()),
+                "dir {f:?}: {:?}",
+                r * Vec3::Z
+            );
+            assert!(
+                close(r * Vec3::Y, up.normalize()),
+                "up {up:?}: {:?}",
+                r * Vec3::Y
+            );
         };
         // plan, north up: model dir (0,0,1), up (0,1,0) → display (0,1,0), (0,0,-1)
         check(Vec3::Y, -Vec3::Z);

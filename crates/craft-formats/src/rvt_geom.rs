@@ -43,6 +43,12 @@ impl Obj {
             _ => None,
         }
     }
+    pub fn float(&self, k: &str) -> Option<f64> {
+        match self.get(k)? {
+            G::F(v) => Some(*v),
+            _ => None,
+        }
+    }
     pub fn fs(&self, k: &str) -> Option<&[f64]> {
         match self.get(k)? {
             G::Fs(v) => Some(v),
@@ -110,12 +116,24 @@ fn u32_at(d: &[u8], p: usize) -> Option<u32> {
 
 impl<'a> Dec<'a> {
     pub fn new(s: &'a Schema, d: &'a [u8], w: usize) -> Self {
-        Dec { s, d, w, pending: Vec::new(), seen: Default::default(), max_objs: 200_000, debug: std::env::var_os("RVT_GEOM_DEBUG").is_some() }
+        Dec {
+            s,
+            d,
+            w,
+            pending: Vec::new(),
+            seen: Default::default(),
+            max_objs: 200_000,
+            debug: std::env::var_os("RVT_GEOM_DEBUG").is_some(),
+        }
     }
 
     fn id(&self, p: usize) -> Option<i64> {
         let b = self.d.get(p..p + self.w)?;
-        Some(if self.w == 8 { i64::from_le_bytes(b.try_into().ok()?) } else { i32::from_le_bytes(b.try_into().ok()?) as i64 })
+        Some(if self.w == 8 {
+            i64::from_le_bytes(b.try_into().ok()?)
+        } else {
+            i32::from_le_bytes(b.try_into().ok()?) as i64
+        })
     }
 
     fn prim(&self, b0: u8, p: usize) -> Option<G> {
@@ -138,11 +156,31 @@ impl<'a> Dec<'a> {
         let e = p.checked_add(n.checked_mul(sz)?)?;
         let b = self.d.get(p..e)?;
         let g = match b0 {
-            7 => G::Fs(b.chunks_exact(8).map(|c| f64::from_le_bytes(c.try_into().unwrap())).collect()),
-            4 => G::Is(b.chunks_exact(4).map(|c| i32::from_le_bytes(c.try_into().unwrap()) as i64).collect()),
-            5 => G::Is(b.chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap()) as i64).collect()),
-            6 | 0x0b => G::Is(b.chunks_exact(8).map(|c| i64::from_le_bytes(c.try_into().unwrap())).collect()),
-            3 => G::Is(b.chunks_exact(2).map(|c| u16::from_le_bytes(c.try_into().unwrap()) as i64).collect()),
+            7 => G::Fs(
+                b.chunks_exact(8)
+                    .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+                    .collect(),
+            ),
+            4 => G::Is(
+                b.chunks_exact(4)
+                    .map(|c| i32::from_le_bytes(c.try_into().unwrap()) as i64)
+                    .collect(),
+            ),
+            5 => G::Is(
+                b.chunks_exact(4)
+                    .map(|c| u32::from_le_bytes(c.try_into().unwrap()) as i64)
+                    .collect(),
+            ),
+            6 | 0x0b => G::Is(
+                b.chunks_exact(8)
+                    .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
+                    .collect(),
+            ),
+            3 => G::Is(
+                b.chunks_exact(2)
+                    .map(|c| u16::from_le_bytes(c.try_into().unwrap()) as i64)
+                    .collect(),
+            ),
             _ => G::Is(b.iter().map(|&c| c as i64).collect()),
         };
         Some((g, e))
@@ -164,7 +202,12 @@ impl<'a> Dec<'a> {
                 }
                 None => {
                     if self.debug {
-                        eprintln!("  fail {}.{name} {:02x} {:02x} at {p:#x}", s.name(tag), ty.b0, ty.b1);
+                        eprintln!(
+                            "  fail {}.{name} {:02x} {:02x} at {p:#x}",
+                            s.name(tag),
+                            ty.b0,
+                            ty.b1
+                        );
                     }
                     return None;
                 }
@@ -212,7 +255,9 @@ impl<'a> Dec<'a> {
                 // fixed / variable arrays of raw pointers
                 0x13 => {
                     let n = ty.n as usize;
-                    let v: Option<Vec<i64>> = (0..n).map(|i| u32_at(d, p + 4 * i).map(|x| x as i64)).collect();
+                    let v: Option<Vec<i64>> = (0..n)
+                        .map(|i| u32_at(d, p + 4 * i).map(|x| x as i64))
+                        .collect();
                     Some((Some(G::Is(v?)), p + 4 * n))
                 }
                 0x53 => {
@@ -220,7 +265,9 @@ impl<'a> Dec<'a> {
                     if n > 2_000_000 {
                         return None;
                     }
-                    let v: Option<Vec<i64>> = (0..n).map(|i| u32_at(d, p + 4 + 4 * i).map(|x| x as i64)).collect();
+                    let v: Option<Vec<i64>> = (0..n)
+                        .map(|i| u32_at(d, p + 4 + 4 * i).map(|x| x as i64))
+                        .collect();
                     Some((Some(G::Is(v?)), p + 4 + 4 * n))
                 }
                 0x11 | 0x12 => {
@@ -306,11 +353,32 @@ impl<'a> Dec<'a> {
                 return None;
             }
             let b = d.get(p + 4..p + 4 + 2 * n)?;
-            let u: Vec<u16> = b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+            let u: Vec<u16> = b
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect();
             return Some((Some(G::S(String::from_utf16_lossy(&u))), p + 4 + 2 * n));
         }
         // compounds (0d): `en` elements of `e0` each
-        let (eb0, per) = if ty.b0 == 0x0d { (ty.e0, ty.en.max(1) as usize) } else { (ty.b0, 1) };
+        let (eb0, per) = if ty.b0 == 0x0d {
+            (ty.e0, ty.en.max(1) as usize)
+        } else {
+            (ty.b0, 1)
+        };
+        if ty.b0 == 0x0d && eb0 == 0x0e && ty.tag == self.s.id_tag {
+            // compounds of ids (id triples…): the ids in a row
+            let (n, p) = match ty.b1 {
+                0 => (per, p),
+                0x10 => (per * ty.n as usize, p),
+                0x50 => (per * u32_at(d, p)? as usize, p + 4),
+                _ => return None,
+            };
+            if n > 10_000_000 / self.w {
+                return None;
+            }
+            let v: Option<Vec<i64>> = (0..n).map(|i| self.id(p + i * self.w)).collect();
+            return Some((Some(G::Ids(v?)), p + n * self.w));
+        }
         prim_size(eb0)?;
         match ty.b1 {
             0 => {
@@ -342,7 +410,10 @@ impl<'a> Dec<'a> {
     pub fn tree(&mut self, tag: u16, p: usize) -> Option<Tree> {
         self.pending.clear();
         self.seen.clear();
-        let mut t = Tree { start: p, ..Default::default() };
+        let mut t = Tree {
+            start: p,
+            ..Default::default()
+        };
         let mut p = self.fields(tag, p, &mut t.root, 0)?;
         let mut i = 0;
         while i < self.pending.len() {
@@ -359,7 +430,15 @@ impl<'a> Dec<'a> {
                 }
                 None => {
                     if self.debug {
-                        eprintln!(" deferred #{i} {} failed at {p:#x}; pending: {:?}", self.s.name(tg), self.pending[i..].iter().take(40).map(|x| self.s.name(x.0)).collect::<Vec<_>>());
+                        eprintln!(
+                            " deferred #{i} {} failed at {p:#x}; pending: {:?}",
+                            self.s.name(tg),
+                            self.pending[i..]
+                                .iter()
+                                .take(40)
+                                .map(|x| self.s.name(x.0))
+                                .collect::<Vec<_>>()
+                        );
                     }
                     t.failed = Some(tg);
                     break;
@@ -376,11 +455,24 @@ impl<'a> Dec<'a> {
 
 /// Element headers `[id][u32][u32 size][u16 tag]` of classes in `want`, with the body decoded
 /// (`m_id` = header id). Returns (header offset, tag, size, tree).
-pub fn elements(s: &Schema, d: &[u8], w: usize, want: &dyn Fn(u16) -> bool, mut f: impl FnMut(usize, u16, u32, Tree)) {
+pub fn elements(
+    s: &Schema,
+    d: &[u8],
+    w: usize,
+    want: &dyn Fn(u16) -> bool,
+    mut f: impl FnMut(usize, u16, u32, Tree),
+) {
     elements_dbg(s, d, w, want, &mut f, &mut |_, _| {})
 }
 
-pub fn elements_dbg(s: &Schema, d: &[u8], w: usize, want: &dyn Fn(u16) -> bool, f: &mut dyn FnMut(usize, u16, u32, Tree), fail: &mut dyn FnMut(usize, u16)) {
+pub fn elements_dbg(
+    s: &Schema,
+    d: &[u8],
+    w: usize,
+    want: &dyn Fn(u16) -> bool,
+    f: &mut dyn FnMut(usize, u16, u32, Tree),
+    fail: &mut dyn FnMut(usize, u16),
+) {
     let mut dec = Dec::new(s, d, w);
     if d.len() < 16 + w {
         return;

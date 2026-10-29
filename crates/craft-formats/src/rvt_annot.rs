@@ -81,8 +81,14 @@ struct Mark {
 
 /// A double parameter of an element (`m_pParamValueSetDouble`).
 fn param_f(tr: &Tree, id: i64) -> Option<f64> {
-    let set = tr.root.ptr("m_pParamValueSetDouble").and_then(|i| tr.objs.get(i))?;
-    set.list("m_paramSet").iter().find(|o| o.int("m_paramId") == Some(id)).and_then(|o| num(o, "m_value"))
+    let set = tr
+        .root
+        .ptr("m_pParamValueSetDouble")
+        .and_then(|i| tr.objs.get(i))?;
+    set.list("m_paramSet")
+        .iter()
+        .find(|o| o.int("m_paramId") == Some(id))
+        .and_then(|o| num(o, "m_value"))
 }
 
 #[derive(Debug, Clone)]
@@ -219,7 +225,11 @@ fn sdot(a: P2, b: P2) -> f64 {
 }
 fn color(c: i64) -> [u8; 3] {
     // Windows order: red in the low byte
-    [(c & 255) as u8, ((c >> 8) & 255) as u8, ((c >> 16) & 255) as u8]
+    [
+        (c & 255) as u8,
+        ((c >> 8) & 255) as u8,
+        ((c >> 16) & 255) as u8,
+    ]
 }
 
 /// The format options stored for a spec in a `UnitsElem` (searched through the tree).
@@ -243,7 +253,13 @@ fn find_format<'a>(o: &'a Obj, spec: &str) -> Option<&'a Obj> {
 }
 
 impl Annots {
-    pub fn take(&mut self, s: &Schema, t: u16, tr: &Tree, strs: impl FnOnce() -> HashMap<i64, String>) {
+    pub fn take(
+        &mut self,
+        s: &Schema,
+        t: u16,
+        tr: &Tree,
+        strs: impl FnOnce() -> HashMap<i64, String>,
+    ) {
         let r = &tr.root;
         if r.int("m_famId").unwrap_or(-1) != -1 {
             return; // family documents
@@ -252,27 +268,57 @@ impl Annots {
         let obj = |k: &str| r.ptr(k).and_then(|i| tr.objs.get(i));
         match s.name(t) {
             "CurveElem" if owner > 0 => {
-                let Some(c) = obj("m_pCurveDriver").and_then(|d| d.ptr("m_pCrv")).and_then(|i| tr.objs.get(i)) else { return };
+                let Some(c) = obj("m_pCurveDriver")
+                    .and_then(|d| d.ptr("m_pCrv"))
+                    .and_then(|i| tr.objs.get(i))
+                else {
+                    return;
+                };
                 let pts = curve_points(c, s);
                 if pts.len() < 2 {
                     return;
                 }
-                let sketch = tr.objs.iter().find(|o| s.name(o.tag) == "SketchMembership").and_then(|o| o.int("m_groupId")).unwrap_or(-1);
-                self.curves.push(Curve { owner, style: r.int("m_categoryId").unwrap_or(-1), pts, sketch });
+                let sketch = tr
+                    .objs
+                    .iter()
+                    .find(|o| s.name(o.tag) == "SketchMembership")
+                    .and_then(|o| o.int("m_groupId"))
+                    .unwrap_or(-1);
+                self.curves.push(Curve {
+                    owner,
+                    style: r.int("m_categoryId").unwrap_or(-1),
+                    pts,
+                    sketch,
+                });
             }
             "GStyleElem" => {
                 if let Some(g) = obj("m_pGStyle") {
-                    self.styles.insert(tr.id, Style { pen: g.int("m_penNumber").unwrap_or(1), color: color(g.int("m_color").unwrap_or(0)), pattern: g.int("m_linePatternId").unwrap_or(-3000010) });
+                    self.styles.insert(
+                        tr.id,
+                        Style {
+                            pen: g.int("m_penNumber").unwrap_or(1),
+                            color: color(g.int("m_color").unwrap_or(0)),
+                            pattern: g.int("m_linePatternId").unwrap_or(-3000010),
+                        },
+                    );
                 }
             }
             "PenWidthTableElem" => {
-                if let Some(p) = obj("m_pPenWidthTable").and_then(|p| p.obj("m_draftPenInfo")).and_then(|d| d.fs("m_pens")) {
+                if let Some(p) = obj("m_pPenWidthTable")
+                    .and_then(|p| p.obj("m_draftPenInfo"))
+                    .and_then(|d| d.fs("m_pens"))
+                {
                     self.pens = p.to_vec();
                 }
             }
             "LinePatternElem" => {
                 if let Some(p) = tr.objs.iter().find(|o| s.name(o.tag) == "LinePattern") {
-                    let segs: Vec<(f64, bool)> = p.list("m_segs").iter().filter_map(|g| Some((num(g, "m_data")?, g.int("m_type")? != 1))).map(|(l, d)| (if d && l < 1e-6 { 0.6 / 304.8 } else { l }, d)).collect();
+                    let segs: Vec<(f64, bool)> = p
+                        .list("m_segs")
+                        .iter()
+                        .filter_map(|g| Some((num(g, "m_data")?, g.int("m_type")? != 1)))
+                        .map(|(l, d)| (if d && l < 1e-6 { 0.6 / 304.8 } else { l }, d))
+                        .collect();
                     self.line_patterns.insert(tr.id, segs);
                 }
             }
@@ -285,10 +331,23 @@ impl Annots {
                         .filter_map(|g| {
                             let o = g.fs("m_origin").filter(|o| o.len() >= 2)?;
                             let d = g.fs("m_deltas").filter(|d| d.len() >= 2)?;
-                            Some(Grid { angle: num(g, "m_angle")?, origin: [o[0], o[1]], shift: d[0], offset: d[1], segs: g.fs("m_segs").unwrap_or(&[]).to_vec() })
+                            Some(Grid {
+                                angle: num(g, "m_angle")?,
+                                origin: [o[0], o[1]],
+                                shift: d[0],
+                                offset: d[1],
+                                segs: g.fs("m_segs").unwrap_or(&[]).to_vec(),
+                            })
                         })
                         .collect();
-                    self.fill_patterns.insert(tr.id, Pattern { grids, scale: num(p, "m_scale").filter(|s| *s > 1e-9).unwrap_or(1.0), model: p.int("m_fpTarget").unwrap_or(0) == 1 });
+                    self.fill_patterns.insert(
+                        tr.id,
+                        Pattern {
+                            grids,
+                            scale: num(p, "m_scale").filter(|s| *s > 1e-9).unwrap_or(1.0),
+                            model: p.int("m_fpTarget").unwrap_or(0) == 1,
+                        },
+                    );
                 }
             }
             "FilledRegionAttributes" => {
@@ -303,42 +362,126 @@ impl Annots {
             }
             "DimensionStyle" => {
                 let size = param_f(tr, -1006433).filter(|v| *v > 1e-6 && *v < 0.1);
-                self.dim_styles.insert(tr.id, (r.int("m_arrowHeadStyleId").unwrap_or(-1), size));
+                self.dim_styles
+                    .insert(tr.id, (r.int("m_arrowHeadStyleId").unwrap_or(-1), size));
             }
             "LeaderStyle" => {
-                let (Some(angle), Some(size)) = (param_f(tr, -1006426), param_f(tr, -1006414)) else { return };
+                let (Some(angle), Some(size)) = (param_f(tr, -1006426), param_f(tr, -1006414))
+                else {
+                    return;
+                };
                 if size > 1e-6 && size < 0.1 {
                     let arrow = r.int("m_tickType").unwrap_or(0) == 8;
-                    self.marks.insert(tr.id, Mark { arrow, filled: r.int("m_arrowFilled").unwrap_or(0) != 0, closed: r.int("m_arrowClosed").unwrap_or(0) != 0, angle, size });
+                    self.marks.insert(
+                        tr.id,
+                        Mark {
+                            arrow,
+                            filled: r.int("m_arrowFilled").unwrap_or(0) != 0,
+                            closed: r.int("m_arrowClosed").unwrap_or(0) != 0,
+                            angle,
+                            size,
+                        },
+                    );
                 }
             }
             "LinearDimString" if owner > 0 => {
-                let refs: Vec<V3> = r.fs("m_refPnts").unwrap_or(&[]).chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
-                let Some(l) = tr.objs.iter().find(|o| s.name(o.tag) == "GLine") else { return };
-                let (Some(o), Some(d)) = (v3(l.fs("m_origin")), v3(l.fs("m_dirVec"))) else { return };
-                let texts = r.list("m_ArrSegInfo").iter().filter_map(|g| v3(g.fs("m_origin"))).collect();
+                let refs: Vec<V3> = r
+                    .fs("m_refPnts")
+                    .unwrap_or(&[])
+                    .chunks_exact(3)
+                    .map(|c| [c[0], c[1], c[2]])
+                    .collect();
+                let Some(l) = tr.objs.iter().find(|o| s.name(o.tag) == "GLine") else {
+                    return;
+                };
+                let (Some(o), Some(d)) = (v3(l.fs("m_origin")), v3(l.fs("m_dirVec"))) else {
+                    return;
+                };
+                let texts = r
+                    .list("m_ArrSegInfo")
+                    .iter()
+                    .filter_map(|g| v3(g.fs("m_origin")))
+                    .collect();
                 if refs.len() >= 2 {
-                    self.dims.push(Dim { owner, style: r.int("m_styleSymbolId").unwrap_or(-1), refs, line: (o, d), texts });
+                    self.dims.push(Dim {
+                        owner,
+                        style: r.int("m_styleSymbolId").unwrap_or(-1),
+                        refs,
+                        line: (o, d),
+                        texts,
+                    });
                 }
             }
             "SpotElevation" if owner > 0 => {
-                let Some(at) = v3(r.fs("m_refPnts")) else { return };
-                let values: Vec<f64> = r.list("m_ArrSegInfo").first().map(|g| g.list("m_values").iter().filter_map(|v| num(v, "m_value")).collect()).unwrap_or_default();
-                let coord = tr.objs.iter().any(|o| s.name(o.tag) == "SpotCoordinateState");
+                let Some(at) = v3(r.fs("m_refPnts")) else {
+                    return;
+                };
+                let values: Vec<f64> = r
+                    .list("m_ArrSegInfo")
+                    .first()
+                    .map(|g| {
+                        g.list("m_values")
+                            .iter()
+                            .filter_map(|v| num(v, "m_value"))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let coord = tr
+                    .objs
+                    .iter()
+                    .any(|o| s.name(o.tag) == "SpotCoordinateState");
                 let leader = r.int("m_leader").unwrap_or(1) != 0;
-                let bend = v3(r.fs("m_bendOrPosPtOffset")).filter(|_| leader).map(|o| [at[0] + o[0], at[1] + o[1], at[2] + o[2]]);
-                self.spots.push(Spot { owner, at, bend, shoulder: num(r, "m_horizLeaderLength").filter(|_| leader).unwrap_or(0.0), values, coord });
+                let bend = v3(r.fs("m_bendOrPosPtOffset"))
+                    .filter(|_| leader)
+                    .map(|o| [at[0] + o[0], at[1] + o[1], at[2] + o[2]]);
+                self.spots.push(Spot {
+                    owner,
+                    at,
+                    bend,
+                    shoulder: num(r, "m_horizLeaderLength")
+                        .filter(|_| leader)
+                        .unwrap_or(0.0),
+                    values,
+                    coord,
+                });
             }
             "RadialDim" | "AngularDim" if owner > 0 => {
                 let angular = s.name(t) == "AngularDim";
-                let refs: Vec<V3> = r.fs("m_refPnts").unwrap_or(&[]).chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+                let refs: Vec<V3> = r
+                    .fs("m_refPnts")
+                    .unwrap_or(&[])
+                    .chunks_exact(3)
+                    .map(|c| [c[0], c[1], c[2]])
+                    .collect();
                 let seg = r.list("m_ArrSegInfo").first();
-                let value = seg.and_then(|g| g.list("m_values").first().and_then(|v| num(v, "m_value"))).or_else(|| seg.and_then(|g| num(g, "m_lockedValue")));
-                let center = if angular { tr.objs.iter().find(|o| s.name(o.tag) == "GArc").and_then(|a| v3(a.fs("m_center"))) } else { v3(r.fs("m_center")) };
-                let (Some(center), Some(value)) = (center, value.filter(|v| v.is_finite() && *v > 0.0)) else { return };
+                let value = seg
+                    .and_then(|g| g.list("m_values").first().and_then(|v| num(v, "m_value")))
+                    .or_else(|| seg.and_then(|g| num(g, "m_lockedValue")));
+                let center = if angular {
+                    tr.objs
+                        .iter()
+                        .find(|o| s.name(o.tag) == "GArc")
+                        .and_then(|a| v3(a.fs("m_center")))
+                } else {
+                    v3(r.fs("m_center"))
+                };
+                let (Some(center), Some(value)) =
+                    (center, value.filter(|v| v.is_finite() && *v > 0.0))
+                else {
+                    return;
+                };
                 if refs.len() >= if angular { 2 } else { 1 } {
                     let normal = v3(r.fs("m_planeNormal")).unwrap_or([0.0, 0.0, 1.0]);
-                    self.arc_dims.push(ArcDim { owner, style: r.int("m_styleSymbolId").unwrap_or(-1), angular, center, refs, text: seg.and_then(|g| v3(g.fs("m_origin"))), value, normal });
+                    self.arc_dims.push(ArcDim {
+                        owner,
+                        style: r.int("m_styleSymbolId").unwrap_or(-1),
+                        angular,
+                        center,
+                        refs,
+                        text: seg.and_then(|g| v3(g.fs("m_origin"))),
+                        value,
+                        normal,
+                    });
                 }
             }
             "IndependentTag" if owner > 0 => {
@@ -349,14 +492,35 @@ impl Annots {
                     .and_then(|e| e.obj("m_taggedId"))
                     .and_then(|x| x.int("m_linkInstOrHostId"))
                     .unwrap_or(-1);
-                let Some(oc) = obj("m_oTagOrientationCell") else { return };
-                let Some(head) = v3(oc.fs("m_headLocation")) else { return };
-                self.tags.push(Tag { owner, symbol: r.int("m_symbolId").unwrap_or(-1), head, angle: num(oc, "m_rotationAngle").unwrap_or(0.0), target });
+                let Some(oc) = obj("m_oTagOrientationCell") else {
+                    return;
+                };
+                let Some(head) = v3(oc.fs("m_headLocation")) else {
+                    return;
+                };
+                self.tags.push(Tag {
+                    owner,
+                    symbol: r.int("m_symbolId").unwrap_or(-1),
+                    head,
+                    angle: num(oc, "m_rotationAngle").unwrap_or(0.0),
+                    target,
+                });
             }
             "RoomTag" if owner > 0 => {
-                let Some(head) = v3(r.fs("m_point")) else { return };
-                let target = r.obj("m_taggedRoomElemId").and_then(|x| x.int("m_linkInstOrHostId")).unwrap_or(-1);
-                self.tags.push(Tag { owner, symbol: r.int("m_symbolId").unwrap_or(-1), head, angle: num(r, "m_rotationAngle").unwrap_or(0.0), target });
+                let Some(head) = v3(r.fs("m_point")) else {
+                    return;
+                };
+                let target = r
+                    .obj("m_taggedRoomElemId")
+                    .and_then(|x| x.int("m_linkInstOrHostId"))
+                    .unwrap_or(-1);
+                self.tags.push(Tag {
+                    owner,
+                    symbol: r.int("m_symbolId").unwrap_or(-1),
+                    head,
+                    angle: num(r, "m_rotationAngle").unwrap_or(0.0),
+                    target,
+                });
             }
             "RoomElem" | "FamilySymbol" => {
                 let m = strs();
@@ -374,14 +538,22 @@ impl Annots {
                 }
             }
             "UnitsElem" => {
-                if let Some(f) = find_format(r, "autodesk.spec.aec:length-1.0.0").or_else(|| tr.objs.iter().find_map(|o| find_format(o, "autodesk.spec.aec:length-1.0.0"))) {
+                if let Some(f) = find_format(r, "autodesk.spec.aec:length-1.0.0").or_else(|| {
+                    tr.objs
+                        .iter()
+                        .find_map(|o| find_format(o, "autodesk.spec.aec:length-1.0.0"))
+                }) {
                     let u = match f.obj("m_unitTypeId").and_then(|u| u.get("m_typeId")) {
                         Some(G::S(x)) => x.clone(),
                         _ => String::new(),
                     };
                     self.unit = Some((u, num(f, "m_accuracy").filter(|a| *a > 0.0).unwrap_or(1.0)));
                 }
-                if let Some(f) = find_format(r, "autodesk.spec.aec:angle-1.0.0").or_else(|| tr.objs.iter().find_map(|o| find_format(o, "autodesk.spec.aec:angle-1.0.0"))) {
+                if let Some(f) = find_format(r, "autodesk.spec.aec:angle-1.0.0").or_else(|| {
+                    tr.objs
+                        .iter()
+                        .find_map(|o| find_format(o, "autodesk.spec.aec:angle-1.0.0"))
+                }) {
                     self.angle_acc = num(f, "m_accuracy").filter(|a| *a > 0.0);
                 }
             }
@@ -390,17 +562,28 @@ impl Annots {
     }
 
     pub fn owns(&self, view: i64) -> bool {
-        self.curves.iter().any(|c| c.owner == view) || self.regions.iter().any(|r| r.0 == view) || self.dims.iter().any(|d| d.owner == view) || self.arc_dims.iter().any(|d| d.owner == view) || self.spots.iter().any(|d| d.owner == view) || self.tags.iter().any(|t| t.owner == view)
+        self.curves.iter().any(|c| c.owner == view)
+            || self.regions.iter().any(|r| r.0 == view)
+            || self.dims.iter().any(|d| d.owner == view)
+            || self.arc_dims.iter().any(|d| d.owner == view)
+            || self.spots.iter().any(|d| d.owner == view)
+            || self.tags.iter().any(|t| t.owner == view)
     }
 
     /// The tick mark of dimension type `style`, if known.
     fn mark_of(&self, style: i64) -> Option<Mark> {
-        self.dim_styles.get(&style).and_then(|d| self.marks.get(&d.0)).copied()
+        self.dim_styles
+            .get(&style)
+            .and_then(|d| self.marks.get(&d.0))
+            .copied()
     }
 
     /// Dimension text size (paper feet) of dimension type `style`.
     fn dim_text(&self, style: i64) -> f64 {
-        self.dim_styles.get(&style).and_then(|d| d.1).unwrap_or(DIM_TEXT)
+        self.dim_styles
+            .get(&style)
+            .and_then(|d| d.1)
+            .unwrap_or(DIM_TEXT)
     }
 
     /// An end mark at `p`: a diagonal tick across the line `d` (unit), or an arrowhead with its
@@ -414,34 +597,50 @@ impl Annots {
                     .map(|sg| {
                         let (cs, sn) = (h.cos(), h.sin() * sg);
                         let l = len / cs.max(0.2);
-                        [p[0] + (back[0] * cs - back[1] * sn) * l, p[1] + (back[0] * sn + back[1] * cs) * l]
+                        [
+                            p[0] + (back[0] * cs - back[1] * sn) * l,
+                            p[1] + (back[0] * sn + back[1] * cs) * l,
+                        ]
                     })
                     .collect();
                 if m.filled {
                     out.fills.push((vec![[p, side[0], side[1]]], [0; 3]));
                 } else if m.closed {
-                    out.strokes.push((vec![p, side[0], side[1], p], self.pen(1), [0; 3]));
+                    out.strokes
+                        .push((vec![p, side[0], side[1], p], self.pen(1), [0; 3]));
                 } else {
-                    out.strokes.push((vec![side[0], p, side[1]], self.pen(1), [0; 3]));
+                    out.strokes
+                        .push((vec![side[0], p, side[1]], self.pen(1), [0; 3]));
                 }
             }
             _ => {
                 let half = mark.map_or(TICK, |m| m.size * 0.5) / k;
                 let nv = [-d[1], d[0]];
                 let a = [(d[0] + nv[0]) * half, (d[1] + nv[1]) * half];
-                out.strokes.push((vec![[p[0] - a[0], p[1] - a[1]], [p[0] + a[0], p[1] + a[1]]], self.pen(3), [0; 3]));
+                out.strokes.push((
+                    vec![[p[0] - a[0], p[1] - a[1]], [p[0] + a[0], p[1] + a[1]]],
+                    self.pen(3),
+                    [0; 3],
+                ));
             }
         }
     }
 
     pub(crate) fn pen(&self, n: i64) -> f64 {
         let n = n.clamp(1, 16) as usize;
-        self.pens.get(n - 1).copied().filter(|w| *w > 0.0).unwrap_or(0.00085 * n as f64)
+        self.pens
+            .get(n - 1)
+            .copied()
+            .filter(|w| *w > 0.0)
+            .unwrap_or(0.00085 * n as f64)
     }
 
     /// A length in the project unit (feet in).
     pub fn length(&self, ft: f64) -> String {
-        let (u, acc) = self.unit.clone().unwrap_or(("autodesk.unit.unit:millimeters".into(), 1.0));
+        let (u, acc) = self
+            .unit
+            .clone()
+            .unwrap_or(("autodesk.unit.unit:millimeters".into(), 1.0));
         let dec = |acc: f64| (-acc.log10()).ceil().max(0.0) as usize;
         let round = |v: f64, acc: f64| (v / acc).round() * acc;
         if u.contains("unit:millimeters") {
@@ -453,7 +652,10 @@ impl Annots {
         } else if u.contains("unit:feetFractionalInches") {
             let step = if acc > 0.0 { acc * 12.0 } else { 1.0 / 8.0 };
             let inches = round(ft * 12.0, step.max(1.0 / 256.0));
-            let (f, i) = ((inches / 12.0).floor(), inches - (inches / 12.0).floor() * 12.0);
+            let (f, i) = (
+                (inches / 12.0).floor(),
+                inches - (inches / 12.0).floor() * 12.0,
+            );
             format!("{f}' - {}\"", (i * 1000.0).round() / 1000.0)
         } else if u.contains("unit:inches") {
             format!("{:.*}\"", dec(acc), round(ft * 12.0, acc))
@@ -468,13 +670,21 @@ impl Annots {
         let k = k.max(1e-6);
         // detail lines
         for c in self.curves.iter().filter(|c| c.owner == owner) {
-            let st = self.styles.get(&c.style).cloned().unwrap_or(Style { pen: 1, color: [0; 3], pattern: -3000010 });
+            let st = self.styles.get(&c.style).cloned().unwrap_or(Style {
+                pen: 1,
+                color: [0; 3],
+                pattern: -3000010,
+            });
             if st.pattern == -1 {
                 continue; // invisible lines
             }
             let pts: Vec<P2> = c.pts.iter().map(|p| proj(*p)).collect();
             let w = self.pen(st.pen);
-            match self.line_patterns.get(&st.pattern).filter(|p| p.iter().any(|s| !s.1) && p.iter().all(|s| s.0 > 0.0)) {
+            match self
+                .line_patterns
+                .get(&st.pattern)
+                .filter(|p| p.iter().any(|s| !s.1) && p.iter().all(|s| s.0 > 0.0))
+            {
                 Some(pat) => {
                     let pat: Vec<(f64, bool)> = pat.iter().map(|(l, d)| (l / k, *d)).collect();
                     for piece in dashes(&pts, &pat, 0.0) {
@@ -486,11 +696,27 @@ impl Annots {
         }
         // filled regions
         for (_, sk, at) in self.regions.iter().filter(|r| r.0 == owner) {
-            let edges: Vec<[P2; 2]> = self.curves.iter().filter(|c| c.sketch == *sk).flat_map(|c| c.pts.windows(2).map(|w| [proj(w[0]), proj(w[1])]).collect::<Vec<_>>()).collect();
+            let edges: Vec<[P2; 2]> = self
+                .curves
+                .iter()
+                .filter(|c| c.sketch == *sk)
+                .flat_map(|c| {
+                    c.pts
+                        .windows(2)
+                        .map(|w| [proj(w[0]), proj(w[1])])
+                        .collect::<Vec<_>>()
+                })
+                .collect();
             if edges.len() < 3 {
                 continue;
             }
-            let Some(pat) = self.region_types.get(at).and_then(|f| self.fill_patterns.get(f)) else { continue };
+            let Some(pat) = self
+                .region_types
+                .get(at)
+                .and_then(|f| self.fill_patterns.get(f))
+            else {
+                continue;
+            };
             if pat.grids.is_empty() {
                 out.fills.push((fill(&edges), [0; 3]));
                 continue;
@@ -503,30 +729,56 @@ impl Annots {
                 if off * k < 0.3 / 304.8 {
                     continue; // denser than 0.3 mm on paper
                 }
-                let (d, nv) = ([g.angle.cos(), g.angle.sin()], [-g.angle.sin(), g.angle.cos()]);
+                let (d, nv) = (
+                    [g.angle.cos(), g.angle.sin()],
+                    [-g.angle.sin(), g.angle.cos()],
+                );
                 let org = [o0[0] + g.origin[0] * unit, o0[1] + g.origin[1] * unit];
-                let cs: Vec<f64> = edges.iter().flat_map(|e| e.iter().map(|p| sdot([p[0] - org[0], p[1] - org[1]], nv))).collect();
-                let (cmin, cmax) = cs.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |a, &c| (a.0.min(c), a.1.max(c)));
-                let segs: Vec<(f64, bool)> = g.segs.iter().enumerate().map(|(i, l)| (l.abs() * unit, i % 2 == 0)).map(|(l, dr)| (if dr && l < 1e-9 { 0.5 / 304.8 / k } else { l }, dr)).collect();
+                let cs: Vec<f64> = edges
+                    .iter()
+                    .flat_map(|e| e.iter().map(|p| sdot([p[0] - org[0], p[1] - org[1]], nv)))
+                    .collect();
+                let (cmin, cmax) = cs.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |a, &c| {
+                    (a.0.min(c), a.1.max(c))
+                });
+                let segs: Vec<(f64, bool)> = g
+                    .segs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, l)| (l.abs() * unit, i % 2 == 0))
+                    .map(|(l, dr)| (if dr && l < 1e-9 { 0.5 / 304.8 / k } else { l }, dr))
+                    .collect();
                 for i in (cmin / off).floor() as i64..=(cmax / off).ceil() as i64 {
                     n += 1;
                     if n > MAX_HATCH {
                         break;
                     }
-                    let b = [org[0] + nv[0] * off * i as f64 + d[0] * g.shift * unit * i as f64, org[1] + nv[1] * off * i as f64 + d[1] * g.shift * unit * i as f64];
+                    let b = [
+                        org[0] + nv[0] * off * i as f64 + d[0] * g.shift * unit * i as f64,
+                        org[1] + nv[1] * off * i as f64 + d[1] * g.shift * unit * i as f64,
+                    ];
                     // crossings of the line b + s·d with the boundary
                     let mut ss: Vec<f64> = Vec::new();
                     for e in &edges {
-                        let (pa, pb) = (sdot([e[0][0] - b[0], e[0][1] - b[1]], nv), sdot([e[1][0] - b[0], e[1][1] - b[1]], nv));
+                        let (pa, pb) = (
+                            sdot([e[0][0] - b[0], e[0][1] - b[1]], nv),
+                            sdot([e[1][0] - b[0], e[1][1] - b[1]], nv),
+                        );
                         if (pa > 0.0) != (pb > 0.0) {
                             let t = pa / (pa - pb);
-                            let x = [e[0][0] + (e[1][0] - e[0][0]) * t, e[0][1] + (e[1][1] - e[0][1]) * t];
+                            let x = [
+                                e[0][0] + (e[1][0] - e[0][0]) * t,
+                                e[0][1] + (e[1][1] - e[0][1]) * t,
+                            ];
                             ss.push(sdot([x[0] - b[0], x[1] - b[1]], d));
                         }
                     }
                     ss.sort_by(f64::total_cmp);
                     for p in ss.chunks_exact(2) {
-                        let line = vec![[b[0] + d[0] * p[0], b[1] + d[1] * p[0]], [b[0] + d[0] * p[1], b[1] + d[1] * p[1]]];
+                        let line = vec![
+                            [b[0] + d[0] * p[0], b[1] + d[1] * p[0]],
+                            [b[0] + d[0] * p[1], b[1] + d[1] * p[1]],
+                        ];
                         if segs.len() >= 2 && segs.iter().all(|s| s.0 > 0.0) {
                             for piece in dashes(&line, &segs, p[0]) {
                                 out.strokes.push((piece, self.pen(1), [0; 3]));
@@ -541,7 +793,11 @@ impl Annots {
         // linear dimensions
         for dm in self.dims.iter().filter(|d| d.owner == owner) {
             let o = proj(dm.line.0);
-            let q = proj([dm.line.0[0] + dm.line.1[0], dm.line.0[1] + dm.line.1[1], dm.line.0[2] + dm.line.1[2]]);
+            let q = proj([
+                dm.line.0[0] + dm.line.1[0],
+                dm.line.0[1] + dm.line.1[1],
+                dm.line.0[2] + dm.line.1[2],
+            ]);
             let mut d = [q[0] - o[0], q[1] - o[1]];
             let l = sdot(d, d).sqrt();
             if l < 1e-9 {
@@ -563,11 +819,20 @@ impl Annots {
                 let el = sdot(e, e).sqrt();
                 if el > EXT_GAP / k {
                     let u = [e[0] / el, e[1] / el];
-                    out.strokes.push((vec![[p[0] + u[0] * EXT_GAP / k, p[1] + u[1] * EXT_GAP / k], [f[0] + u[0] * EXT_OVER / k, f[1] + u[1] * EXT_OVER / k]], w, [0; 3]));
+                    out.strokes.push((
+                        vec![
+                            [p[0] + u[0] * EXT_GAP / k, p[1] + u[1] * EXT_GAP / k],
+                            [f[0] + u[0] * EXT_OVER / k, f[1] + u[1] * EXT_OVER / k],
+                        ],
+                        w,
+                        [0; 3],
+                    ));
                 }
                 ts.push(t);
             }
-            let (t0, t1) = ts.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |a, &t| (a.0.min(t), a.1.max(t)));
+            let (t0, t1) = ts.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |a, &t| {
+                (a.0.min(t), a.1.max(t))
+            });
             // end marks: a tick on each witness line, or arrows pointing out of each segment
             let mark = self.mark_of(dm.style);
             for &t in &ts {
@@ -584,7 +849,14 @@ impl Annots {
                 }
             }
             let ov = EXT_OVER / k;
-            out.strokes.push((vec![[o[0] + d[0] * (t0 - ov), o[1] + d[1] * (t0 - ov)], [o[0] + d[0] * (t1 + ov), o[1] + d[1] * (t1 + ov)]], w, [0; 3]));
+            out.strokes.push((
+                vec![
+                    [o[0] + d[0] * (t0 - ov), o[1] + d[1] * (t0 - ov)],
+                    [o[0] + d[0] * (t1 + ov), o[1] + d[1] * (t1 + ov)],
+                ],
+                w,
+                [0; 3],
+            ));
             for (i, p) in ts.windows(2).enumerate() {
                 let v = (p[1] - p[0]).abs();
                 if v < 1e-6 {
@@ -594,17 +866,30 @@ impl Annots {
                 let pos = dm.texts.get(i).map(|x| proj(*x)).map(|x| {
                     // keep the stored offset across the line, centre along it
                     let c = sdot([x[0] - o[0], x[1] - o[1]], nv);
-                    [o[0] + d[0] * mid + nv[0] * c.max(0.4 / 304.8 / k), o[1] + d[1] * mid + nv[1] * c.max(0.4 / 304.8 / k)]
+                    [
+                        o[0] + d[0] * mid + nv[0] * c.max(0.4 / 304.8 / k),
+                        o[1] + d[1] * mid + nv[1] * c.max(0.4 / 304.8 / k),
+                    ]
                 });
-                let pos = pos.unwrap_or([o[0] + d[0] * mid + nv[0] * 0.6 / 304.8 / k, o[1] + d[1] * mid + nv[1] * 0.6 / 304.8 / k]);
-                out.texts.push((pos, d, self.dim_text(dm.style), self.length(v)));
+                let pos = pos.unwrap_or([
+                    o[0] + d[0] * mid + nv[0] * 0.6 / 304.8 / k,
+                    o[1] + d[1] * mid + nv[1] * 0.6 / 304.8 / k,
+                ]);
+                out.texts
+                    .push((pos, d, self.dim_text(dm.style), self.length(v)));
             }
         }
         // radial and angular dimensions
         for dm in self.arc_dims.iter().filter(|d| d.owner == owner) {
             let w = self.pen(1);
             let c = proj(dm.center);
-            let read = |d: P2| if d[0] < -1e-6 || (d[0].abs() <= 1e-6 && d[1] < 0.0) { [-d[0], -d[1]] } else { d };
+            let read = |d: P2| {
+                if d[0] < -1e-6 || (d[0].abs() <= 1e-6 && d[1] < 0.0) {
+                    [-d[0], -d[1]]
+                } else {
+                    d
+                }
+            };
             if !dm.angular {
                 let p = proj(dm.refs[0]);
                 let mut d = [p[0] - c[0], p[1] - c[1]];
@@ -614,34 +899,76 @@ impl Annots {
                 }
                 d = [d[0] / l, d[1] / l];
                 // the line runs from the centre to the arc, or on to the text past it
-                let tt = dm.text.map(|t| sdot([proj(t)[0] - c[0], proj(t)[1] - c[1]], d)).unwrap_or(l);
+                let tt = dm
+                    .text
+                    .map(|t| sdot([proj(t)[0] - c[0], proj(t)[1] - c[1]], d))
+                    .unwrap_or(l);
                 let end = tt.max(l);
-                out.strokes.push((vec![c, [c[0] + d[0] * end, c[1] + d[1] * end]], w, [0; 3]));
+                out.strokes
+                    .push((vec![c, [c[0] + d[0] * end, c[1] + d[1] * end]], w, [0; 3]));
                 // arrow on the arc, pointing outwards (the type's mark, an open arrow by default)
-                let mark = self.mark_of(dm.style).or(Some(Mark { arrow: true, filled: false, closed: false, angle: 0.7, size: TICK * 2.0 }));
+                let mark = self.mark_of(dm.style).or(Some(Mark {
+                    arrow: true,
+                    filled: false,
+                    closed: false,
+                    angle: 0.7,
+                    size: TICK * 2.0,
+                }));
                 self.end_mark(mark, p, d, [-d[0], -d[1]], k, out);
                 let dr = read(d);
                 let nv = [-dr[1], dr[0]];
                 let mid = l * 0.5;
-                let pos = dm.text.map(proj).unwrap_or([c[0] + d[0] * mid + nv[0] * 0.6 / 304.8 / k, c[1] + d[1] * mid + nv[1] * 0.6 / 304.8 / k]);
-                out.texts.push((pos, dr, self.dim_text(dm.style), format!("R {}", self.length(dm.value))));
+                let pos = dm.text.map(proj).unwrap_or([
+                    c[0] + d[0] * mid + nv[0] * 0.6 / 304.8 / k,
+                    c[1] + d[1] * mid + nv[1] * 0.6 / 304.8 / k,
+                ]);
+                out.texts.push((
+                    pos,
+                    dr,
+                    self.dim_text(dm.style),
+                    format!("R {}", self.length(dm.value)),
+                ));
                 continue;
             }
             // angular: the arc through the two points, around the centre, in the dimension's plane
             let n = dm.normal;
-            let u0 = [dm.refs[0][0] - dm.center[0], dm.refs[0][1] - dm.center[1], dm.refs[0][2] - dm.center[2]];
+            let u0 = [
+                dm.refs[0][0] - dm.center[0],
+                dm.refs[0][1] - dm.center[1],
+                dm.refs[0][2] - dm.center[2],
+            ];
             let r0 = (u0[0] * u0[0] + u0[1] * u0[1] + u0[2] * u0[2]).sqrt();
             if r0 < 1e-9 {
                 continue;
             }
             let u = [u0[0] / r0, u0[1] / r0, u0[2] / r0];
-            let v = [n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2], n[0] * u[1] - n[1] * u[0]];
-            let w2 = [dm.refs[1][0] - dm.center[0], dm.refs[1][1] - dm.center[1], dm.refs[1][2] - dm.center[2]];
-            let th = (w2[0] * v[0] + w2[1] * v[1] + w2[2] * v[2]).atan2(w2[0] * u[0] + w2[1] * u[1] + w2[2] * u[2]);
-            let at = |t: f64| proj([dm.center[0] + r0 * (t.cos() * u[0] + t.sin() * v[0]), dm.center[1] + r0 * (t.cos() * u[1] + t.sin() * v[1]), dm.center[2] + r0 * (t.cos() * u[2] + t.sin() * v[2])]);
+            let v = [
+                n[1] * u[2] - n[2] * u[1],
+                n[2] * u[0] - n[0] * u[2],
+                n[0] * u[1] - n[1] * u[0],
+            ];
+            let w2 = [
+                dm.refs[1][0] - dm.center[0],
+                dm.refs[1][1] - dm.center[1],
+                dm.refs[1][2] - dm.center[2],
+            ];
+            let th = (w2[0] * v[0] + w2[1] * v[1] + w2[2] * v[2])
+                .atan2(w2[0] * u[0] + w2[1] * u[1] + w2[2] * u[2]);
+            let at = |t: f64| {
+                proj([
+                    dm.center[0] + r0 * (t.cos() * u[0] + t.sin() * v[0]),
+                    dm.center[1] + r0 * (t.cos() * u[1] + t.sin() * v[1]),
+                    dm.center[2] + r0 * (t.cos() * u[2] + t.sin() * v[2]),
+                ])
+            };
             let steps = ((th.abs() * 24.0).ceil() as usize).clamp(4, 96);
-            let arc: Vec<P2> = (0..=steps).map(|i| at(th * i as f64 / steps as f64)).collect();
-            let span = arc.windows(2).map(|q| ((q[1][0] - q[0][0]).powi(2) + (q[1][1] - q[0][1]).powi(2)).sqrt()).sum::<f64>();
+            let arc: Vec<P2> = (0..=steps)
+                .map(|i| at(th * i as f64 / steps as f64))
+                .collect();
+            let span = arc
+                .windows(2)
+                .map(|q| ((q[1][0] - q[0][0]).powi(2) + (q[1][1] - q[0][1]).powi(2)).sqrt())
+                .sum::<f64>();
             if span < 1e-9 {
                 continue; // seen edge on
             }
@@ -650,7 +977,11 @@ impl Annots {
             for t in [0.0, th] {
                 let p = at(t);
                 // along the arc, towards its other end
-                let q = at(if t == 0.0 { th.signum() * 0.01 } else { th - th.signum() * 0.01 });
+                let q = at(if t == 0.0 {
+                    th.signum() * 0.01
+                } else {
+                    th - th.signum() * 0.01
+                });
                 let mut d = [q[0] - p[0], q[1] - p[1]];
                 let l = sdot(d, d).sqrt().max(1e-12);
                 d = [d[0] / l, d[1] / l];
@@ -661,7 +992,8 @@ impl Annots {
             let l = sdot(d, d).sqrt().max(1e-12);
             d = read([d[0] / l, d[1] / l]);
             let pos = dm.text.map(proj).unwrap_or(pm);
-            out.texts.push((pos, d, self.dim_text(dm.style), self.angle(dm.value)));
+            out.texts
+                .push((pos, d, self.dim_text(dm.style), self.angle(dm.value)));
         }
         // spot elevations and coordinates: leader, shoulder, values above it
         for sp in self.spots.iter().filter(|d| d.owner == owner) {
@@ -669,14 +1001,25 @@ impl Annots {
             let p = proj(sp.at);
             let b = sp.bend.map(proj).unwrap_or(p);
             let dir = if b[0] >= p[0] { 1.0 } else { -1.0 };
-            let sh = sp.shoulder.max(if sp.bend.is_some() { 0.0 } else { 6.0 / 304.8 / k });
+            let sh = sp.shoulder.max(if sp.bend.is_some() {
+                0.0
+            } else {
+                6.0 / 304.8 / k
+            });
             let e = [b[0] + dir * sh, b[1]];
             out.strokes.push((vec![p, b, e], w, [0; 3]));
             // a small triangle on the point
             let a = TICK * 1.5 / k;
-            out.strokes.push((vec![p, [p[0] - a, p[1] + a * 1.6], [p[0] + a, p[1] + a * 1.6], p], w, [0; 3]));
+            out.strokes.push((
+                vec![p, [p[0] - a, p[1] + a * 1.6], [p[0] + a, p[1] + a * 1.6], p],
+                w,
+                [0; 3],
+            ));
             let lines: Vec<String> = if sp.coord && sp.values.len() >= 3 {
-                vec![format!("N {}", self.length(sp.values[2])), format!("E {}", self.length(sp.values[1]))]
+                vec![
+                    format!("N {}", self.length(sp.values[2])),
+                    format!("E {}", self.length(sp.values[1])),
+                ]
             } else if let Some(v) = sp.values.first() {
                 vec![self.length(*v)]
             } else {
@@ -685,7 +1028,8 @@ impl Annots {
             let mid = [(b[0] + e[0]) * 0.5, b[1]];
             for (i, t) in lines.iter().rev().enumerate() {
                 let y = mid[1] + (0.6 / 304.8 + i as f64 * DIM_TEXT * 1.4) / k;
-                out.texts.push(([mid[0], y], [1.0, 0.0], DIM_TEXT, t.clone()));
+                out.texts
+                    .push(([mid[0], y], [1.0, 0.0], DIM_TEXT, t.clone()));
             }
         }
     }
@@ -702,7 +1046,10 @@ impl Annots {
 /// starting `phase` into the pattern.
 fn dashes(pts: &[P2], pat: &[(f64, bool)], phase: f64) -> Vec<Vec<P2>> {
     let period: f64 = pat.iter().map(|p| p.0).sum();
-    let total: f64 = pts.windows(2).map(|w| ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt()).sum();
+    let total: f64 = pts
+        .windows(2)
+        .map(|w| ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt())
+        .sum();
     if period <= 1e-12 || total / period > 5000.0 {
         return vec![pts.to_vec()];
     }
@@ -712,7 +1059,10 @@ fn dashes(pts: &[P2], pat: &[(f64, bool)], phase: f64) -> Vec<Vec<P2>> {
             let l = ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt();
             if acc + l >= s && l > 0.0 {
                 let t = (s - acc) / l;
-                return [w[0][0] + (w[1][0] - w[0][0]) * t, w[0][1] + (w[1][1] - w[0][1]) * t];
+                return [
+                    w[0][0] + (w[1][0] - w[0][0]) * t,
+                    w[0][1] + (w[1][1] - w[0][1]) * t,
+                ];
             }
             acc += l;
         }
@@ -740,11 +1090,16 @@ fn fill(edges: &[[P2; 2]]) -> Vec<[P2; 3]> {
     ys.sort_by(f64::total_cmp);
     ys.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
     let mut tris = Vec::new();
-    let x_at = |e: &[P2; 2], y: f64| e[0][0] + (e[1][0] - e[0][0]) * (y - e[0][1]) / (e[1][1] - e[0][1]);
+    let x_at =
+        |e: &[P2; 2], y: f64| e[0][0] + (e[1][0] - e[0][0]) * (y - e[0][1]) / (e[1][1] - e[0][1]);
     for w in ys.windows(2) {
         let (y0, y1) = (w[0], w[1]);
         let ym = (y0 + y1) * 0.5;
-        let mut xs: Vec<(f64, f64, f64)> = edges.iter().filter(|e| (e[0][1] - ym) * (e[1][1] - ym) < 0.0).map(|e| (x_at(e, ym), x_at(e, y0), x_at(e, y1))).collect();
+        let mut xs: Vec<(f64, f64, f64)> = edges
+            .iter()
+            .filter(|e| (e[0][1] - ym) * (e[1][1] - ym) < 0.0)
+            .map(|e| (x_at(e, ym), x_at(e, y0), x_at(e, y1)))
+            .collect();
         xs.sort_by(|a, b| a.0.total_cmp(&b.0));
         for p in xs.chunks_exact(2) {
             let (a, b) = (p[0], p[1]);
@@ -763,15 +1118,34 @@ mod tests {
     use super::*;
     #[test]
     fn fill_square_with_hole() {
-        let sq = |a: f64, b: f64| vec![[[a, a], [b, a]], [[b, a], [b, b]], [[b, b], [a, b]], [[a, b], [a, a]]];
+        let sq = |a: f64, b: f64| {
+            vec![
+                [[a, a], [b, a]],
+                [[b, a], [b, b]],
+                [[b, b], [a, b]],
+                [[a, b], [a, a]],
+            ]
+        };
         let mut e = sq(0.0, 4.0);
         e.extend(sq(1.0, 3.0));
-        let area: f64 = fill(&e).iter().map(|t| ((t[1][0] - t[0][0]) * (t[2][1] - t[0][1]) - (t[2][0] - t[0][0]) * (t[1][1] - t[0][1])).abs() * 0.5).sum();
+        let area: f64 = fill(&e)
+            .iter()
+            .map(|t| {
+                ((t[1][0] - t[0][0]) * (t[2][1] - t[0][1])
+                    - (t[2][0] - t[0][0]) * (t[1][1] - t[0][1]))
+                    .abs()
+                    * 0.5
+            })
+            .sum();
         assert!((area - 12.0).abs() < 1e-9, "{area}");
     }
     #[test]
     fn dash_pattern() {
-        let p = dashes(&[[0.0, 0.0], [10.0, 0.0]], &[(2.0, true), (1.0, false)], 0.0);
+        let p = dashes(
+            &[[0.0, 0.0], [10.0, 0.0]],
+            &[(2.0, true), (1.0, false)],
+            0.0,
+        );
         assert_eq!(p.len(), 4);
         assert!((p[3][1][0] - 10.0).abs() < 1e-9);
     }
@@ -780,12 +1154,21 @@ mod tests {
         let a = Annots::default();
         let mut out = Drawn::default();
         // filled arrow, tip at the origin, body towards +x, 30° wide, 3 mm long at 1:1
-        let m = Mark { arrow: true, filled: true, closed: false, angle: 30f64.to_radians(), size: 0.01 };
+        let m = Mark {
+            arrow: true,
+            filled: true,
+            closed: false,
+            angle: 30f64.to_radians(),
+            size: 0.01,
+        };
         a.end_mark(Some(m), [0.0, 0.0], [1.0, 0.0], [1.0, 0.0], 1.0, &mut out);
         let t = out.fills[0].0[0];
         assert_eq!(t[0], [0.0, 0.0]);
         assert!(t[1][0] > 0.0099 && t[2][0] > 0.0099);
-        assert!((t[1][1] + t[2][1]).abs() < 1e-12 && (t[1][1].abs() / t[1][0] - 15f64.to_radians().tan()).abs() < 1e-9);
+        assert!(
+            (t[1][1] + t[2][1]).abs() < 1e-12
+                && (t[1][1].abs() / t[1][0] - 15f64.to_radians().tan()).abs() < 1e-9
+        );
         // diagonal: one stroke across the point
         a.end_mark(None, [0.0, 0.0], [1.0, 0.0], [1.0, 0.0], 1.0, &mut out);
         let s = &out.strokes[0].0;

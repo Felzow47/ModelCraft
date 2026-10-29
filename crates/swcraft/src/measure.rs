@@ -66,7 +66,12 @@ pub fn pick(meshes: &[&TriMesh], items: &[(usize, usize, Mat4)], o: Vec3, d: Vec
         let lo = inv.transform_point3(o);
         let ld = inv.transform_vector3(d);
         let pad = (v3(m.bbox_max) - v3(m.bbox_min)).length() * 1e-3 + 1e-9;
-        if !ray_box(lo, ld, v3(m.bbox_min) - Vec3::splat(pad), v3(m.bbox_max) + Vec3::splat(pad)) {
+        if !ray_box(
+            lo,
+            ld,
+            v3(m.bbox_min) - Vec3::splat(pad),
+            v3(m.bbox_max) + Vec3::splat(pad),
+        ) {
             continue;
         }
         for (ti, t3) in m.indices.chunks_exact(3).enumerate() {
@@ -76,7 +81,9 @@ pub fn pick(meshes: &[&TriMesh], items: &[(usize, usize, Mat4)], o: Vec3, d: Vec
             if let Some(t) = ray_tri(lo, ld, a, b, c) {
                 // ld is not normalised, but t is the same parameter for the world ray
                 if best.is_none_or(|h| t < h.t) {
-                    let n = world.transform_vector3((b - a).cross(c - a)).normalize_or_zero();
+                    let n = world
+                        .transform_vector3((b - a).cross(c - a))
+                        .normalize_or_zero();
                     best = Some(Hit {
                         comp,
                         mesh: mi,
@@ -117,7 +124,11 @@ pub fn face_props(m: &TriMesh, tris: std::ops::Range<u32>, world: Mat4) -> (Vec3
         area += ar;
         c += (a + b + cc) / 3.0 * ar;
     }
-    (n.normalize_or_zero(), area, if area > 0.0 { c / area } else { c })
+    (
+        n.normalize_or_zero(),
+        area,
+        if area > 0.0 { c / area } else { c },
+    )
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -173,7 +184,9 @@ fn smallest_eigvec(m: [[f64; 3]; 3]) -> Vec3 {
             row[q] = s * vp + c * vq;
         }
     }
-    let k = (0..3).min_by(|&i, &j| a[i][i].partial_cmp(&a[j][j]).unwrap()).unwrap();
+    let k = (0..3)
+        .min_by(|&i, &j| a[i][i].partial_cmp(&a[j][j]).unwrap())
+        .unwrap();
     Vec3::new(v[0][k] as f32, v[1][k] as f32, v[2][k] as f32).normalize_or_zero()
 }
 
@@ -183,7 +196,8 @@ pub fn fit_circle_2d(pts: &[Vec2]) -> Option<(Vec2, f32, f32)> {
         return None;
     }
     let mean = pts.iter().copied().sum::<Vec2>() / pts.len() as f32;
-    let (mut suu, mut svv, mut suv, mut suuu, mut svvv, mut suvv, mut svuu) = (0f64, 0f64, 0f64, 0f64, 0f64, 0f64, 0f64);
+    let (mut suu, mut svv, mut suv, mut suuu, mut svvv, mut suvv, mut svuu) =
+        (0f64, 0f64, 0f64, 0f64, 0f64, 0f64, 0f64);
     for p in pts {
         let u = (p.x - mean.x) as f64;
         let v = (p.y - mean.y) as f64;
@@ -206,7 +220,12 @@ pub fn fit_circle_2d(pts: &[Vec2]) -> Option<(Vec2, f32, f32)> {
     let n = pts.len() as f64;
     let r = (uc * uc + vc * vc + (suu + svv) / n).sqrt();
     let c = Vec2::new(uc as f32 + mean.x, vc as f32 + mean.y);
-    let rms = (pts.iter().map(|p| ((p.distance(c) - r as f32) as f64).powi(2)).sum::<f64>() / n).sqrt();
+    let rms = (pts
+        .iter()
+        .map(|p| ((p.distance(c) - r as f32) as f64).powi(2))
+        .sum::<f64>()
+        / n)
+        .sqrt();
     Some((c, r as f32, rms as f32))
 }
 
@@ -217,14 +236,26 @@ fn basis(axis: Vec3) -> (Vec3, Vec3) {
 
 /// Fit a cylinder to a face (hole or shaft). None when the face is not cylindrical.
 pub fn fit_cylinder(m: &TriMesh, tris: std::ops::Range<u32>, world: Mat4) -> Option<Cylinder> {
-    let mut idx: Vec<u32> = tris.flat_map(|t| (0..3).map(move |k| m.indices[t as usize * 3 + k])).collect();
+    let mut idx: Vec<u32> = tris
+        .flat_map(|t| (0..3).map(move |k| m.indices[t as usize * 3 + k]))
+        .collect();
     idx.sort_unstable();
     idx.dedup();
     if idx.len() < 6 {
         return None;
     }
-    let pts: Vec<Vec3> = idx.iter().map(|&i| world.transform_point3(v3(m.positions[i as usize]))).collect();
-    let nrm: Vec<Vec3> = idx.iter().map(|&i| world.transform_vector3(v3(m.normals[i as usize])).normalize_or_zero()).collect();
+    let pts: Vec<Vec3> = idx
+        .iter()
+        .map(|&i| world.transform_point3(v3(m.positions[i as usize])))
+        .collect();
+    let nrm: Vec<Vec3> = idx
+        .iter()
+        .map(|&i| {
+            world
+                .transform_vector3(v3(m.normals[i as usize]))
+                .normalize_or_zero()
+        })
+        .collect();
     let mut cov = [[0f64; 3]; 3];
     for n in &nrm {
         let a = [n.x as f64, n.y as f64, n.z as f64];
@@ -266,11 +297,22 @@ pub fn fit_cylinder(m: &TriMesh, tris: std::ops::Range<u32>, world: Mat4) -> Opt
     }
     // a full turn has only small gaps (one tessellation step)
     let sweep = std::f32::consts::TAU - gap;
-    let sweep = if gap < 0.9 { std::f32::consts::TAU } else { sweep };
+    let sweep = if gap < 0.9 {
+        std::f32::consts::TAU
+    } else {
+        sweep
+    };
     if sweep < 0.6 {
         return None; // a sliver of arc is too uncertain to call a diameter
     }
-    Some(Cylinder { axis, center, radius: r, rel_err: rel, inward: inward * 2 > pts.len(), sweep })
+    Some(Cylinder {
+        axis,
+        center,
+        radius: r,
+        rel_err: rel,
+        inward: inward * 2 > pts.len(),
+        sweep,
+    })
 }
 
 /// A chain of model-edge segments (one B-rep edge, or a closed loop such as a hole rim).
@@ -305,9 +347,17 @@ impl EdgeChain {
             }
         }
         let n = smallest_eigvec(cov);
-        let flat = self.points.iter().map(|p| (*p - mean).dot(n).abs()).fold(0.0, f32::max);
+        let flat = self
+            .points
+            .iter()
+            .map(|p| (*p - mean).dot(n).abs())
+            .fold(0.0, f32::max);
         let (u, w) = basis(n);
-        let p2: Vec<Vec2> = self.points.iter().map(|p| Vec2::new((*p - mean).dot(u), (*p - mean).dot(w))).collect();
+        let p2: Vec<Vec2> = self
+            .points
+            .iter()
+            .map(|p| Vec2::new((*p - mean).dot(u), (*p - mean).dot(w)))
+            .collect();
         let (c, r, rms) = fit_circle_2d(&p2)?;
         if rms / r > 0.02 || flat > r * 0.02 {
             return None;
@@ -317,7 +367,11 @@ impl EdgeChain {
 }
 
 fn key(p: Vec3, q: f32) -> (i64, i64, i64) {
-    ((p.x / q).round() as i64, (p.y / q).round() as i64, (p.z / q).round() as i64)
+    (
+        (p.x / q).round() as i64,
+        (p.y / q).round() as i64,
+        (p.z / q).round() as i64,
+    )
 }
 
 /// Distance from `p` to segment `ab`.
@@ -329,12 +383,24 @@ pub fn seg_dist(p: Vec3, a: Vec3, b: Vec3) -> f32 {
 
 /// The model edge nearest to `p_world` (within `max_dist`), chained through vertices shared by
 /// exactly two segments and stopping at sharp turns (> 50°), in world space.
-pub fn edge_chain_near(m: &TriMesh, world: Mat4, p_world: Vec3, max_dist: f32) -> Option<EdgeChain> {
+pub fn edge_chain_near(
+    m: &TriMesh,
+    world: Mat4,
+    p_world: Vec3,
+    max_dist: f32,
+) -> Option<EdgeChain> {
     if m.edges.is_empty() {
         return None;
     }
-    let pts: Vec<Vec3> = m.positions.iter().map(|p| world.transform_point3(v3(*p))).collect();
-    let diag = world.transform_vector3(v3(m.bbox_max) - v3(m.bbox_min)).length().max(1e-9);
+    let pts: Vec<Vec3> = m
+        .positions
+        .iter()
+        .map(|p| world.transform_point3(v3(*p)))
+        .collect();
+    let diag = world
+        .transform_vector3(v3(m.bbox_max) - v3(m.bbox_min))
+        .length()
+        .max(1e-9);
     let q = diag * 1e-6;
     // weld positions so segments of neighbouring faces meet
     let mut ids: HashMap<(i64, i64, i64), usize> = HashMap::new();
@@ -404,7 +470,10 @@ pub fn edge_chain_near(m: &TriMesh, world: Mat4, p_world: Vec3, max_dist: f32) -
         chain.extend(back.iter().rev());
         chain.extend(fwd);
     }
-    Some(EdgeChain { points: chain.iter().map(|&i| node_pos[i]).collect(), closed })
+    Some(EdgeChain {
+        points: chain.iter().map(|&i| node_pos[i]).collect(),
+        closed,
+    })
 }
 
 /// The mesh vertex of the hit triangle nearest to `p` (for snapping).
@@ -430,11 +499,28 @@ pub enum Tool {
 
 #[derive(Clone, Debug)]
 pub enum Measure {
-    Distance { a: Vec3, b: Vec3 },
-    Edge { chain: EdgeChain },
-    Diameter { cyl: Cylinder, at: Vec3 },
-    Angle { a: Vec3, na: Vec3, b: Vec3, nb: Vec3 },
-    Face { at: Vec3, area: f32, normal: Vec3 },
+    Distance {
+        a: Vec3,
+        b: Vec3,
+    },
+    Edge {
+        chain: EdgeChain,
+    },
+    Diameter {
+        cyl: Cylinder,
+        at: Vec3,
+    },
+    Angle {
+        a: Vec3,
+        na: Vec3,
+        b: Vec3,
+        nb: Vec3,
+    },
+    Face {
+        at: Vec3,
+        area: f32,
+        normal: Vec3,
+    },
 }
 
 #[derive(Default)]
@@ -452,10 +538,12 @@ mod tests {
 
     #[test]
     fn circle_fit() {
-        let pts: Vec<Vec2> = (0..20).map(|k| {
-            let a = k as f32 * 0.3;
-            Vec2::new(3.0 + 2.0 * a.cos(), -1.0 + 2.0 * a.sin())
-        }).collect();
+        let pts: Vec<Vec2> = (0..20)
+            .map(|k| {
+                let a = k as f32 * 0.3;
+                Vec2::new(3.0 + 2.0 * a.cos(), -1.0 + 2.0 * a.sin())
+            })
+            .collect();
         let (c, r, rms) = fit_circle_2d(&pts).unwrap();
         assert!((c - Vec2::new(3.0, -1.0)).length() < 1e-3);
         assert!((r - 2.0).abs() < 1e-3);
@@ -496,7 +584,13 @@ mod tests {
         let (_, r, _) = chain.circle().unwrap();
         assert!((r - 5.0).abs() < 0.05);
         // pick through the tube wall
-        let h = pick(&[&m], &[(0, 0, Mat4::IDENTITY)], Vec3::new(-20.0, 0.0, 5.0), Vec3::X).unwrap();
+        let h = pick(
+            &[&m],
+            &[(0, 0, Mat4::IDENTITY)],
+            Vec3::new(-20.0, 0.0, 5.0),
+            Vec3::X,
+        )
+        .unwrap();
         assert!((h.point.x + 5.0).abs() < 0.1);
     }
 }

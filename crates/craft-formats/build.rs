@@ -25,14 +25,44 @@ fn webifc() {
     use std::path::PathBuf;
     let target = std::env::var("TARGET").unwrap();
     let windows = target.contains("windows");
-    let src = std::env::var("WEBIFC_SRC").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/workspace/deps/web-ifc/src/cpp"));
-    let build = std::env::var("WEBIFC_BUILD").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(if windows { "/workspace/deps/wi-mingw" } else { "/workspace/deps/wi-linux" }));
+    let src = std::env::var("WEBIFC_SRC")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/workspace/deps/web-ifc/src/cpp"));
+    let build = std::env::var("WEBIFC_BUILD")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            PathBuf::from(if windows {
+                "/workspace/deps/wi-mingw"
+            } else {
+                "/workspace/deps/wi-linux"
+            })
+        });
     // the fetched deps live in the Linux tree (the mingw configure reused them)
     let deps = PathBuf::from("/workspace/deps/wi-linux/_deps");
-    let deps = if build.join("_deps/glm-src").exists() { build.join("_deps") } else { deps };
+    let deps = if build.join("_deps/glm-src").exists() {
+        build.join("_deps")
+    } else {
+        deps
+    };
     let mut b = cc::Build::new();
-    b.cpp(true).file("webifc/shim.cpp").include(&src).include(src.join("web-ifc")).flag_if_supported("-std=c++20").flag_if_supported("-w").define("mapbox", "wi_mapbox");
-    for d in ["glm-src", "glm-src/glm", "tinynurbs-src/include", "fastfloat-src/include", "cdt-src/CDT/include", "earcut-src/include", "spdlog-src/include", "stduuid-src/include", "unordered_dense-src/include"] {
+    b.cpp(true)
+        .file("webifc/shim.cpp")
+        .include(&src)
+        .include(src.join("web-ifc"))
+        .flag_if_supported("-std=c++20")
+        .flag_if_supported("-w")
+        .define("mapbox", "wi_mapbox");
+    for d in [
+        "glm-src",
+        "glm-src/glm",
+        "tinynurbs-src/include",
+        "fastfloat-src/include",
+        "cdt-src/CDT/include",
+        "earcut-src/include",
+        "spdlog-src/include",
+        "stduuid-src/include",
+        "unordered_dense-src/include",
+    ] {
         b.include(deps.join(d));
     }
     b.compile("webifcshim");
@@ -49,18 +79,34 @@ fn assimp() {
     use std::path::PathBuf;
     let target = std::env::var("TARGET").unwrap();
     let windows = target.contains("windows");
-    let default = if windows { "/workspace/deps/assimp-mingw" } else { "/workspace/deps/assimp-linux" };
-    let dir = std::env::var("ASSIMP_DIR").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(default));
+    let default = if windows {
+        "/workspace/deps/assimp-mingw"
+    } else {
+        "/workspace/deps/assimp-linux"
+    };
+    let dir = std::env::var("ASSIMP_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(default));
     let mut b = cc::Build::new();
-    b.cpp(true).file("assimp/shim.cpp").include(dir.join("include")).flag_if_supported("-std=gnu++17").flag_if_supported("-w");
+    b.cpp(true)
+        .file("assimp/shim.cpp")
+        .include(dir.join("include"))
+        .flag_if_supported("-std=gnu++17")
+        .flag_if_supported("-w");
     let cxx = b.get_compiler().path().to_path_buf();
     b.compile("assimpshim");
-    println!("cargo:rustc-link-search=native={}", dir.join("lib").display());
+    println!(
+        "cargo:rustc-link-search=native={}",
+        dir.join("lib").display()
+    );
     println!("cargo:rustc-link-lib=static=assimp");
     println!("cargo:rustc-link-lib=static=zlibstatic");
     if windows {
         for f in ["libstdc++.a", "libwinpthread.a"] {
-            if let Ok(o) = std::process::Command::new(&cxx).arg(format!("-print-file-name={f}")).output() {
+            if let Ok(o) = std::process::Command::new(&cxx)
+                .arg(format!("-print-file-name={f}"))
+                .output()
+            {
                 let p = PathBuf::from(String::from_utf8_lossy(&o.stdout).trim());
                 if let Some(d) = p.parent().filter(|_| p.is_absolute()) {
                     println!("cargo:rustc-link-search=native={}", d.display());
@@ -78,13 +124,25 @@ fn assimp() {
 #[cfg(feature = "occt")]
 fn occt() {
     use std::path::PathBuf;
-    let dir = std::env::var("OCCT_DIR").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/workspace/occt/install"));
-    let inc = std::env::var("OCCT_INC").map(PathBuf::from).unwrap_or_else(|_| dir.join("include/opencascade"));
-    let lib = std::env::var("OCCT_LIB").map(PathBuf::from).unwrap_or_else(|_| dir.join("lib"));
+    let dir = std::env::var("OCCT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/workspace/occt/install"));
+    let inc = std::env::var("OCCT_INC")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| dir.join("include/opencascade"));
+    let lib = std::env::var("OCCT_LIB")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| dir.join("lib"));
     let target = std::env::var("TARGET").unwrap();
     let windows = target.contains("windows");
     let mut b = cc::Build::new();
-    b.cpp(true).file("occt/shim.cpp").include(&inc).flag_if_supported("-std=gnu++17").define("_USE_MATH_DEFINES", None).flag_if_supported("-w").define("OCCT_STATIC", None);
+    b.cpp(true)
+        .file("occt/shim.cpp")
+        .include(&inc)
+        .flag_if_supported("-std=gnu++17")
+        .define("_USE_MATH_DEFINES", None)
+        .flag_if_supported("-w")
+        .define("OCCT_STATIC", None);
     if windows {
         b.define("HAVE_NO_DLL", None);
     }
@@ -93,7 +151,10 @@ fn occt() {
     if windows {
         // static libstdc++/winpthread live next to the cross compiler, not in the default search path
         for f in ["libstdc++.a", "libwinpthread.a"] {
-            if let Ok(o) = std::process::Command::new(&cxx).arg(format!("-print-file-name={f}")).output() {
+            if let Ok(o) = std::process::Command::new(&cxx)
+                .arg(format!("-print-file-name={f}"))
+                .output()
+            {
                 let p = PathBuf::from(String::from_utf8_lossy(&o.stdout).trim());
                 if let Some(d) = p.parent().filter(|_| p.is_absolute()) {
                     println!("cargo:rustc-link-search=native={}", d.display());
@@ -104,8 +165,31 @@ fn occt() {
     println!("cargo:rustc-link-search=native={}", lib.display());
     // dependency order: users first
     let libs = [
-        "TKDESTEP", "TKDEIGES", "TKXCAF", "TKVCAF", "TKV3d", "TKService", "TKHLR", "TKXSBase", "TKDE", "TKCAF", "TKLCAF", "TKCDF", "TKMesh",
-        "TKBool", "TKBO", "TKPrim", "TKShHealing", "TKTopAlgo", "TKGeomAlgo", "TKBRep", "TKGeomBase", "TKG3d", "TKG2d", "TKMath", "TKernel",
+        "TKDESTEP",
+        "TKDEIGES",
+        "TKXCAF",
+        "TKVCAF",
+        "TKV3d",
+        "TKService",
+        "TKHLR",
+        "TKXSBase",
+        "TKDE",
+        "TKCAF",
+        "TKLCAF",
+        "TKCDF",
+        "TKMesh",
+        "TKBool",
+        "TKBO",
+        "TKPrim",
+        "TKShHealing",
+        "TKTopAlgo",
+        "TKGeomAlgo",
+        "TKBRep",
+        "TKGeomBase",
+        "TKG3d",
+        "TKG2d",
+        "TKMath",
+        "TKernel",
     ];
     for l in libs {
         println!("cargo:rustc-link-lib=static={l}");
@@ -114,7 +198,10 @@ fn occt() {
         for l in ["stdc++", "winpthread"] {
             println!("cargo:rustc-link-lib=static={l}");
         }
-        for l in ["user32", "advapi32", "gdi32", "ws2_32", "psapi", "shell32", "ole32", "oleaut32", "uuid", "comdlg32", "winspool"] {
+        for l in [
+            "user32", "advapi32", "gdi32", "ws2_32", "psapi", "shell32", "ole32", "oleaut32",
+            "uuid", "comdlg32", "winspool",
+        ] {
             println!("cargo:rustc-link-lib=dylib={l}");
         }
     } else {

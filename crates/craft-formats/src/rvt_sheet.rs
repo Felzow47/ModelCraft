@@ -53,7 +53,9 @@ fn text_of(o: &Obj, k: &str) -> Option<String> {
 pub fn rtf_text(b: &[u8]) -> String {
     fn cp1252(c: u8) -> char {
         const HI: [u16; 32] = [
-            0x20ac, 0x81, 0x201a, 0x192, 0x201e, 0x2026, 0x2020, 0x2021, 0x2c6, 0x2030, 0x160, 0x2039, 0x152, 0x8d, 0x17d, 0x8f, 0x90, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x2dc, 0x2122, 0x161, 0x203a, 0x153, 0x9d, 0x17e, 0x178,
+            0x20ac, 0x81, 0x201a, 0x192, 0x201e, 0x2026, 0x2020, 0x2021, 0x2c6, 0x2030, 0x160,
+            0x2039, 0x152, 0x8d, 0x17d, 0x8f, 0x90, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013,
+            0x2014, 0x2dc, 0x2122, 0x161, 0x203a, 0x153, 0x9d, 0x17e, 0x178,
         ];
         if (0x80..0xa0).contains(&c) {
             char::from_u32(HI[(c - 0x80) as usize] as u32).unwrap_or('?')
@@ -62,7 +64,9 @@ pub fn rtf_text(b: &[u8]) -> String {
         }
     }
     if !b.starts_with(b"{\\rtf") {
-        return String::from_utf8_lossy(b).trim_end_matches('\0').to_string();
+        return String::from_utf8_lossy(b)
+            .trim_end_matches('\0')
+            .to_string();
     }
     let mut out = String::new();
     let mut stack: Vec<(bool, i64)> = Vec::new();
@@ -99,7 +103,9 @@ pub fn rtf_text(b: &[u8]) -> String {
                             i += 1;
                         }
                     }
-                    let param: Option<i64> = std::str::from_utf8(&b[ps..i]).ok().and_then(|t| t.parse().ok());
+                    let param: Option<i64> = std::str::from_utf8(&b[ps..i])
+                        .ok()
+                        .and_then(|t| t.parse().ok());
                     if i < b.len() && b[i] == b' ' {
                         i += 1;
                     }
@@ -116,14 +122,19 @@ pub fn rtf_text(b: &[u8]) -> String {
                             pending_skip = uc;
                             continue;
                         }
-                        b"fonttbl" | b"colortbl" | b"stylesheet" | b"info" | b"pict" | b"object" | b"header" | b"footer" | b"listtable" | b"listoverridetable" | b"generator" => skip = true,
+                        b"fonttbl" | b"colortbl" | b"stylesheet" | b"info" | b"pict"
+                        | b"object" | b"header" | b"footer" | b"listtable"
+                        | b"listoverridetable" | b"generator" => skip = true,
                         _ => {}
                     }
                 } else {
                     i += 1;
                     match n {
                         b'\'' => {
-                            let h = b.get(i..i + 2).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok());
+                            let h = b
+                                .get(i..i + 2)
+                                .and_then(|h| std::str::from_utf8(h).ok())
+                                .and_then(|h| u8::from_str_radix(h, 16).ok());
                             i += 2;
                             if pending_skip > 0 {
                                 pending_skip -= 1;
@@ -186,9 +197,23 @@ fn raw_text(o: &Obj, tr: &Tree) -> Option<RawText> {
     let params = o
         .list("m_paramDataFormattingArr")
         .iter()
-        .map(|p| (p.int("m_paramId").unwrap_or(-1), text_of(p, "m_prefix").unwrap_or_default(), text_of(p, "m_suffix").unwrap_or_default(), text_of(p, "m_sampleText").unwrap_or_default()))
+        .map(|p| {
+            (
+                p.int("m_paramId").unwrap_or(-1),
+                text_of(p, "m_prefix").unwrap_or_default(),
+                text_of(p, "m_suffix").unwrap_or_default(),
+                text_of(p, "m_sampleText").unwrap_or_default(),
+            )
+        })
         .collect();
-    Some(RawText { orig, base, height, flags, text, params })
+    Some(RawText {
+        orig,
+        base,
+        height,
+        flags,
+        text,
+        params,
+    })
 }
 
 /// A schedule's stored table: title / header sections (rows heights, column widths, cells).
@@ -200,19 +225,44 @@ struct Table {
 }
 
 fn table(data: &Obj, tr: &Tree) -> Table {
-    let mut t = Table { width: num(data, "m_WidthInFeet").unwrap_or(0.0), sections: vec![] };
-    for sec in data.ptrs("m_SectionData").iter().filter_map(|&i| tr.objs.get(i)) {
+    let mut t = Table {
+        width: num(data, "m_WidthInFeet").unwrap_or(0.0),
+        sections: vec![],
+    };
+    for sec in data
+        .ptrs("m_SectionData")
+        .iter()
+        .filter_map(|&i| tr.objs.get(i))
+    {
         if sec.int("m_hideSection").unwrap_or(0) != 0 {
             continue;
         }
-        let cols: Vec<f64> = sec.ptrs("m_cols").iter().filter_map(|&i| tr.objs.get(i)).map(|c| num(c, "m_dWidth").unwrap_or(0.0)).collect();
-        let rows: Vec<f64> = sec.ptrs("m_rows").iter().filter_map(|&i| tr.objs.get(i)).map(|r| num(r, "m_dHeight").unwrap_or(0.0)).collect();
+        let cols: Vec<f64> = sec
+            .ptrs("m_cols")
+            .iter()
+            .filter_map(|&i| tr.objs.get(i))
+            .map(|c| num(c, "m_dWidth").unwrap_or(0.0))
+            .collect();
+        let rows: Vec<f64> = sec
+            .ptrs("m_rows")
+            .iter()
+            .filter_map(|&i| tr.objs.get(i))
+            .map(|r| num(r, "m_dHeight").unwrap_or(0.0))
+            .collect();
         let mut cells = Vec::new();
-        for rc in sec.ptrs("m_tableCells").iter().filter_map(|&i| tr.objs.get(i)) {
+        for rc in sec
+            .ptrs("m_tableCells")
+            .iter()
+            .filter_map(|&i| tr.objs.get(i))
+        {
             for c in rc.ptrs("m_arrCells").iter().filter_map(|&i| tr.objs.get(i)) {
                 let txt = text_of(c, "m_text").unwrap_or_default();
                 if !txt.is_empty() {
-                    cells.push((c.int("m_row").unwrap_or(0).max(0) as usize, c.int("m_column").unwrap_or(0).max(0) as usize, txt));
+                    cells.push((
+                        c.int("m_row").unwrap_or(0).max(0) as usize,
+                        c.int("m_column").unwrap_or(0).max(0) as usize,
+                        txt,
+                    ));
                 }
             }
         }
@@ -289,7 +339,11 @@ struct Vp {
 /// A `BoundedSpace` (crop region, section box): origin, basis rows, the six offsets and
 /// which of them are active.
 fn bounded(b: &Obj) -> Option<Crop> {
-    let (orig, m, off) = (v3(b.fs("m_orig"))?, b.fs("m_basis")?, b.fs("m_boundOffset")?);
+    let (orig, m, off) = (
+        v3(b.fs("m_orig"))?,
+        b.fs("m_basis")?,
+        b.fs("m_boundOffset")?,
+    );
     if m.len() != 9 || off.len() != 6 || !m.iter().chain(off.iter()).all(|x| x.is_finite()) {
         return None;
     }
@@ -356,7 +410,11 @@ impl Clip {
     fn box_range(&self, lo: V3, hi: V3) -> (V3, V3) {
         let (mut a, mut b) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
         for k in 0..8 {
-            let c = self.coords([if k & 1 == 0 { lo[0] } else { hi[0] }, if k & 2 == 0 { lo[1] } else { hi[1] }, if k & 4 == 0 { lo[2] } else { hi[2] }]);
+            let c = self.coords([
+                if k & 1 == 0 { lo[0] } else { hi[0] },
+                if k & 2 == 0 { lo[1] } else { hi[1] },
+                if k & 4 == 0 { lo[2] } else { hi[2] },
+            ]);
             for i in 0..3 {
                 a[i] = a[i].min(c[i]);
                 b[i] = b[i].max(c[i]);
@@ -418,14 +476,26 @@ const CLASSES: [&str; 12] = [
 const MAX_IMAGES: usize = 96 << 20;
 
 fn strings(tr: &Tree) -> HashMap<i64, String> {
-    let Some(set) = tr.root.ptr("m_pParamValueSetAString").and_then(|i| tr.objs.get(i)) else { return HashMap::new() };
+    let Some(set) = tr
+        .root
+        .ptr("m_pParamValueSetAString")
+        .and_then(|i| tr.objs.get(i))
+    else {
+        return HashMap::new();
+    };
     set.list("m_paramSet")
         .iter()
         .filter_map(|p| {
             let id = p.int("m_paramId")?;
             let v = match p.get("m_value")? {
                 G::S(s) => s.clone(),
-                G::O(o) => o.fields.iter().find_map(|(_, g)| if let G::S(s) = g { Some(s.clone()) } else { None })?,
+                G::O(o) => o.fields.iter().find_map(|(_, g)| {
+                    if let G::S(s) = g {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                })?,
                 _ => return None,
             };
             Some((id, v))
@@ -456,34 +526,94 @@ impl Sheets {
         self.ann.take(s, t, tr, || strings(tr));
         match cls {
             "FamilySymbol" => {
-                let curves: Vec<Vec<V3>> = r.ptrs("m_nonBRepGeomPtrs").iter().filter_map(|&i| tr.objs.get(i)).map(|c| curve_points(c, s)).filter(|p| p.len() >= 2).collect();
+                let curves: Vec<Vec<V3>> = r
+                    .ptrs("m_nonBRepGeomPtrs")
+                    .iter()
+                    .filter_map(|&i| tr.objs.get(i))
+                    .map(|c| curve_points(c, s))
+                    .filter(|p| p.len() >= 2)
+                    .collect();
                 let flat = |v: &[V3]| v.iter().all(|p| p[2].abs() < 1e-6);
-                let outline = r.obj("m_outline").and_then(|o| o.fs("m_minmax")).filter(|m| m.len() == 6 && m.iter().all(|x| x.is_finite()) && (m[2] - m[5]).abs() < 1e-6).map(|m| [m[0], m[1], m[3], m[4]]);
+                let outline = r
+                    .obj("m_outline")
+                    .and_then(|o| o.fs("m_minmax"))
+                    .filter(|m| {
+                        m.len() == 6
+                            && m.iter().all(|x| x.is_finite())
+                            && (m[2] - m[5]).abs() < 1e-6
+                    })
+                    .map(|m| [m[0], m[1], m[3], m[4]]);
                 // 2D families only (title blocks, annotation symbols)
                 if outline.is_none() || !curves.iter().all(|c| flat(c)) {
                     return;
                 }
-                let texts: Vec<RawText> = r.ptrs("m_textNoteData").iter().filter_map(|&i| tr.objs.get(i)).filter_map(|o| raw_text(o, tr)).collect();
-                let tags: Vec<RawText> = r.ptrs("m_tagNoteData").iter().filter_map(|&i| tr.objs.get(i)).filter_map(|o| raw_text(o, tr)).collect();
+                let texts: Vec<RawText> = r
+                    .ptrs("m_textNoteData")
+                    .iter()
+                    .filter_map(|&i| tr.objs.get(i))
+                    .filter_map(|o| raw_text(o, tr))
+                    .collect();
+                let tags: Vec<RawText> = r
+                    .ptrs("m_tagNoteData")
+                    .iter()
+                    .filter_map(|&i| tr.objs.get(i))
+                    .filter_map(|o| raw_text(o, tr))
+                    .collect();
                 let mut tables = Vec::new();
-                if let Some(all) = tr.objs.iter().find(|o| s.name(o.tag) == "AllScheduleInstanceRegenData") {
-                    let datas: Vec<&Obj> = all.ptrs("m_dBViewScheduleDataArr").iter().filter_map(|&i| tr.objs.get(i)).collect();
-                    for si in all.ptrs("m_scheduleInstanceDataArr").iter().filter_map(|&i| tr.objs.get(i)) {
-                        let Some(pos) = si.obj("m_position").and_then(|p| v3(p.fs("m_xyz"))) else { continue };
-                        let Some(d) = si.int("m_dBViewScheduleDataIndex").and_then(|k| datas.get(k as usize)) else { continue };
-                        let Some(data) = d.ptr("m_oScheduleData").and_then(|i| tr.objs.get(i)) else { continue };
+                if let Some(all) = tr
+                    .objs
+                    .iter()
+                    .find(|o| s.name(o.tag) == "AllScheduleInstanceRegenData")
+                {
+                    let datas: Vec<&Obj> = all
+                        .ptrs("m_dBViewScheduleDataArr")
+                        .iter()
+                        .filter_map(|&i| tr.objs.get(i))
+                        .collect();
+                    for si in all
+                        .ptrs("m_scheduleInstanceDataArr")
+                        .iter()
+                        .filter_map(|&i| tr.objs.get(i))
+                    {
+                        let Some(pos) = si.obj("m_position").and_then(|p| v3(p.fs("m_xyz"))) else {
+                            continue;
+                        };
+                        let Some(d) = si
+                            .int("m_dBViewScheduleDataIndex")
+                            .and_then(|k| datas.get(k as usize))
+                        else {
+                            continue;
+                        };
+                        let Some(data) = d.ptr("m_oScheduleData").and_then(|i| tr.objs.get(i))
+                        else {
+                            continue;
+                        };
                         tables.push((pos, table(data, tr)));
                     }
                 }
                 if curves.is_empty() && texts.is_empty() && tags.is_empty() {
                     return;
                 }
-                self.symbols.insert(tr.id, Sym { curves, texts, tags, tables, outline });
+                self.symbols.insert(
+                    tr.id,
+                    Sym {
+                        curves,
+                        texts,
+                        tags,
+                        tables,
+                        outline,
+                    },
+                );
             }
             "FamilyInstance" if owner > 0 => {
-                let Some(ii) = r.ptr("m_pInstanceInfo").and_then(|i| tr.objs.get(i)) else { return };
-                let Some(t) = ii.obj("m_Trf").and_then(Trf::from) else { return };
-                self.instances.push((owner, ii.int("m_symbolId").unwrap_or(-1), t));
+                let Some(ii) = r.ptr("m_pInstanceInfo").and_then(|i| tr.objs.get(i)) else {
+                    return;
+                };
+                let Some(t) = ii.obj("m_Trf").and_then(Trf::from) else {
+                    return;
+                };
+                self.instances
+                    .push((owner, ii.int("m_symbolId").unwrap_or(-1), t));
             }
             "TextNote" if owner > 0 => {
                 if let Some(t) = raw_text(r, tr) {
@@ -491,7 +621,9 @@ impl Sheets {
                 }
             }
             "Viewport" if owner > 0 => {
-                let (Some(offset), Some(view)) = (v3(r.fs("m_offset")), r.int("m_dbViewId")) else { return };
+                let (Some(offset), Some(view)) = (v3(r.fs("m_offset")), r.int("m_dbViewId")) else {
+                    return;
+                };
                 self.viewports.push(Vp {
                     owner,
                     offset,
@@ -503,24 +635,41 @@ impl Sheets {
                 });
             }
             "ScheduleInstance" if owner > 0 => {
-                let Some(o) = r.obj("origin_XYZ").and_then(|o| v3(o.fs("m_xyz"))).or_else(|| v3(r.fs("m_origin"))) else { return };
-                self.sched_inst.push((owner, o, r.int("m_scheduleId").unwrap_or(-1)));
+                let Some(o) = r
+                    .obj("origin_XYZ")
+                    .and_then(|o| v3(o.fs("m_xyz")))
+                    .or_else(|| v3(r.fs("m_origin")))
+                else {
+                    return;
+                };
+                self.sched_inst
+                    .push((owner, o, r.int("m_scheduleId").unwrap_or(-1)));
             }
             _ if cls == "Viewer" || s.isa(t, "Viewer") => {
                 // Viewer and its kinds (Section, InteriorElevArrow…)
-                let (Some(c), Some(view)) = (r.obj("m_boundedSpace").and_then(bounded), r.int("m_dbViewId")) else {
+                let (Some(c), Some(view)) = (
+                    r.obj("m_boundedSpace").and_then(bounded),
+                    r.int("m_dbViewId"),
+                ) else {
                     return;
                 };
                 let mut c = c;
                 // annotation crop (paper feet: left, right, top, bottom past the crop)
                 if r.int("m_bAnnotationCropActive").unwrap_or(0) != 0 {
-                    c.annot = r.ptr("m_pAnnotationCropOffsets").and_then(|i| tr.objs.get(i)).and_then(|o| o.fs("m_leftRightTopBottomOffsets")).and_then(|f| f.try_into().ok());
+                    c.annot = r
+                        .ptr("m_pAnnotationCropOffsets")
+                        .and_then(|i| tr.objs.get(i))
+                        .and_then(|o| o.fs("m_leftRightTopBottomOffsets"))
+                        .and_then(|f| f.try_into().ok());
                 }
                 self.crops.insert(view, c);
             }
             "ModelClipBox" => {
                 // 3D view section box: only when switched on
-                let Some(b) = r.obj("m_boundedSpace").filter(|b| b.int("m_isOn").unwrap_or(0) != 0) else {
+                let Some(b) = r
+                    .obj("m_boundedSpace")
+                    .filter(|b| b.int("m_isOn").unwrap_or(0) != 0)
+                else {
                     return;
                 };
                 if let (Some(c), Some(viewer)) = (bounded(b), r.int("m_viewer3dId")) {
@@ -528,34 +677,54 @@ impl Sheets {
                 }
             }
             "ImageSymbol" => {
-                if let (Some(h), Some(w), Some(hh)) = (r.int("m_idImageHolder"), num(r, "m_widthInFeet"), num(r, "m_heightInFeet")) {
+                if let (Some(h), Some(w), Some(hh)) = (
+                    r.int("m_idImageHolder"),
+                    num(r, "m_widthInFeet"),
+                    num(r, "m_heightInFeet"),
+                ) {
                     self.image_syms.insert(tr.id, (h, w, hh));
                 }
             }
             "ImageInstance" => {
-                if let Some(sym) = r.ptr("m_pImageInfo").and_then(|i| tr.objs.get(i)).and_then(|o| o.int("m_symbolId")) {
+                if let Some(sym) = r
+                    .ptr("m_pImageInfo")
+                    .and_then(|i| tr.objs.get(i))
+                    .and_then(|o| o.int("m_symbolId"))
+                {
                     self.image_inst.insert(tr.id, sym);
                 }
             }
             "ImageHolder" => {
-                if let Some(G::Is(v)) = r.ptr("m_pRasterImage").and_then(|i| tr.objs.get(i)).and_then(|o| o.get("m_compressedImage")) {
+                if let Some(G::Is(v)) = r
+                    .ptr("m_pRasterImage")
+                    .and_then(|i| tr.objs.get(i))
+                    .and_then(|o| o.get("m_compressedImage"))
+                {
                     if self.holder_bytes + v.len() <= MAX_IMAGES {
                         self.holder_bytes += v.len();
-                        self.holders.insert(tr.id, v.iter().map(|&x| x as u8).collect());
+                        self.holders
+                            .insert(tr.id, v.iter().map(|&x| x as u8).collect());
                     }
                 }
             }
             "ProjectInfo" => self.project.extend(strings(tr)),
             "Level" => {
-                if let Some(z) = r.ptr("m_pSurface").and_then(|i| tr.objs.get(i)).and_then(|p| v3(p.fs("m_origin"))) {
+                if let Some(z) = r
+                    .ptr("m_pSurface")
+                    .and_then(|i| tr.objs.get(i))
+                    .and_then(|p| v3(p.fs("m_origin")))
+                {
                     self.levels.push(z[2]);
                     self.level_z.insert(tr.id, z[2]);
                 }
             }
             _ if s.isa(t, "DBView") => {
                 let pvr = tr.objs.iter().find(|o| s.name(o.tag) == "PlanViewRange");
-                let cut = pvr.and_then(|o| o.fs("m_offsets")).and_then(|v| v.first().copied()).filter(|v| v.is_finite() && *v > 0.3); // 0: not the cut plane (seen on upper levels)
-                                                                                                                                      // absolute elevations kept with the view; ±1e9 = unlimited
+                let cut = pvr
+                    .and_then(|o| o.fs("m_offsets"))
+                    .and_then(|v| v.first().copied())
+                    .filter(|v| v.is_finite() && *v > 0.3); // 0: not the cut plane (seen on upper levels)
+                                                            // absolute elevations kept with the view; ±1e9 = unlimited
                 let abs = |k: &str| match r.get(k) {
                     Some(G::F(v)) if v.is_finite() => Some(if *v <= -1e8 {
                         f64::NEG_INFINITY
@@ -566,12 +735,20 @@ impl Sheets {
                     }),
                     _ => None,
                 };
-                let range_abs = [abs("m_cutPlaneElev"), abs("m_topClipElev"), abs("m_bottomClipElev"), abs("m_levelBelowElev")];
+                let range_abs = [
+                    abs("m_cutPlaneElev"),
+                    abs("m_topClipElev"),
+                    abs("m_bottomClipElev"),
+                    abs("m_levelBelowElev"),
+                ];
                 let rel = tr
                     .objs
                     .iter()
                     .find(|o| s.name(o.tag) == "PlanViewRange2")
-                    .and_then(|o| o.fs("m_offsets").or_else(|| o.fs("m_viewDepthPlaneOffsets")))
+                    .and_then(|o| {
+                        o.fs("m_offsets")
+                            .or_else(|| o.fs("m_viewDepthPlaneOffsets"))
+                    })
                     .or_else(|| pvr.and_then(|o| o.fs("m_offsets")));
                 let pos: Vec<i64> = match pvr.and_then(|o| o.get("m_levelPos")) {
                     Some(G::Is(v)) => v.clone(),
@@ -579,7 +756,12 @@ impl Sheets {
                 };
                 let range_rel = rel
                     .filter(|v| v.len() >= 4 && v[..4].iter().all(|x| x.is_finite()))
-                    .map(|v| ([v[0], v[1], v[2], v[3]], std::array::from_fn(|k| pos.get(k).copied().unwrap_or(0))));
+                    .map(|v| {
+                        (
+                            [v[0], v[1], v[2], v[3]],
+                            std::array::from_fn(|k| pos.get(k).copied().unwrap_or(0)),
+                        )
+                    });
                 self.views.insert(
                     tr.id,
                     ViewInfo {
@@ -596,10 +778,19 @@ impl Sheets {
                         viewer: r.int("m_viewerId").unwrap_or(-1),
                         strs: strings(tr),
                         hidden: ids_of(tr, s, "HiddenElementsViewSettings", "m_hiddenElements"),
-                        hidden_cats: ids_of(tr, s, "IckyExcludedCategoriesSetPtrWrapper", "m_categoryIds"),
+                        hidden_cats: ids_of(
+                            tr,
+                            s,
+                            "IckyExcludedCategoriesSetPtrWrapper",
+                            "m_categoryIds",
+                        ),
                     },
                 );
-                if let Some(data) = r.ptr("m_pData").and_then(|i| tr.objs.get(i)).filter(|o| s.name(o.tag) == "ScheduleData") {
+                if let Some(data) = r
+                    .ptr("m_pData")
+                    .and_then(|i| tr.objs.get(i))
+                    .filter(|o| s.name(o.tag) == "ScheduleData")
+                {
                     self.tables.insert(tr.id, table(data, tr));
                 }
             }
@@ -611,16 +802,44 @@ impl Sheets {
         let &(h, w, hh) = self.image_syms.get(&sym)?;
         let b = self.holders.get(&h)?;
         let img = image::load_from_memory(b).ok()?.to_rgba8();
-        Some((std::sync::Arc::new(Rgba { width: img.width(), height: img.height(), pixels: img.into_raw() }), w, hh))
+        Some((
+            std::sync::Arc::new(Rgba {
+                width: img.width(),
+                height: img.height(),
+                pixels: img.into_raw(),
+            }),
+            w,
+            hh,
+        ))
     }
 
     /// The sheets' drawings. `model`: what the placed views show, element id → (box min,
     /// max, metres; rebuilt mesh if any).
-    pub fn finish(&self, sheet_ids: &[(i64, String, String)], model: &[(i64, i64, [f64; 3], [f64; 3], Option<&Mesh>)]) -> Vec<Sheet2d> {
+    pub fn finish(
+        &self,
+        sheet_ids: &[(i64, String, String)],
+        model: &[(i64, i64, [f64; 3], [f64; 3], Option<&Mesh>)],
+    ) -> Vec<Sheet2d> {
         // model edges only when a sheet shows a model view
-        let need = self.viewports.iter().any(|v| v.scale > 1e-6 && v.scale < 0.99 && self.views.get(&v.view).is_some_and(|w| w.class != "DBViewSchedule"));
+        let need = self.viewports.iter().any(|v| {
+            v.scale > 1e-6
+                && v.scale < 0.99
+                && self
+                    .views
+                    .get(&v.view)
+                    .is_some_and(|w| w.class != "DBViewSchedule")
+        });
         let edges = Edges::new(if need { model } else { &[] });
-        sheet_ids.iter().map(|(id, number, name)| self.sheet(*id, number, name, &edges)).filter(|s| !s.lines.is_empty() || !s.texts.is_empty() || !s.images.is_empty() || !s.views.is_empty()).collect()
+        sheet_ids
+            .iter()
+            .map(|(id, number, name)| self.sheet(*id, number, name, &edges))
+            .filter(|s| {
+                !s.lines.is_empty()
+                    || !s.texts.is_empty()
+                    || !s.images.is_empty()
+                    || !s.views.is_empty()
+            })
+            .collect()
     }
 
     /// A plan's view range as absolute elevations (feet): what it keeps, from the bottom of
@@ -628,7 +847,13 @@ impl Sheets {
     /// view depth (reflected ceiling plans). Infinite ends are unlimited.
     fn plan_range(&self, v: &ViewInfo) -> Option<(f64, f64)> {
         let lz = self.level_z.get(&v.level).copied();
-        let above = lz.and_then(|z| self.levels.iter().copied().filter(|l| *l > z + 0.01).reduce(f64::min));
+        let above = lz.and_then(|z| {
+            self.levels
+                .iter()
+                .copied()
+                .filter(|l| *l > z + 0.01)
+                .reduce(f64::min)
+        });
         // relative value k: None = unlimited
         let rel = |k: usize| -> Option<Option<f64>> {
             let (off, pos) = v.range_rel?;
@@ -638,11 +863,21 @@ impl Sheets {
                 _ => Some(lz? + off[k]),
             })
         };
-        let cut = v.range_abs[0].filter(|x| x.is_finite()).or_else(|| rel(0).flatten())?;
+        let cut = v.range_abs[0]
+            .filter(|x| x.is_finite())
+            .or_else(|| rel(0).flatten())?;
         // "unlimited" in the relative range wins over a stored elevation (seen at 0)
         let unlimited = |k: usize| v.range_rel.is_some_and(|r| r.1[k] == -1);
-        let depth: Option<f64> = if unlimited(3) { None } else { v.range_abs[3].or_else(|| rel(3).flatten()) };
-        let bottom: Option<f64> = if unlimited(2) { None } else { v.range_abs[2].or_else(|| rel(2).flatten()) };
+        let depth: Option<f64> = if unlimited(3) {
+            None
+        } else {
+            v.range_abs[3].or_else(|| rel(3).flatten())
+        };
+        let bottom: Option<f64> = if unlimited(2) {
+            None
+        } else {
+            v.range_abs[2].or_else(|| rel(2).flatten())
+        };
         let up = v.dir.is_some_and(|d| d[2] < -0.5) || depth.is_some_and(|d| d > cut + 1e-6);
         if up {
             Some((cut, depth.unwrap_or(f64::INFINITY)))
@@ -673,22 +908,49 @@ impl Sheets {
                     -INF
                 }
             };
-            return Some(Clip { orig: c.orig, ax: [c.bx, c.by, c.bz], lo: [b(1), b(3), b(5)], hi: [b(0), b(2), b(4)] });
+            return Some(Clip {
+                orig: c.orig,
+                ax: [c.bx, c.by, c.bz],
+                lo: [b(1), b(3), b(5)],
+                hi: [b(0), b(2), b(4)],
+            });
         }
         let crop = self.crops.get(&id);
         let uv = crop.filter(|c| c.active[..4].iter().all(|a| *a));
-        let (mut lo, mut hi) =
-            ([uv.map_or(-INF, |c| c.off[1]), uv.map_or(-INF, |c| c.off[3]), -INF], [uv.map_or(INF, |c| c.off[0]), uv.map_or(INF, |c| c.off[2]), INF]);
+        let (mut lo, mut hi) = (
+            [
+                uv.map_or(-INF, |c| c.off[1]),
+                uv.map_or(-INF, |c| c.off[3]),
+                -INF,
+            ],
+            [
+                uv.map_or(INF, |c| c.off[0]),
+                uv.map_or(INF, |c| c.off[2]),
+                INF,
+            ],
+        );
         let clip = if class.contains("plan") {
             let (o, ax) = match crop {
                 Some(c) if c.bz[2].abs() > 0.9 => (c.orig, [c.bx, c.by, c.bz]),
-                _ => ([0.0; 3], [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
+                _ => (
+                    [0.0; 3],
+                    [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                ),
             };
             let range = self.plan_range(v).or_else(|| {
                 // no stored range: the level below the crop origin up to the cut plane
                 let c = crop?;
-                let lv = self.levels.iter().copied().filter(|z| *z <= c.orig[2] + 0.01).fold(f64::NEG_INFINITY, f64::max);
-                let lv = if lv.is_finite() && c.orig[2] - lv < 20.0 { lv } else { c.orig[2] };
+                let lv = self
+                    .levels
+                    .iter()
+                    .copied()
+                    .filter(|z| *z <= c.orig[2] + 0.01)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                let lv = if lv.is_finite() && c.orig[2] - lv < 20.0 {
+                    lv
+                } else {
+                    c.orig[2]
+                };
                 Some((lv - 0.05, lv + v.cut.unwrap_or(4.0)))
             });
             if let Some((zl, zh)) = range {
@@ -696,7 +958,12 @@ impl Sheets {
                 let (a, b) = ((zl - o[2]) * s, (zh - o[2]) * s);
                 (lo[2], hi[2]) = (a.min(b), a.max(b));
             }
-            Clip { orig: o, ax, lo, hi }
+            Clip {
+                orig: o,
+                ax,
+                lo,
+                hi,
+            }
         } else {
             let c = crop?;
             // sections and elevations always cut at their line (near offset), far clip if set
@@ -704,9 +971,17 @@ impl Sheets {
             if c.active[4] {
                 hi[2] = c.off[4];
             }
-            Clip { orig: c.orig, ax: [c.bx, c.by, c.bz], lo, hi }
+            Clip {
+                orig: c.orig,
+                ax: [c.bx, c.by, c.bz],
+                lo,
+                hi,
+            }
         };
-        lo.iter().chain(hi.iter()).any(|x| x.is_finite()).then_some(clip)
+        lo.iter()
+            .chain(hi.iter())
+            .any(|x| x.is_finite())
+            .then_some(clip)
     }
 
     /// How the views look at the model: direction and up of each view, and what it keeps of
@@ -721,7 +996,10 @@ impl Sheets {
         let (flo, fhi) = (lo.map(|x| x / FEET), hi.map(|x| x / FEET));
         let mut out = Vec::new();
         for (&id, v) in &self.views {
-            if v.class == "DBViewSchedule" || v.class.contains("Sheet") || v.class.contains("Drafting") {
+            if v.class == "DBViewSchedule"
+                || v.class.contains("Sheet")
+                || v.class.contains("Drafting")
+            {
                 continue;
             }
             let (Some(dir), Some(up)) = (v.dir.and_then(unit), v.vert.and_then(unit)) else {
@@ -738,7 +1016,11 @@ impl Sheets {
                 if (0..3).all(|k| l[k] <= h[k]) {
                     let (mut a, mut b) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
                     for k in 0..8 {
-                        let (u, w, d) = (if k & 1 == 0 { l[0] } else { h[0] }, if k & 2 == 0 { l[1] } else { h[1] }, if k & 4 == 0 { l[2] } else { h[2] });
+                        let (u, w, d) = (
+                            if k & 1 == 0 { l[0] } else { h[0] },
+                            if k & 2 == 0 { l[1] } else { h[1] },
+                            if k & 4 == 0 { l[2] } else { h[2] },
+                        );
                         for i in 0..3 {
                             let p = c.orig[i] + c.ax[0][i] * u + c.ax[1][i] * w + c.ax[2][i] * d;
                             a[i] = a[i].min(p);
@@ -758,9 +1040,20 @@ impl Sheets {
                         x.signum() as f32 * sw_format::CLIP_FAR
                     }
                 };
-                vclip = Some(sw_format::ViewClip { orig: f32s(c.orig.map(|x| x * FEET)), axes: c.ax.map(f32s), lo: c.lo.map(far), hi: c.hi.map(far) });
+                vclip = Some(sw_format::ViewClip {
+                    orig: f32s(c.orig.map(|x| x * FEET)),
+                    axes: c.ax.map(f32s),
+                    lo: c.lo.map(far),
+                    hi: c.hi.map(far),
+                });
             }
-            out.push(ViewFrame { id, dir: f32s(dir), up: f32s(up), region, clip: vclip });
+            out.push(ViewFrame {
+                id,
+                dir: f32s(dir),
+                up: f32s(up),
+                region,
+                clip: vclip,
+            });
         }
         out.sort_by_key(|f| f.id);
         out
@@ -774,15 +1067,25 @@ impl Sheets {
             -1007402 => return Some(scale.to_string()),
             _ => {}
         }
-        v.and_then(|v| v.strs.get(&p)).or_else(|| self.project.get(&p)).cloned()
+        v.and_then(|v| v.strs.get(&p))
+            .or_else(|| self.project.get(&p))
+            .cloned()
     }
 
     fn sheet(&self, id: i64, number: &str, name: &str, edges: &Edges<'_>) -> Sheet2d {
-        let mut out = Sheet2d { id, ..Default::default() };
+        let mut out = Sheet2d {
+            id,
+            ..Default::default()
+        };
         let m = |x: f64| (x * FEET) as f32;
         let pt = |p: P2| [m(p[0]), m(p[1])];
         // scale shown by the title block: the views' common scale, or "as indicated"
-        let mut scales: Vec<i64> = self.viewports.iter().filter(|v| v.owner == id && v.scale > 1e-6 && v.scale < 0.99).map(|v| (1.0 / v.scale).round() as i64).collect();
+        let mut scales: Vec<i64> = self
+            .viewports
+            .iter()
+            .filter(|v| v.owner == id && v.scale > 1e-6 && v.scale < 0.99)
+            .map(|v| (1.0 / v.scale).round() as i64)
+            .collect();
         scales.sort();
         scales.dedup();
         let scale = match scales.as_slice() {
@@ -799,13 +1102,28 @@ impl Sheets {
             x[3] = x[3].max(p[1]);
         };
         // families on the sheet (title block first: the largest)
-        let mut insts: Vec<&(i64, i64, Trf)> = self.instances.iter().filter(|i| i.0 == id).collect();
-        let area = |i: &&(i64, i64, Trf)| self.symbols.get(&i.1).and_then(|s| s.outline).map(|o| (o[2] - o[0]) * (o[3] - o[1])).unwrap_or(0.0);
+        let mut insts: Vec<&(i64, i64, Trf)> =
+            self.instances.iter().filter(|i| i.0 == id).collect();
+        let area = |i: &&(i64, i64, Trf)| {
+            self.symbols
+                .get(&i.1)
+                .and_then(|s| s.outline)
+                .map(|o| (o[2] - o[0]) * (o[3] - o[1]))
+                .unwrap_or(0.0)
+        };
         insts.sort_by(|a, b| area(b).total_cmp(&area(a)));
         for (k, (_, sym, tf)) in insts.into_iter().enumerate() {
-            let Some(sy) = self.symbols.get(sym) else { continue };
+            let Some(sy) = self.symbols.get(sym) else {
+                continue;
+            };
             if std::env::var_os("SHEET_DEBUG").is_some() {
-                eprintln!("  inst sym {sym} curves {} texts {:?} tags {:?} tables {}", sy.curves.len(), sy.texts.iter().map(|t| &t.text).collect::<Vec<_>>(), sy.tags.iter().map(|t| &t.params).collect::<Vec<_>>(), sy.tables.len());
+                eprintln!(
+                    "  inst sym {sym} curves {} texts {:?} tags {:?} tables {}",
+                    sy.curves.len(),
+                    sy.texts.iter().map(|t| &t.text).collect::<Vec<_>>(),
+                    sy.tags.iter().map(|t| &t.params).collect::<Vec<_>>(),
+                    sy.tables.len()
+                );
             }
             if k == 0 {
                 if let Some(o) = sy.outline {
@@ -816,7 +1134,12 @@ impl Sheets {
                 }
             }
             for c in &sy.curves {
-                out.lines.push(c.iter().map(|p| tf.apply(*p)).map(|q| pt([q[0], q[1]])).collect());
+                out.lines.push(
+                    c.iter()
+                        .map(|p| tf.apply(*p))
+                        .map(|q| pt([q[0], q[1]]))
+                        .collect(),
+                );
             }
             for t in &sy.texts {
                 push_text(&mut out, t, Some(tf), trf_scale(tf), t.text.clone());
@@ -824,7 +1147,9 @@ impl Sheets {
             for t in &sy.tags {
                 let mut s = String::new();
                 for (p, pre, suf, _) in &t.params {
-                    let Some(v) = self.value(id, number, name, &scale, *p) else { continue };
+                    let Some(v) = self.value(id, number, name, &scale, *p) else {
+                        continue;
+                    };
                     if v.is_empty() {
                         continue;
                     }
@@ -854,50 +1179,96 @@ impl Sheets {
         }
         // placed views
         for vp in self.viewports.iter().filter(|v| v.owner == id) {
-            let Some(view) = self.views.get(&vp.view) else { continue };
+            let Some(view) = self.views.get(&vp.view) else {
+                continue;
+            };
             if view.class == "DBViewSchedule" {
                 continue; // drawn by its ScheduleInstance
             }
             let c = [vp.offset[0], vp.offset[1]];
             let mut rect: Option<[f64; 4]> = None;
-            if let Some((img, w, h)) = self.image_inst.get(&view.image).and_then(|s| self.image(*s)) {
-                let r = [c[0] - w * 0.5, c[1] - h * 0.5, c[0] + w * 0.5, c[1] + h * 0.5];
-                out.images.push(Image2d { rect: [m(r[0]), m(r[1]), m(r[2]), m(r[3])], image: img });
+            if let Some((img, w, h)) = self
+                .image_inst
+                .get(&view.image)
+                .and_then(|s| self.image(*s))
+            {
+                let r = [
+                    c[0] - w * 0.5,
+                    c[1] - h * 0.5,
+                    c[0] + w * 0.5,
+                    c[1] + h * 0.5,
+                ];
+                out.images.push(Image2d {
+                    rect: [m(r[0]), m(r[1]), m(r[2]), m(r[3])],
+                    image: img,
+                });
                 rect = Some(r);
             } else if vp.scale > 1e-6 {
                 rect = self.draw_view(&mut out, view, vp, edges);
             }
             let Some(r) = rect else { continue };
-            out.views.push(Viewport2d { rect: [m(r[0]), m(r[1]), m(r[2]), m(r[3])], view_id: vp.view, name: view.name.clone() });
+            out.views.push(Viewport2d {
+                rect: [m(r[0]), m(r[1]), m(r[2]), m(r[3])],
+                view_id: vp.view,
+                name: view.name.clone(),
+            });
             // view title: number, name and scale on a line below the view
             if vp.label_len > 1e-4 {
-                let (l0, l1) = ([vp.label[0], vp.label[1]], [vp.label[0] + vp.label_len, vp.label[1]]);
+                let (l0, l1) = (
+                    [vp.label[0], vp.label[1]],
+                    [vp.label[0] + vp.label_len, vp.label[1]],
+                );
                 out.lines.push(vec![pt(l0), pt(l1)]);
                 let h = 0.012; // about 3.5 mm, the usual size of view titles
-                let head = if vp.number.is_empty() { view.name.clone() } else { format!("{}  {}", vp.number, view.name) };
-                out.texts.push(Text2d { pos: pt([l0[0], l0[1] + h * 0.4]), dir: [1.0, 0.0], height: m(h), halign: 0, valign: 2, text: head });
+                let head = if vp.number.is_empty() {
+                    view.name.clone()
+                } else {
+                    format!("{}  {}", vp.number, view.name)
+                };
+                out.texts.push(Text2d {
+                    pos: pt([l0[0], l0[1] + h * 0.4]),
+                    dir: [1.0, 0.0],
+                    height: m(h),
+                    halign: 0,
+                    valign: 2,
+                    text: head,
+                });
                 if vp.scale > 1e-6 && vp.scale < 0.99 {
-                    out.texts.push(Text2d { pos: pt([l0[0], l0[1] - h * 0.4]), dir: [1.0, 0.0], height: m(h * 0.7), halign: 0, valign: 0, text: format!("1 : {}", (1.0 / vp.scale).round()) });
+                    out.texts.push(Text2d {
+                        pos: pt([l0[0], l0[1] - h * 0.4]),
+                        dir: [1.0, 0.0],
+                        height: m(h * 0.7),
+                        halign: 0,
+                        valign: 0,
+                        text: format!("1 : {}", (1.0 / vp.scale).round()),
+                    });
                 }
             }
         }
         // extents: the title block, else everything drawn
-        let ext = extent.map(|e| [m(e[0]), m(e[1]), m(e[2]), m(e[3])]).or_else(|| {
-            let mut e: Option<[f64; 4]> = None;
-            for l in &out.lines {
-                for p in l {
-                    grow(&mut e, [p[0] as f64, p[1] as f64]);
+        let ext = extent
+            .map(|e| [m(e[0]), m(e[1]), m(e[2]), m(e[3])])
+            .or_else(|| {
+                let mut e: Option<[f64; 4]> = None;
+                for l in &out.lines {
+                    for p in l {
+                        grow(&mut e, [p[0] as f64, p[1] as f64]);
+                    }
                 }
-            }
-            for r in out.views.iter().map(|v| v.rect).chain(out.images.iter().map(|i| i.rect)) {
-                grow(&mut e, [r[0] as f64, r[1] as f64]);
-                grow(&mut e, [r[2] as f64, r[3] as f64]);
-            }
-            for t in &out.texts {
-                grow(&mut e, [t.pos[0] as f64, t.pos[1] as f64]);
-            }
-            e.map(|e| [e[0] as f32, e[1] as f32, e[2] as f32, e[3] as f32])
-        });
+                for r in out
+                    .views
+                    .iter()
+                    .map(|v| v.rect)
+                    .chain(out.images.iter().map(|i| i.rect))
+                {
+                    grow(&mut e, [r[0] as f64, r[1] as f64]);
+                    grow(&mut e, [r[2] as f64, r[3] as f64]);
+                }
+                for t in &out.texts {
+                    grow(&mut e, [t.pos[0] as f64, t.pos[1] as f64]);
+                }
+                e.map(|e| [e[0] as f32, e[1] as f32, e[2] as f32, e[3] as f32])
+            });
         out.extent = ext.unwrap_or([0.0, 0.0, 0.841, 0.594]);
         out
     }
@@ -907,18 +1278,40 @@ impl Sheets {
     fn draw_table(&self, out: &mut Sheet2d, tb: &Table, o: V3, up: bool) {
         let m = |x: f64| (x * FEET) as f32;
         let mut y = o[1];
-        let width = if tb.width > 1e-6 { tb.width } else { tb.sections.iter().map(|s| s.0.iter().sum::<f64>()).fold(0.0, f64::max) };
+        let width = if tb.width > 1e-6 {
+            tb.width
+        } else {
+            tb.sections
+                .iter()
+                .map(|s| s.0.iter().sum::<f64>())
+                .fold(0.0, f64::max)
+        };
         if width <= 1e-6 {
             return;
         }
-        let sections: Vec<_> = if up { tb.sections.iter().rev().collect() } else { tb.sections.iter().collect() };
+        let sections: Vec<_> = if up {
+            tb.sections.iter().rev().collect()
+        } else {
+            tb.sections.iter().collect()
+        };
         for (cols, rows, cells) in sections {
-            let rows_order: Vec<usize> = if up { (0..rows.len()).rev().collect() } else { (0..rows.len()).collect() };
+            let rows_order: Vec<usize> = if up {
+                (0..rows.len()).rev().collect()
+            } else {
+                (0..rows.len()).collect()
+            };
             for r in rows_order {
                 let h = rows[r].max(0.005);
                 let (y0, y1) = if up { (y, y + h) } else { (y - h, y) };
-                out.lines.push(vec![[m(o[0]), m(y0)], [m(o[0] + width), m(y0)], [m(o[0] + width), m(y1)], [m(o[0]), m(y1)], [m(o[0]), m(y0)]]);
-                let row_cells: Vec<&(usize, usize, String)> = cells.iter().filter(|c| c.0 == r).collect();
+                out.lines.push(vec![
+                    [m(o[0]), m(y0)],
+                    [m(o[0] + width), m(y0)],
+                    [m(o[0] + width), m(y1)],
+                    [m(o[0]), m(y1)],
+                    [m(o[0]), m(y0)],
+                ]);
+                let row_cells: Vec<&(usize, usize, String)> =
+                    cells.iter().filter(|c| c.0 == r).collect();
                 let multi = cols.len() > 1 && row_cells.len() > 1;
                 let mut x = o[0];
                 for (k, w) in cols.iter().enumerate() {
@@ -927,7 +1320,14 @@ impl Sheets {
                     }
                     if let Some(c) = row_cells.iter().find(|c| c.1 == k) {
                         let (cx, cw) = if multi { (x, *w) } else { (o[0], width) };
-                        out.texts.push(Text2d { pos: [m(cx + cw * 0.5), m((y0 + y1) * 0.5)], dir: [1.0, 0.0], height: m((h * 0.45).min(0.0156)), halign: 1, valign: 1, text: c.2.clone() });
+                        out.texts.push(Text2d {
+                            pos: [m(cx + cw * 0.5), m((y0 + y1) * 0.5)],
+                            dir: [1.0, 0.0],
+                            height: m((h * 0.45).min(0.0156)),
+                            halign: 1,
+                            valign: 1,
+                            text: c.2.clone(),
+                        });
                     }
                     x += w;
                 }
@@ -938,7 +1338,13 @@ impl Sheets {
 
     /// A model view on the sheet: the edges of the elements it sees, clipped by its crop
     /// region, at the viewport's scale. Returns the frame (feet, paper).
-    fn draw_view(&self, out: &mut Sheet2d, view: &ViewInfo, vp: &Vp, edges: &Edges<'_>) -> Option<[f64; 4]> {
+    fn draw_view(
+        &self,
+        out: &mut Sheet2d,
+        view: &ViewInfo,
+        vp: &Vp,
+        edges: &Edges<'_>,
+    ) -> Option<[f64; 4]> {
         let crop = self.crops.get(&vp.view);
         // view axes: the crop basis, else the view directions
         let (o, bx, by, _bz) = match crop {
@@ -952,7 +1358,9 @@ impl Sheets {
         };
         // what the view keeps (crop, view range, depth clips), segments clipped to it
         let keep = self.clip_of(vp.view, view);
-        let mut uv_box = crop.filter(|c| c.active[0] && c.active[1] && c.active[2] && c.active[3]).map(|c| [c.off[1], c.off[3], c.off[0], c.off[2]]);
+        let mut uv_box = crop
+            .filter(|c| c.active[0] && c.active[1] && c.active[2] && c.active[3])
+            .map(|c| [c.off[1], c.off[3], c.off[0], c.off[2]]);
         let cropped = uv_box.is_some();
         let ft = |p: V3| [p[0] / FEET, p[1] / FEET, p[2] / FEET];
         let proj = |p: V3| -> P2 {
@@ -961,7 +1369,11 @@ impl Sheets {
         };
         // towards the viewer: the view direction (`m_viewDir`), else right × up
         let nz = {
-            let c = view.dir.filter(|d| dot(*d, *d) > 1e-12).unwrap_or([bx[1] * by[2] - bx[2] * by[1], bx[2] * by[0] - bx[0] * by[2], bx[0] * by[1] - bx[1] * by[0]]);
+            let c = view.dir.filter(|d| dot(*d, *d) > 1e-12).unwrap_or([
+                bx[1] * by[2] - bx[2] * by[1],
+                bx[2] * by[0] - bx[0] * by[2],
+                bx[0] * by[1] - bx[1] * by[0],
+            ]);
             let l = dot(c, c).sqrt().max(1e-12);
             [c[0] / l, c[1] / l, c[2] / l]
         };
@@ -969,21 +1381,34 @@ impl Sheets {
             let d = sub(p, o);
             [dot(d, bx), dot(d, by), dot(d, nz)]
         };
-        let back = |k: &Clip, c: V3| -> V3 { std::array::from_fn(|i| k.orig[i] + k.ax[0][i] * c[0] + k.ax[1][i] * c[1] + k.ax[2][i] * c[2]) };
+        let back = |k: &Clip, c: V3| -> V3 {
+            std::array::from_fn(|i| {
+                k.orig[i] + k.ax[0][i] * c[0] + k.ax[1][i] * c[1] + k.ax[2][i] * c[2]
+            })
+        };
         let hlr_on = std::env::var_os("RVT_NO_HLR").is_none();
         let mut segs: Vec<[V3; 2]> = Vec::new();
         let mut tris: Vec<[V3; 3]> = Vec::new();
         // the cut plane (plans: the cut height; sections and elevations: their line), on the
         // side of the kept box towards the viewer, in clip coordinates
-        let cut_z = keep.filter(|_| !view.class.to_ascii_lowercase().contains("3d")).and_then(|k| {
-            let z = if dot(k.ax[2], nz) > 0.0 { k.hi[2] } else { k.lo[2] };
-            z.is_finite().then_some(z)
-        });
+        let cut_z = keep
+            .filter(|_| !view.class.to_ascii_lowercase().contains("3d"))
+            .and_then(|k| {
+                let z = if dot(k.ax[2], nz) > 0.0 {
+                    k.hi[2]
+                } else {
+                    k.lo[2]
+                };
+                z.is_finite().then_some(z)
+            });
         let mut cuts: Vec<[V3; 2]> = Vec::new();
         // drafting views draw no model, only their own lines
         let drafting = view.class.contains("Drafting");
         for (id, cat, lo, hi, list, mesh) in edges.items.iter().filter(|_| !drafting) {
-            if view.hidden.contains(id) || view.hidden_cats.contains(cat) || keep.is_some_and(|k| k.misses(ft(*lo), ft(*hi))) {
+            if view.hidden.contains(id)
+                || view.hidden_cats.contains(cat)
+                || keep.is_some_and(|k| k.misses(ft(*lo), ft(*hi)))
+            {
                 continue;
             }
             for e in list {
@@ -1029,19 +1454,36 @@ impl Sheets {
                 match mesh {
                     Some(m) => {
                         for t in &m.tri {
-                            add(t.map(|i| ft(m.pos.get(i as usize).copied().unwrap_or_default().map(|x| x as f64))));
+                            add(t.map(|i| {
+                                ft(m.pos
+                                    .get(i as usize)
+                                    .copied()
+                                    .unwrap_or_default()
+                                    .map(|x| x as f64))
+                            }));
                         }
                         // the element's section at the cut plane, drawn heavier
                         if let (Some(k), Some(z)) = (keep.as_ref(), cut_z) {
                             if !NOT_CUT.contains(cat) && cuts.len() < MAX_SEGMENTS {
                                 for t in &m.tri {
-                                    let c = t.map(|i| k.coords(ft(m.pos.get(i as usize).copied().unwrap_or_default().map(|x| x as f64))));
+                                    let c = t.map(|i| {
+                                        k.coords(ft(m
+                                            .pos
+                                            .get(i as usize)
+                                            .copied()
+                                            .unwrap_or_default()
+                                            .map(|x| x as f64)))
+                                    });
                                     let mut pts: Vec<V3> = Vec::new();
                                     for (a, b) in [(c[0], c[1]), (c[1], c[2]), (c[2], c[0])] {
                                         let (da, db) = (a[2] - z, b[2] - z);
                                         if (da < 0.0) != (db < 0.0) && (da - db).abs() > 1e-12 {
                                             let f = da / (da - db);
-                                            pts.push([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, z]);
+                                            pts.push([
+                                                a[0] + (b[0] - a[0]) * f,
+                                                a[1] + (b[1] - a[1]) * f,
+                                                z,
+                                            ]);
                                         }
                                     }
                                     if pts.len() == 2 {
@@ -1075,9 +1517,24 @@ impl Sheets {
         self.ann.draw(vp.view, &proj, vp.scale, &mut ann);
         if uv_box.is_none() {
             // no crop: the extents of what is seen
-            let mut e = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
-            for p in segs.iter().flatten().map(|p| [p[0], p[1]]).chain(ann.strokes.iter().flat_map(|s| s.0.iter().copied())) {
-                e = [e[0].min(p[0]), e[1].min(p[1]), e[2].max(p[0]), e[3].max(p[1])];
+            let mut e = [
+                f64::INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+            ];
+            for p in segs
+                .iter()
+                .flatten()
+                .map(|p| [p[0], p[1]])
+                .chain(ann.strokes.iter().flat_map(|s| s.0.iter().copied()))
+            {
+                e = [
+                    e[0].min(p[0]),
+                    e[1].min(p[1]),
+                    e[2].max(p[0]),
+                    e[3].max(p[1]),
+                ];
             }
             if !e[0].is_finite() {
                 return None;
@@ -1089,31 +1546,64 @@ impl Sheets {
         // the centre of what is seen is used
         // (a crop region that is not active counts as none: 3D views and uncropped plans are
         // centred on what they show)
-        let (cu, cv) = if cropped { (0.0, 0.0) } else { ((ub[0] + ub[2]) * 0.5, (ub[1] + ub[3]) * 0.5) };
+        let (cu, cv) = if cropped {
+            (0.0, 0.0)
+        } else {
+            ((ub[0] + ub[2]) * 0.5, (ub[1] + ub[3]) * 0.5)
+        };
         let k = vp.scale;
         if std::env::var_os("SHEET_DEBUG").is_some() {
-            eprintln!("  view {} {:?} {} crop {:?} ub {:?} offset {:?} label {:?} len {} k {}", vp.view, view.name, view.class, crop.map(|c| (c.orig, c.off, c.active)), ub, vp.offset, vp.label, vp.label_len, k);
+            eprintln!(
+                "  view {} {:?} {} crop {:?} ub {:?} offset {:?} label {:?} len {} k {}",
+                vp.view,
+                view.name,
+                view.class,
+                crop.map(|c| (c.orig, c.off, c.active)),
+                ub,
+                vp.offset,
+                vp.label,
+                vp.label_len,
+                k
+            );
         }
-        let to_paper = |p: P2| [vp.offset[0] + (p[0] - cu) * k, vp.offset[1] + (p[1] - cv) * k];
+        let to_paper = |p: P2| {
+            [
+                vp.offset[0] + (p[0] - cu) * k,
+                vp.offset[1] + (p[1] - cv) * k,
+            ]
+        };
         // annotation crop: the annotations wholly outside it are not drawn
-        let acrop = crop.and_then(|c| c.annot).filter(|_| cropped && k > 0.0).map(|a| {
-            let (p, q) = (to_paper([ub[0], ub[1]]), to_paper([ub[2], ub[3]]));
-            [p[0] - a[0], p[1] - a[3], q[0] + a[1], q[1] + a[2]]
-        });
-        let inside = |p: P2| acrop.map_or(true, |r| p[0] >= r[0] && p[0] <= r[2] && p[1] >= r[1] && p[1] <= r[3]);
+        let acrop = crop
+            .and_then(|c| c.annot)
+            .filter(|_| cropped && k > 0.0)
+            .map(|a| {
+                let (p, q) = (to_paper([ub[0], ub[1]]), to_paper([ub[2], ub[3]]));
+                [p[0] - a[0], p[1] - a[3], q[0] + a[1], q[1] + a[2]]
+            });
+        let inside = |p: P2| {
+            acrop.map_or(true, |r| {
+                p[0] >= r[0] && p[0] <= r[2] && p[1] >= r[1] && p[1] <= r[3]
+            })
+        };
         let mut ann = ann;
         if acrop.is_some() && std::env::var_os("SHEET_DEBUG").is_some() {
             eprintln!("    annotation crop {acrop:?}");
         }
         if acrop.is_some() {
-            ann.strokes.retain(|s| s.0.iter().any(|p| inside(to_paper(*p))));
-            ann.fills.retain(|f| f.0.iter().flatten().any(|p| inside(to_paper(*p))));
+            ann.strokes
+                .retain(|s| s.0.iter().any(|p| inside(to_paper(*p))));
+            ann.fills
+                .retain(|f| f.0.iter().flatten().any(|p| inside(to_paper(*p))));
             ann.texts.retain(|t| inside(to_paper(t.0)));
         }
         let m = |x: f64| (x * FEET) as f32;
         // hidden lines removed: the faces in a depth buffer over the frame, then the edges
         // keep the parts in front of them
-        let hlr = if hlr_on && !tris.is_empty() { crate::rvt_hlr::Hlr::new(ub, HLR_PIXELS) } else { None };
+        let hlr = if hlr_on && !tris.is_empty() {
+            crate::rvt_hlr::Hlr::new(ub, HLR_PIXELS)
+        } else {
+            None
+        };
         let mut hlr = hlr;
         if let Some(h) = hlr.as_mut() {
             for t in &tris {
@@ -1140,16 +1630,44 @@ impl Sheets {
         for s in &cuts {
             if let Some((a, b)) = clip([s[0][0], s[0][1]], [s[1][0], s[1][1]], ub) {
                 let (a, b) = (to_paper(a), to_paper(b));
-                out.strokes.push(Stroke2d { pts: vec![[m(a[0]), m(a[1])], [m(b[0]), m(b[1])]], width: cut_w, color: [0; 3] });
+                out.strokes.push(Stroke2d {
+                    pts: vec![[m(a[0]), m(a[1])], [m(b[0]), m(b[1])]],
+                    width: cut_w,
+                    color: [0; 3],
+                });
             }
         }
         if std::env::var_os("SHEET_DEBUG").is_some() {
             eprintln!("    cut pieces {} at {cut_z:?}", cuts.len());
-            eprintln!("    edges {} faces {} drawn {} shown pieces {shown} nz {nz:?} bz {:?} keep {:?}", segs.len(), tris.len(), hlr.as_ref().map_or(0, |h| h.faces), crop.map(|c| c.bz), keep.map(|k| (k.ax[2], k.lo[2], k.hi[2])));
+            eprintln!(
+                "    edges {} faces {} drawn {} shown pieces {shown} nz {nz:?} bz {:?} keep {:?}",
+                segs.len(),
+                tris.len(),
+                hlr.as_ref().map_or(0, |h| h.faces),
+                crop.map(|c| c.bz),
+                keep.map(|k| (k.ax[2], k.lo[2], k.hi[2]))
+            );
         }
         put_drawn(out, &ann, &to_paper);
         // model → paper, for the view's texts and tags
-        let mp = Trf::new([k * bx[0], k * by[0], 0.0, k * bx[1], k * by[1], 0.0, k * bx[2], k * by[2], 0.0], [vp.offset[0] - k * (dot(o, bx) + cu), vp.offset[1] - k * (dot(o, by) + cv), 0.0]);
+        let mp = Trf::new(
+            [
+                k * bx[0],
+                k * by[0],
+                0.0,
+                k * bx[1],
+                k * by[1],
+                0.0,
+                k * bx[2],
+                k * by[2],
+                0.0,
+            ],
+            [
+                vp.offset[0] - k * (dot(o, bx) + cu),
+                vp.offset[1] - k * (dot(o, by) + cv),
+                0.0,
+            ],
+        );
         for (_, t) in self.texts.iter().filter(|t| t.0 == vp.view) {
             if !inside([mp.apply(t.orig)[0], mp.apply(t.orig)[1]]) {
                 continue;
@@ -1157,7 +1675,9 @@ impl Sheets {
             push_text(out, t, Some(&mp), 1.0, t.text.clone());
         }
         for tg in self.ann.tags.iter().filter(|t| t.owner == vp.view) {
-            let Some(sy) = self.symbols.get(&tg.symbol) else { continue };
+            let Some(sy) = self.symbols.get(&tg.symbol) else {
+                continue;
+            };
             let h = mp.apply(tg.head);
             if !inside([h[0], h[1]]) {
                 continue;
@@ -1166,7 +1686,15 @@ impl Sheets {
             let tf = Trf::new([c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0], [h[0], h[1], 0.0]);
             let w = m(self.ann.pen(1));
             for cv in &sy.curves {
-                out.strokes.push(Stroke2d { pts: cv.iter().map(|p| tf.apply(*p)).map(|q| [m(q[0]), m(q[1])]).collect(), width: w, color: [0; 3] });
+                out.strokes.push(Stroke2d {
+                    pts: cv
+                        .iter()
+                        .map(|p| tf.apply(*p))
+                        .map(|q| [m(q[0]), m(q[1])])
+                        .collect(),
+                    width: w,
+                    color: [0; 3],
+                });
             }
             for t in &sy.texts {
                 push_text(out, t, Some(&tf), 1.0, t.text.clone());
@@ -1174,10 +1702,21 @@ impl Sheets {
             // labels: the tagged element's text parameters, else its type's
             let ty = self.ann.inst_type.get(&tg.target);
             for t in &sy.tags {
-                let vals: Vec<String> = t.params.iter().filter_map(|(p, pre, suf, _)| {
-                    let v = self.ann.strs.get(&tg.target).and_then(|x| x.get(p)).or_else(|| ty.and_then(|y| self.ann.strs.get(y)).and_then(|x| x.get(p)))?;
-                    (!v.is_empty()).then(|| format!("{pre}{v}{suf}"))
-                }).collect();
+                let vals: Vec<String> = t
+                    .params
+                    .iter()
+                    .filter_map(|(p, pre, suf, _)| {
+                        let v = self
+                            .ann
+                            .strs
+                            .get(&tg.target)
+                            .and_then(|x| x.get(p))
+                            .or_else(|| {
+                                ty.and_then(|y| self.ann.strs.get(y)).and_then(|x| x.get(p))
+                            })?;
+                        (!v.is_empty()).then(|| format!("{pre}{v}{suf}"))
+                    })
+                    .collect();
                 push_text(out, t, Some(&tf), 1.0, vals.join(" "));
             }
         }
@@ -1210,7 +1749,14 @@ fn push_text(out: &mut Sheet2d, t: &RawText, tf: Option<&Trf>, hk: f64, text: St
         4 => 2,
         _ => 0,
     };
-    out.texts.push(Text2d { pos: [m(o[0]), m(o[1])], dir: [(b[0] / l) as f32, (b[1] / l) as f32], height: m(t.height * hk / LINE_BOX / text.lines().count().max(1) as f64), halign: h.min(2), valign: v, text });
+    out.texts.push(Text2d {
+        pos: [m(o[0]), m(o[1])],
+        dir: [(b[0] / l) as f32, (b[1] / l) as f32],
+        height: m(t.height * hk / LINE_BOX / text.lines().count().max(1) as f64),
+        halign: h.min(2),
+        valign: v,
+        text,
+    });
 }
 
 /// Annotation geometry (`Drawn`, view plane) put on the paper by `to_paper`.
@@ -1221,16 +1767,33 @@ fn put_drawn(out: &mut Sheet2d, d: &crate::rvt_annot::Drawn, to_paper: &dyn Fn(P
         [m(q[0]), m(q[1])]
     };
     for (pts, w, c) in &d.strokes {
-        out.strokes.push(Stroke2d { pts: pts.iter().map(|p| pt(*p)).collect(), width: m(*w), color: *c });
+        out.strokes.push(Stroke2d {
+            pts: pts.iter().map(|p| pt(*p)).collect(),
+            width: m(*w),
+            color: *c,
+        });
     }
     for (tris, c) in &d.fills {
-        out.fills.push(Fill2d { tris: tris.iter().map(|t| [pt(t[0]), pt(t[1]), pt(t[2])]).collect(), color: *c });
+        out.fills.push(Fill2d {
+            tris: tris
+                .iter()
+                .map(|t| [pt(t[0]), pt(t[1]), pt(t[2])])
+                .collect(),
+            color: *c,
+        });
     }
     for (p, dir, h, text) in &d.texts {
         let (a, b) = (to_paper(*p), to_paper([p[0] + dir[0], p[1] + dir[1]]));
         let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
         let l = (dx * dx + dy * dy).sqrt().max(1e-12);
-        out.texts.push(Text2d { pos: [m(a[0]), m(a[1])], dir: [(dx / l) as f32, (dy / l) as f32], height: m(*h), halign: 1, valign: 2, text: text.clone() });
+        out.texts.push(Text2d {
+            pos: [m(a[0]), m(a[1])],
+            dir: [(dx / l) as f32, (dy / l) as f32],
+            height: m(*h),
+            halign: 1,
+            valign: 2,
+            text: text.clone(),
+        });
     }
 }
 
@@ -1238,7 +1801,10 @@ fn put_drawn(out: &mut Sheet2d, d: &crate::rvt_annot::Drawn, to_paper: &dyn Fn(P
 const CUT_PEN: f64 = 0.35 / 304.8;
 /// Built-in categories Revit does not cut (furniture, fixtures, equipment, planting,
 /// entourage, parking, site, topography): drawn in projection even across the cut plane.
-const NOT_CUT: [i64; 13] = [-2000080, -2001100, -2001160, -2001120, -2001060, -2001040, -2001140, -2001350, -2001360, -2001370, -2001180, -2001260, -2001340];
+const NOT_CUT: [i64; 13] = [
+    -2000080, -2001100, -2001160, -2001120, -2001060, -2001040, -2001140, -2001350, -2001360,
+    -2001370, -2001180, -2001260, -2001340,
+];
 /// Most model edges drawn in one view.
 const MAX_SEGMENTS: usize = 60_000;
 /// Most faces drawn to hide edges in one view.
@@ -1252,7 +1818,12 @@ const SOLID_BOX: f64 = 0.0;
 fn clip(a: P2, b: P2, r: [f64; 4]) -> Option<(P2, P2)> {
     let d = [b[0] - a[0], b[1] - a[1]];
     let (mut t0, mut t1) = (0.0f64, 1.0f64);
-    for (p, q) in [(-d[0], a[0] - r[0]), (d[0], r[2] - a[0]), (-d[1], a[1] - r[1]), (d[1], r[3] - a[1])] {
+    for (p, q) in [
+        (-d[0], a[0] - r[0]),
+        (d[0], r[2] - a[0]),
+        (-d[1], a[1] - r[1]),
+        (d[1], r[3] - a[1]),
+    ] {
         if p.abs() < 1e-15 {
             if q < 0.0 {
                 return None;
@@ -1269,7 +1840,10 @@ fn clip(a: P2, b: P2, r: [f64; 4]) -> Option<(P2, P2)> {
             return None;
         }
     }
-    Some(([a[0] + d[0] * t0, a[1] + d[1] * t0], [a[0] + d[0] * t1, a[1] + d[1] * t1]))
+    Some((
+        [a[0] + d[0] * t0, a[1] + d[1] * t0],
+        [a[0] + d[0] * t1, a[1] + d[1] * t1],
+    ))
 }
 
 /// The ids listed in field `field` of the objects of class `class` in element `tr`.
@@ -1293,11 +1867,28 @@ struct Edges<'a> {
 
 /// Corners of box `k` (bit 0: x, 1: y, 2: z).
 fn corner(lo: V3, hi: V3, k: usize) -> V3 {
-    [if k & 1 == 0 { lo[0] } else { hi[0] }, if k & 2 == 0 { lo[1] } else { hi[1] }, if k & 4 == 0 { lo[2] } else { hi[2] }]
+    [
+        if k & 1 == 0 { lo[0] } else { hi[0] },
+        if k & 2 == 0 { lo[1] } else { hi[1] },
+        if k & 4 == 0 { lo[2] } else { hi[2] },
+    ]
 }
 
 /// The 12 triangles of a box (corner indices).
-const BOX_TRIS: [[usize; 3]; 12] = [[0, 1, 3], [0, 3, 2], [4, 6, 7], [4, 7, 5], [0, 4, 5], [0, 5, 1], [2, 3, 7], [2, 7, 6], [0, 2, 6], [0, 6, 4], [1, 5, 7], [1, 7, 3]];
+const BOX_TRIS: [[usize; 3]; 12] = [
+    [0, 1, 3],
+    [0, 3, 2],
+    [4, 6, 7],
+    [4, 7, 5],
+    [0, 4, 5],
+    [0, 5, 1],
+    [2, 3, 7],
+    [2, 7, 6],
+    [0, 2, 6],
+    [0, 6, 4],
+    [1, 5, 7],
+    [1, 7, 3],
+];
 
 impl<'a> Edges<'a> {
     fn new(model: &[(i64, i64, [f64; 3], [f64; 3], Option<&'a Mesh>)]) -> Edges<'a> {
@@ -1307,7 +1898,23 @@ impl<'a> Edges<'a> {
                 let mesh = mesh.filter(|m| !m.tri.is_empty());
                 let list = match mesh {
                     Some(m) => feature_edges(m),
-                    None => [(0, 1), (2, 3), (4, 5), (6, 7), (0, 2), (1, 3), (4, 6), (5, 7), (0, 4), (1, 5), (2, 6), (3, 7)].iter().map(|&(a, b)| [corner(*lo, *hi, a), corner(*lo, *hi, b)]).collect(),
+                    None => [
+                        (0, 1),
+                        (2, 3),
+                        (4, 5),
+                        (6, 7),
+                        (0, 2),
+                        (1, 3),
+                        (4, 6),
+                        (5, 7),
+                        (0, 4),
+                        (1, 5),
+                        (2, 6),
+                        (3, 7),
+                    ]
+                    .iter()
+                    .map(|&(a, b)| [corner(*lo, *hi, a), corner(*lo, *hi, b)])
+                    .collect(),
                 };
                 (*id, *cat, *lo, *hi, list, mesh)
             })
@@ -1318,13 +1925,32 @@ impl<'a> Edges<'a> {
 
 /// Edges of a mesh between faces that are not coplanar (or on its border).
 fn feature_edges(m: &Mesh) -> Vec<[V3; 2]> {
-    let q = |p: [f32; 3]| [(p[0] * 2000.0).round() as i64, (p[1] * 2000.0).round() as i64, (p[2] * 2000.0).round() as i64];
+    let q = |p: [f32; 3]| {
+        [
+            (p[0] * 2000.0).round() as i64,
+            (p[1] * 2000.0).round() as i64,
+            (p[2] * 2000.0).round() as i64,
+        ]
+    };
     let mut by: HashMap<([i64; 3], [i64; 3]), (Vec<[f64; 3]>, [V3; 2])> = HashMap::new();
     for t in &m.tri {
-        let p: Vec<[f32; 3]> = t.iter().map(|&i| m.pos.get(i as usize).copied().unwrap_or_default()).collect();
-        let d = |a: [f32; 3], b: [f32; 3]| [(b[0] - a[0]) as f64, (b[1] - a[1]) as f64, (b[2] - a[2]) as f64];
+        let p: Vec<[f32; 3]> = t
+            .iter()
+            .map(|&i| m.pos.get(i as usize).copied().unwrap_or_default())
+            .collect();
+        let d = |a: [f32; 3], b: [f32; 3]| {
+            [
+                (b[0] - a[0]) as f64,
+                (b[1] - a[1]) as f64,
+                (b[2] - a[2]) as f64,
+            ]
+        };
         let (u, v) = (d(p[0], p[1]), d(p[0], p[2]));
-        let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+        let n = [
+            u[1] * v[2] - u[2] * v[1],
+            u[2] * v[0] - u[0] * v[2],
+            u[0] * v[1] - u[1] * v[0],
+        ];
         let l = dot(n, n).sqrt();
         if l < 1e-12 {
             continue;
@@ -1334,7 +1960,9 @@ fn feature_edges(m: &Mesh) -> Vec<[V3; 2]> {
             let (a, b) = (p[k], p[(k + 1) % 3]);
             let (ka, kb) = (q(a), q(b));
             let key = if ka <= kb { (ka, kb) } else { (kb, ka) };
-            let e = by.entry(key).or_insert_with(|| (Vec::new(), [a.map(|x| x as f64), b.map(|x| x as f64)]));
+            let e = by
+                .entry(key)
+                .or_insert_with(|| (Vec::new(), [a.map(|x| x as f64), b.map(|x| x as f64)]));
             e.0.push(n);
         }
     }
@@ -1366,7 +1994,16 @@ mod tests {
     fn cube_feature_edges() {
         let mut pos = Vec::new();
         let mut tri = Vec::new();
-        crate::rvt_model::push_box(&crate::rvt_model::ElemBox { id: 0, category: 0, min: [0.0; 3], max: [1.0; 3] }, &mut pos, &mut tri);
+        crate::rvt_model::push_box(
+            &crate::rvt_model::ElemBox {
+                id: 0,
+                category: 0,
+                min: [0.0; 3],
+                max: [1.0; 3],
+            },
+            &mut pos,
+            &mut tri,
+        );
         let m = Mesh { pos, tri };
         assert_eq!(feature_edges(&m).len(), 12);
     }

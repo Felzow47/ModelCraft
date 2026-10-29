@@ -325,12 +325,17 @@ ModelCraft restarts with Vulkan then OpenGL. Force a backend with `WGPU_BACKEND=
 ## Known limits (V4)
 
 - **Revit**: shapes are rebuilt from the stored parameters (Revit does not store its B-rep in the
-  file), so joins and openings can differ slightly from Revit. A few elements without readable
-  geometry in the project still show as **bounding boxes** coloured by category: some
-  plumbing fixtures, specialty equipment, light fixtures, generic models and furniture whose
-  family geometry is not stored in a form ModelCraft decodes yet, a few corner mullions, and a few
-  stairs in the structural sample. Sheets: model element line weights per category, detail
-  components and calculated tag values (area…) are not drawn yet. For the exact geometry, export
+  file), so joins and openings can differ slightly from Revit. Elements whose geometry is not
+  stored in a decodable form get the closest stand-in instead of a bounding box: plumbing
+  fixtures drawn only as plan symbols (2D lines and filled regions, no solids in Revit either)
+  show as 1 cm plates of their filled region stretched over the fixture's footprint; rebar of
+  older files with no cached centre lines (Revit 2018) is laid out as straight bars or closed
+  ties at the set's bar count, spacing and diameter inside the set's box; stair stringers
+  without a stored solid are rebuilt from their path line, width and depth; planting and
+  entourage (picture-based RPC) are simple trees, people and cars. Elements that still have no
+  shape at all fall back to a bounding box coloured by category (none in the public samples).
+  Sheets: model element line weights per category, detail components and calculated tag values
+  (area…) are not drawn yet. For the exact geometry, export
   to **IFC** from Revit and open the `.ifc` in ModelCraft.
 - **eDrawings `.easm`**: thumbnail only (HSF geometry not decoded).
 - **Parasolid `.x_t`**: not supported (no free reader); export to STEP. SolidWorks files without a

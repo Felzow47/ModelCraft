@@ -15,9 +15,9 @@ pub mod bodies;
 pub mod container;
 pub mod ctl;
 pub mod dl;
+pub mod gfxstrips;
 pub mod mesh;
 pub mod meshdata;
-pub mod gfxstrips;
 pub mod pointcloud;
 pub mod preview;
 
@@ -66,7 +66,11 @@ pub fn read_display_lists(c: &Container) -> Result<Option<Vec<u8>>> {
 
 /// Best thumbnail: `PreviewPNG`, any `*PreviewPNG`, then `Preview` (DIB).
 pub fn read_preview(c: &Container) -> Option<Rgba> {
-    let mut names: Vec<&StreamInfo> = c.streams().iter().filter(|s| s.name.ends_with("PreviewPNG")).collect();
+    let mut names: Vec<&StreamInfo> = c
+        .streams()
+        .iter()
+        .filter(|s| s.name.ends_with("PreviewPNG"))
+        .collect();
     names.sort_by_key(|s| (s.name != "PreviewPNG", s.name.len()));
     for s in names {
         if let Ok(b) = c.read_info(s) {
@@ -75,7 +79,11 @@ pub fn read_preview(c: &Container) -> Option<Rgba> {
             }
         }
     }
-    for s in c.streams().iter().filter(|s| s.name == "Preview" || s.name.ends_with("-Preview")) {
+    for s in c
+        .streams()
+        .iter()
+        .filter(|s| s.name == "Preview" || s.name.ends_with("-Preview"))
+    {
         if let Ok(b) = c.read_info(s) {
             if let Some(img) = preview::decode_dib(&b) {
                 return Some(img);
@@ -332,18 +340,27 @@ impl Scene {
             .sum()
     }
     pub fn has_geometry(&self) -> bool {
-        self.components.iter().any(|c| c.mesh.is_some_and(|m| !self.meshes[m].mesh.is_empty()))
+        self.components
+            .iter()
+            .any(|c| c.mesh.is_some_and(|m| !self.meshes[m].mesh.is_empty()))
     }
     /// Components that should have a mesh (parts) but none was found.
     pub fn missing_components(&self) -> usize {
-        self.components.iter().filter(|c| !c.is_assembly && !c.suppressed && c.mesh.is_none()).count()
+        self.components
+            .iter()
+            .filter(|c| !c.is_assembly && !c.suppressed && c.mesh.is_none())
+            .count()
     }
     /// World-space bounding box of visible geometry.
     pub fn bounds(&self) -> Option<([f32; 3], [f32; 3])> {
         let mut lo = [f32::INFINITY; 3];
         let mut hi = [f32::NEG_INFINITY; 3];
         let mut any = false;
-        for c in self.components.iter().filter(|c| !c.suppressed && !c.hidden) {
+        for c in self
+            .components
+            .iter()
+            .filter(|c| !c.suppressed && !c.hidden)
+        {
             let Some(mi) = c.mesh else { continue };
             let m = &self.meshes[mi].mesh;
             if m.is_empty() {
@@ -352,9 +369,21 @@ impl Scene {
             let w = glam::Mat4::from_cols_array(&c.world);
             for k in 0..8 {
                 let p = glam::Vec3::new(
-                    if k & 1 == 0 { m.bbox_min[0] } else { m.bbox_max[0] },
-                    if k & 2 == 0 { m.bbox_min[1] } else { m.bbox_max[1] },
-                    if k & 4 == 0 { m.bbox_min[2] } else { m.bbox_max[2] },
+                    if k & 1 == 0 {
+                        m.bbox_min[0]
+                    } else {
+                        m.bbox_max[0]
+                    },
+                    if k & 2 == 0 {
+                        m.bbox_min[1]
+                    } else {
+                        m.bbox_max[1]
+                    },
+                    if k & 4 == 0 {
+                        m.bbox_min[2]
+                    } else {
+                        m.bbox_max[2]
+                    },
                 );
                 let q = w.transform_point3(p);
                 for i in 0..3 {
@@ -382,7 +411,12 @@ pub struct LoadOptions {
 
 impl Default for LoadOptions {
     fn default() -> Self {
-        LoadOptions { edges: true, resolve_external: true, preview: true, ctl: Ctl::default() }
+        LoadOptions {
+            edges: true,
+            resolve_external: true,
+            preview: true,
+            ctl: Ctl::default(),
+        }
     }
 }
 
@@ -405,12 +439,19 @@ fn stem_of(path: &str) -> String {
 /// 3. the assembly's folder and its parent, by file name;
 /// 4. the whole folder tree around the assembly (up to two levels above it, bounded walk),
 ///    preferring the candidate whose folders best match the stored path.
-pub fn resolve_component_path(asm_dir: &Path, stored: &str, cache: &mut HashMap<PathBuf, Vec<PathBuf>>) -> Option<PathBuf> {
+pub fn resolve_component_path(
+    asm_dir: &Path,
+    stored: &str,
+    cache: &mut HashMap<PathBuf, Vec<PathBuf>>,
+) -> Option<PathBuf> {
     let p = PathBuf::from(stored);
     if (cfg!(windows) || !stored.contains('\\')) && p.is_file() {
         return Some(p);
     }
-    let parts: Vec<&str> = stored.split(['\\', '/']).filter(|s| !s.is_empty() && !s.ends_with(':')).collect();
+    let parts: Vec<&str> = stored
+        .split(['\\', '/'])
+        .filter(|s| !s.is_empty() && !s.ends_with(':'))
+        .collect();
     let fname = parts.last()?.to_lowercase();
     let ancestors: Vec<PathBuf> = asm_dir.ancestors().take(4).map(Path::to_path_buf).collect();
     // 2. re-rooted tails, longest first (only folders inside the tail are tried, not the drive)
@@ -432,35 +473,63 @@ pub fn resolve_component_path(asm_dir: &Path, stored: &str, cache: &mut HashMap<
     let root = ancestors.get(2).or(ancestors.last())?.clone();
     let key = root.join("\0tree");
     let index = cache.entry(key).or_insert_with(|| tree_index(&root));
-    let stored_dirs: Vec<String> = parts[..parts.len() - 1].iter().map(|s| s.to_lowercase()).collect();
+    let stored_dirs: Vec<String> = parts[..parts.len() - 1]
+        .iter()
+        .map(|s| s.to_lowercase())
+        .collect();
     index
         .iter()
         .filter(|q| name_lc(q) == fname)
         .max_by_key(|q| {
             // trailing folder names in common with the stored path, then shallower paths
-            let dirs: Vec<String> = q.parent().map(|d| d.components().map(|c| c.as_os_str().to_string_lossy().to_lowercase()).collect()).unwrap_or_default();
-            let common = dirs.iter().rev().zip(stored_dirs.iter().rev()).take_while(|(a, b)| a == b).count();
+            let dirs: Vec<String> = q
+                .parent()
+                .map(|d| {
+                    d.components()
+                        .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let common = dirs
+                .iter()
+                .rev()
+                .zip(stored_dirs.iter().rev())
+                .take_while(|(a, b)| a == b)
+                .count();
             (common, usize::MAX - dirs.len())
         })
         .cloned()
 }
 
 fn name_lc(p: &Path) -> String {
-    p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default()
+    p.file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default()
 }
 
 /// Entries (files and folders) of one folder, cached.
 fn dir_listing<'a>(d: &Path, cache: &'a mut HashMap<PathBuf, Vec<PathBuf>>) -> &'a Vec<PathBuf> {
-    cache.entry(d.to_path_buf()).or_insert_with(|| std::fs::read_dir(d).map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path()).collect()).unwrap_or_default())
+    cache.entry(d.to_path_buf()).or_insert_with(|| {
+        std::fs::read_dir(d)
+            .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path()).collect())
+            .unwrap_or_default()
+    })
 }
 
 /// Follow `tail` (folder names then the file name) from `root`, case-insensitively.
-fn walk_ci(root: &Path, tail: &[&str], cache: &mut HashMap<PathBuf, Vec<PathBuf>>) -> Option<PathBuf> {
+fn walk_ci(
+    root: &Path,
+    tail: &[&str],
+    cache: &mut HashMap<PathBuf, Vec<PathBuf>>,
+) -> Option<PathBuf> {
     let mut cur = root.to_path_buf();
     for (i, seg) in tail.iter().enumerate() {
         let lc = seg.to_lowercase();
         let last = i + 1 == tail.len();
-        let next = dir_listing(&cur, cache).iter().find(|q| name_lc(q) == lc && if last { q.is_file() } else { q.is_dir() })?.clone();
+        let next = dir_listing(&cur, cache)
+            .iter()
+            .find(|q| name_lc(q) == lc && if last { q.is_file() } else { q.is_dir() })?
+            .clone();
         cur = next;
     }
     Some(cur)
@@ -468,12 +537,16 @@ fn walk_ci(root: &Path, tail: &[&str], cache: &mut HashMap<PathBuf, Vec<PathBuf>
 
 /// SolidWorks / 3D files below `root` (bounded: depth 6, 200 000 entries).
 fn tree_index(root: &Path) -> Vec<PathBuf> {
-    const EXTS: &[&str] = &["sldprt", "sldasm", "prt", "asm", "step", "stp", "igs", "iges", "x_t", "x_b"];
+    const EXTS: &[&str] = &[
+        "sldprt", "sldasm", "prt", "asm", "step", "stp", "igs", "iges", "x_t", "x_b",
+    ];
     let mut out = Vec::new();
     let mut stack = vec![(root.to_path_buf(), 0usize)];
     let mut seen = 0usize;
     while let Some((d, depth)) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        let Ok(rd) = std::fs::read_dir(&d) else {
+            continue;
+        };
         for e in rd.filter_map(|e| e.ok()) {
             seen += 1;
             if seen > 200_000 {
@@ -485,7 +558,10 @@ fn tree_index(root: &Path) -> Vec<PathBuf> {
                 if depth < 6 {
                     stack.push((p, depth + 1));
                 }
-            } else if p.extension().is_some_and(|x| EXTS.contains(&x.to_string_lossy().to_lowercase().as_str())) {
+            } else if p
+                .extension()
+                .is_some_and(|x| EXTS.contains(&x.to_string_lossy().to_lowercase().as_str()))
+            {
                 out.push(p);
             }
         }
@@ -496,7 +572,9 @@ fn tree_index(root: &Path) -> Vec<PathBuf> {
 /// Load just the faces of a file's display list (used for external components).
 fn load_faces(path: &Path) -> Result<Vec<dl::FacePatch>> {
     let c = Container::open(path)?;
-    let Some(d) = read_display_lists(&c)? else { return Ok(Vec::new()) };
+    let Some(d) = read_display_lists(&c)? else {
+        return Ok(Vec::new());
+    };
     let list = dl::decode(&d);
     // For a part file, take all faces.
     Ok(list.blocks.into_iter().flat_map(|b| b.faces).collect())
@@ -509,12 +587,17 @@ pub const STREAM_THRESHOLD: u64 = 128 << 20;
 /// Largest number of display vertices kept for one file before the mesh is simplified
 /// (vertex clustering). `MODELCRAFT_MAX_VERTICES` overrides it.
 pub fn vertex_budget() -> usize {
-    if let Some(v) = std::env::var("MODELCRAFT_MAX_VERTICES").ok().and_then(|v| v.trim().parse::<usize>().ok()) {
+    if let Some(v) = std::env::var("MODELCRAFT_MAX_VERTICES")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+    {
         return v.max(10_000);
     }
     // ~60 bytes per kept vertex on the CPU side (positions, normals, indices, ...) and as much
     // again transiently for the GPU upload: stay well inside the available memory.
-    let by_mem = ctl::mem_available().map(|a| (a / 200) as usize).unwrap_or(usize::MAX);
+    let by_mem = ctl::mem_available()
+        .map(|a| (a / 200) as usize)
+        .unwrap_or(usize::MAX);
     by_mem.clamp(2_000_000, 40_000_000)
 }
 
@@ -530,24 +613,51 @@ struct DlMeshes {
 /// freeing each face right after it is copied. Large streams are never held decompressed:
 /// both passes decode straight from the decompressor. If the tessellation is larger than the
 /// vertex budget (or the available memory), it is simplified by vertex clustering.
-fn build_dl_meshes(c: &Container, info: &container::StreamInfo, merge: bool, opts: &LoadOptions, warnings: &mut Vec<String>) -> Result<DlMeshes> {
+fn build_dl_meshes(
+    c: &Container,
+    info: &container::StreamInfo,
+    merge: bool,
+    opts: &LoadOptions,
+    warnings: &mut Vec<String>,
+) -> Result<DlMeshes> {
     let ctl = &opts.ctl;
-    let est = info.raw_size().unwrap_or(info.stored_size.saturating_mul(4));
+    let est = info
+        .raw_size()
+        .unwrap_or(info.stored_size.saturating_mul(4));
     let streamed = est > STREAM_THRESHOLD || std::env::var_os("MODELCRAFT_STREAM").is_some();
-    let mut stats = DlStats { stored_bytes: info.stored_size, streamed, budget: vertex_budget(), ..Default::default() };
-    let whole = if streamed { None } else { Some(c.read_info_ctl(info, ctl, (0.03, 0.35))?) };
+    let mut stats = DlStats {
+        stored_bytes: info.stored_size,
+        streamed,
+        budget: vertex_budget(),
+        ..Default::default()
+    };
+    let whole = if streamed {
+        None
+    } else {
+        Some(c.read_info_ctl(info, ctl, (0.03, 0.35))?)
+    };
     if let Some(d) = &whole {
         stats.raw_bytes = d.len() as u64;
     }
-    let (r1, r2) = if streamed { ((0.03, 0.45), (0.45, 0.9)) } else { ((0.35, 0.5), (0.5, 0.9)) };
+    let (r1, r2) = if streamed {
+        ((0.03, 0.45), (0.45, 0.9))
+    } else {
+        ((0.35, 0.5), (0.5, 0.9))
+    };
 
     // One decoding pass over the stream.
-    let run_pass = |range: (f32, f32), stage: &str, visit: &mut dyn FnMut(Option<&str>, dl::FacePatch) -> Result<()>| -> Result<u64> {
+    let run_pass = |range: (f32, f32),
+                    stage: &str,
+                    visit: &mut dyn FnMut(Option<&str>, dl::FacePatch) -> Result<()>|
+     -> Result<u64> {
         match &whole {
             Some(d) => {
                 let len = d.len().max(1);
                 let mut prog = |pos: usize| -> Result<()> {
-                    ctl.report(range.0 + (range.1 - range.0) * (pos as f32 / len as f32), stage);
+                    ctl.report(
+                        range.0 + (range.1 - range.0) * (pos as f32 / len as f32),
+                        stage,
+                    );
                     ctl.check()
                 };
                 dl::Decoder::default().run(d, 0, true, visit, &mut prog)?;
@@ -574,7 +684,11 @@ fn build_dl_meshes(c: &Container, info: &container::StreamInfo, merge: bool, opt
                 Some(k) => k,
                 None => {
                     keys.push(key);
-                    paths.push(if merge { None } else { path.map(str::to_string) });
+                    paths.push(if merge {
+                        None
+                    } else {
+                        path.map(str::to_string)
+                    });
                     fstats.push(mesh::FaceStats::default());
                     keys.len() - 1
                 }
@@ -591,12 +705,16 @@ fn build_dl_meshes(c: &Container, info: &container::StreamInfo, merge: bool, opt
     stats.src_vertices = fstats.iter().map(|s| s.vertices).sum();
     stats.src_triangles = fstats.iter().map(|s| s.triangles).sum();
     if stats.faces == 0 {
-        return Ok(DlMeshes { blocks: Vec::new(), stats });
+        return Ok(DlMeshes {
+            blocks: Vec::new(),
+            stats,
+        });
     }
 
     // Decide: exact meshes, or simplified to fit the budget / the memory.
     let mut budget = stats.budget;
-    let bytes_per_vertex = 24.0 + 12.0 * stats.src_triangles as f64 / stats.src_vertices.max(1) as f64 + 4.0;
+    let bytes_per_vertex =
+        24.0 + 12.0 * stats.src_triangles as f64 / stats.src_vertices.max(1) as f64 + 4.0;
     if let Some(avail) = ctl::mem_available() {
         // keep the meshes under ~45 % of the available memory (GPU upload copies come on top)
         let fit = (avail as f64 * 0.45 / bytes_per_vertex) as usize;
@@ -604,9 +722,13 @@ fn build_dl_meshes(c: &Container, info: &container::StreamInfo, merge: bool, opt
     }
     let simplify = stats.src_vertices > budget;
     stats.simplified = simplify;
-    let edge_limit_hit = opts.edges && !simplify && fstats.iter().any(|s| s.vertices > mesh::EDGE_VERTEX_LIMIT);
+    let edge_limit_hit =
+        opts.edges && !simplify && fstats.iter().any(|s| s.vertices > mesh::EDGE_VERTEX_LIMIT);
     if edge_limit_hit {
-        warnings.push(format!("Maillage très dense ({} M sommets) : arêtes non calculées", stats.src_vertices / 1_000_000));
+        warnings.push(format!(
+            "Maillage très dense ({} M sommets) : arêtes non calculées",
+            stats.src_vertices / 1_000_000
+        ));
     }
 
     // Pass 2: build.
@@ -614,10 +736,13 @@ fn build_dl_meshes(c: &Container, info: &container::StreamInfo, merge: bool, opt
     let mut builders: Vec<mesh::MeshBuilder> = Vec::with_capacity(keys.len());
     for s in &fstats {
         let cluster = simplify.then(|| {
-            let target = ((budget as f64) * s.vertices as f64 / stats.src_vertices as f64).max(1000.0) as usize;
+            let target = ((budget as f64) * s.vertices as f64 / stats.src_vertices as f64)
+                .max(1000.0) as usize;
             (s.bbox_min, mesh::cluster_cell(s.area, target))
         });
-        builders.push(mesh::MeshBuilder::new(s.vertices, s.faces, opts.edges, cluster)?);
+        builders.push(mesh::MeshBuilder::new(
+            s.vertices, s.faces, opts.edges, cluster,
+        )?);
     }
     {
         let mut visit = |path: Option<&str>, face: dl::FacePatch| -> Result<()> {
@@ -630,7 +755,10 @@ fn build_dl_meshes(c: &Container, info: &container::StreamInfo, merge: bool, opt
         run_pass(r2, "Construction du maillage (2/2)…", &mut visit)?;
     }
     drop(whole);
-    let blocks: Vec<(Option<String>, mesh::TriMesh)> = paths.into_iter().zip(builders.into_iter().map(|b| b.finish())).collect();
+    let blocks: Vec<(Option<String>, mesh::TriMesh)> = paths
+        .into_iter()
+        .zip(builders.into_iter().map(|b| b.finish()))
+        .collect();
     stats.pass2 = t.elapsed();
     stats.out_vertices = blocks.iter().map(|(_, m)| m.positions.len()).sum();
     stats.out_triangles = blocks.iter().map(|(_, m)| m.triangle_count()).sum();
@@ -647,13 +775,27 @@ fn build_dl_meshes(c: &Container, info: &container::StreamInfo, merge: bool, opt
 /// Mesh bodies stored in `MeshData/Config-N-Mesh-*` streams (graphics/mesh bodies, often the
 /// only geometry of big imported scans or STL conversions). Only the first configuration
 /// that has mesh streams is read.
-fn build_meshdata_mesh(c: &Container, opts: &LoadOptions, warnings: &mut Vec<String>) -> Result<Option<mesh::TriMesh>> {
+fn build_meshdata_mesh(
+    c: &Container,
+    opts: &LoadOptions,
+    warnings: &mut Vec<String>,
+) -> Result<Option<mesh::TriMesh>> {
     let ctl = &opts.ctl;
-    let mut streams: Vec<&container::StreamInfo> = c.streams().iter().filter(|s| s.name.starts_with("MeshData/Config-")).collect();
+    let mut streams: Vec<&container::StreamInfo> = c
+        .streams()
+        .iter()
+        .filter(|s| s.name.starts_with("MeshData/Config-"))
+        .collect();
     if streams.is_empty() {
         return Ok(None);
     }
-    let config = |n: &str| n["MeshData/Config-".len()..].split('-').next().and_then(|x| x.parse::<u32>().ok()).unwrap_or(u32::MAX);
+    let config = |n: &str| {
+        n["MeshData/Config-".len()..]
+            .split('-')
+            .next()
+            .and_then(|x| x.parse::<u32>().ok())
+            .unwrap_or(u32::MAX)
+    };
     let first = streams.iter().map(|s| config(&s.name)).min().unwrap_or(0);
     streams.retain(|s| config(&s.name) == first);
     let total: u64 = streams.iter().map(|s| s.stored_size).sum::<u64>().max(1);
@@ -663,41 +805,82 @@ fn build_meshdata_mesh(c: &Container, opts: &LoadOptions, warnings: &mut Vec<Str
         let a = 0.03 + 0.62 * done as f32 / total as f32;
         done += s.stored_size;
         let b = 0.03 + 0.62 * done as f32 / total as f32;
-        c.stream_info(s, ctl, (a, b), "Lecture des corps maillés…", &mut |chunk| dec.feed(chunk))?;
+        c.stream_info(
+            s,
+            ctl,
+            (a, b),
+            "Lecture des corps maillés…",
+            &mut |chunk| dec.feed(chunk),
+        )?;
     }
     let bodies = dec.finish()?;
     if bodies.triangles.is_empty() {
         return Ok(None);
     }
     if bodies.bad > 0 {
-        warnings.push(format!("{} facette(s) de corps maillé ignorée(s) (indices invalides)", bodies.bad));
+        warnings.push(format!(
+            "{} facette(s) de corps maillé ignorée(s) (indices invalides)",
+            bodies.bad
+        ));
     }
     bodies_to_mesh(&bodies, opts, warnings).map(Some)
 }
 
 /// Weld, smooth and split a [`meshdata::MeshBodies`] soup into a display mesh, body by body.
-fn bodies_to_mesh(bodies: &meshdata::MeshBodies, opts: &LoadOptions, warnings: &mut Vec<String>) -> Result<mesh::TriMesh> {
+fn bodies_to_mesh(
+    bodies: &meshdata::MeshBodies,
+    opts: &LoadOptions,
+    warnings: &mut Vec<String>,
+) -> Result<mesh::TriMesh> {
     let ctl = &opts.ctl;
     let edges = opts.edges && bodies.positions.len() <= mesh::EDGE_VERTEX_LIMIT;
     if opts.edges && !edges {
-        warnings.push(format!("Maillage très dense ({} M sommets) : arêtes non calculées", bodies.positions.len() / 1_000_000));
+        warnings.push(format!(
+            "Maillage très dense ({} M sommets) : arêtes non calculées",
+            bodies.positions.len() / 1_000_000
+        ));
     }
     // Build body by body (bounded hash maps), smoothing normals inside each body.
     let mut m = mesh::TriMesh::new_empty();
     let nb = bodies.body_start.len();
     for i in 0..nb {
         ctl.check()?;
-        ctl.report(0.65 + 0.3 * i as f32 / nb.max(1) as f32, "Construction du maillage…");
+        ctl.report(
+            0.65 + 0.3 * i as f32 / nb.max(1) as f32,
+            "Construction du maillage…",
+        );
         let t0 = bodies.body_start[i] as usize;
-        let t1 = bodies.body_start.get(i + 1).map(|&x| x as usize).unwrap_or(bodies.triangles.len());
+        let t1 = bodies
+            .body_start
+            .get(i + 1)
+            .map(|&x| x as usize)
+            .unwrap_or(bodies.triangles.len());
         let tris = &bodies.triangles[t0..t1];
         if tris.is_empty() {
             continue;
         }
-        let lo = tris.iter().flat_map(|t| t.iter()).copied().min().unwrap_or(0);
-        let hi = tris.iter().flat_map(|t| t.iter()).copied().max().unwrap_or(0);
-        let local: Vec<[u32; 3]> = tris.iter().map(|t| [t[0] - lo, t[1] - lo, t[2] - lo]).collect();
-        let body = mesh::build_from_triangles(&bodies.positions[lo as usize..=hi as usize], &local, 35.0, edges);
+        let lo = tris
+            .iter()
+            .flat_map(|t| t.iter())
+            .copied()
+            .min()
+            .unwrap_or(0);
+        let hi = tris
+            .iter()
+            .flat_map(|t| t.iter())
+            .copied()
+            .max()
+            .unwrap_or(0);
+        let local: Vec<[u32; 3]> = tris
+            .iter()
+            .map(|t| [t[0] - lo, t[1] - lo, t[2] - lo])
+            .collect();
+        let body = mesh::build_from_triangles(
+            &bodies.positions[lo as usize..=hi as usize],
+            &local,
+            35.0,
+            edges,
+        );
         m.append(body);
     }
     m.finish();
@@ -706,14 +889,31 @@ fn bodies_to_mesh(bodies: &meshdata::MeshBodies, opts: &LoadOptions, warnings: &
 
 /// Graphics bodies kept as triangle strips in `Contents/Config-N-ResolvedFeatures` (older
 /// files with an imported STL as a graphics body, see [`gfxstrips`]).
-fn build_feature_strips_mesh(c: &Container, opts: &LoadOptions, warnings: &mut Vec<String>) -> Result<Option<mesh::TriMesh>> {
+fn build_feature_strips_mesh(
+    c: &Container,
+    opts: &LoadOptions,
+    warnings: &mut Vec<String>,
+) -> Result<Option<mesh::TriMesh>> {
     let ctl = &opts.ctl;
-    let mut streams: Vec<&container::StreamInfo> =
-        c.streams().iter().filter(|s| s.name.starts_with("Contents/Config-") && s.name.ends_with("-ResolvedFeatures") && s.stored_size >= 4096).collect();
+    let mut streams: Vec<&container::StreamInfo> = c
+        .streams()
+        .iter()
+        .filter(|s| {
+            s.name.starts_with("Contents/Config-")
+                && s.name.ends_with("-ResolvedFeatures")
+                && s.stored_size >= 4096
+        })
+        .collect();
     if streams.is_empty() {
         return Ok(None);
     }
-    let config = |n: &str| n["Contents/Config-".len()..].split('-').next().and_then(|x| x.parse::<u32>().ok()).unwrap_or(u32::MAX);
+    let config = |n: &str| {
+        n["Contents/Config-".len()..]
+            .split('-')
+            .next()
+            .and_then(|x| x.parse::<u32>().ok())
+            .unwrap_or(u32::MAX)
+    };
     streams.sort_by_key(|s| config(&s.name));
     for s in streams {
         let d = c.read_info_ctl(s, ctl, (0.03, 0.4))?;
@@ -730,25 +930,40 @@ fn build_feature_strips_mesh(c: &Container, opts: &LoadOptions, warnings: &mut V
 }
 
 /// ScanTo3D point cloud (`ThirdPty/SWNGREStream`) shown as splats.
-fn build_point_cloud(c: &Container, opts: &LoadOptions, warnings: &mut Vec<String>) -> Result<Option<mesh::TriMesh>> {
-    let Some(info) = c.find(pointcloud::STREAM) else { return Ok(None) };
+fn build_point_cloud(
+    c: &Container,
+    opts: &LoadOptions,
+    warnings: &mut Vec<String>,
+) -> Result<Option<mesh::TriMesh>> {
+    let Some(info) = c.find(pointcloud::STREAM) else {
+        return Ok(None);
+    };
     let ctl = &opts.ctl;
     let d = c.read_info_ctl(info, ctl, (0.05, 0.6))?;
     ctl.check()?;
     ctl.report(0.65, "Nuage de points…");
-    let Some(cloud) = pointcloud::decode(&d) else { return Ok(None) };
+    let Some(cloud) = pointcloud::decode(&d) else {
+        return Ok(None);
+    };
     drop(d);
     // 9 vertices per splat; also keep the GPU load reasonable
     let max_points = (vertex_budget() / 9).min(2_000_000);
     let m = pointcloud::splats(&cloud, max_points);
     let shown = m.triangle_count() / 3;
     if shown < cloud.points.len() {
-        warnings.push(format!("Nuage de points : {} points, {} affichés (sous-échantillonné)", cloud.points.len(), shown));
+        warnings.push(format!(
+            "Nuage de points : {} points, {} affichés (sous-échantillonné)",
+            cloud.points.len(),
+            shown
+        ));
     } else {
         warnings.push(format!("Nuage de points : {} points", cloud.points.len()));
     }
     if cloud.declared > cloud.points.len() {
-        warnings.push(format!("Nuage de points incomplet : {} points annoncés", cloud.declared));
+        warnings.push(format!(
+            "Nuage de points incomplet : {} points annoncés",
+            cloud.declared
+        ));
     }
     Ok(Some(m))
 }
@@ -763,11 +978,18 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
     timings.open = t0.elapsed();
     ctl.check()?;
 
-    let ext_asm = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("sldasm"));
+    let ext_asm = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("sldasm"));
     let t1 = Instant::now();
     let mut warnings = Vec::new();
     let tree_xml = c.read(COMP_TREE).ok().flatten();
-    let kind = if ext_asm || (tree_xml.is_some() && !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("sldprt"))) {
+    let kind = if ext_asm
+        || (tree_xml.is_some()
+            && !path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("sldprt")))
+    {
         DocKind::Assembly
     } else {
         DocKind::Part
@@ -780,7 +1002,9 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
             Ok(b) => Some(b),
             Err(Error::Cancelled) => return Err(Error::Cancelled),
             Err(e) => {
-                warnings.push(format!("Maillage illisible ({e}) : seule la vignette est affichée"));
+                warnings.push(format!(
+                    "Maillage illisible ({e}) : seule la vignette est affichée"
+                ));
                 None
             }
         },
@@ -809,7 +1033,11 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
     // holds the B-rep faces of the same part (e.g. 9 k B-rep triangles + 4 M graphics ones):
     // add them when the feature data is big and holds more triangles than the display lists.
     let dl_tris: usize = blocks.iter().map(|(_, m)| m.triangle_count()).sum();
-    let big_features = c.streams().iter().any(|s| s.name.starts_with("Contents/Config-") && s.name.ends_with("-ResolvedFeatures") && s.stored_size >= 16 << 20);
+    let big_features = c.streams().iter().any(|s| {
+        s.name.starts_with("Contents/Config-")
+            && s.name.ends_with("-ResolvedFeatures")
+            && s.stored_size >= 16 << 20
+    });
     if kind == DocKind::Part && (blocks.is_empty() || big_features) {
         let t = Instant::now();
         match build_feature_strips_mesh(&c, opts, &mut warnings) {
@@ -819,7 +1047,11 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
                 timings.decode += t.elapsed();
             }
             Ok(Some(m)) if m.triangle_count() > dl_tris => {
-                warnings.push(format!("Corps graphiques ajoutés : {} triangles (en plus des {} des DisplayLists)", m.triangle_count(), dl_tris));
+                warnings.push(format!(
+                    "Corps graphiques ajoutés : {} triangles (en plus des {} des DisplayLists)",
+                    m.triangle_count(),
+                    dl_tris
+                ));
                 blocks[0].1.append(m);
                 timings.decode += t.elapsed();
             }
@@ -846,7 +1078,8 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
     if from_meshdata || from_cloud {
         // geometry found in MeshData / point cloud: no "no mesh" warning
     } else if !had_dl && warnings.is_empty() {
-        warnings.push("Pas de flux DisplayLists (fichier enregistré sans données graphiques)".into());
+        warnings
+            .push("Pas de flux DisplayLists (fichier enregistré sans données graphiques)".into());
     } else if had_dl && blocks.is_empty() && warnings.is_empty() {
         warnings.push("DisplayLists présent mais aucun maillage décodé".into());
     }
@@ -854,14 +1087,22 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
     let t3 = Instant::now();
     let mut meshes: Vec<SceneMesh> = Vec::new();
     let mut components: Vec<SceneComponent> = Vec::new();
-    let file_stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let file_stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let mut ext_time = Duration::ZERO;
 
     match kind {
         DocKind::Model => {}
         DocKind::Part => {
             if let Some((_, m)) = blocks.into_iter().next() {
-                meshes.push(SceneMesh { name: file_stem.clone(), mesh: m, source: MeshSource::Embedded, color: None });
+                meshes.push(SceneMesh {
+                    name: file_stem.clone(),
+                    mesh: m,
+                    source: MeshSource::Embedded,
+                    color: None,
+                });
             }
             components.push(SceneComponent {
                 name: file_stem.clone(),
@@ -881,8 +1122,16 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
             let mut by_key: HashMap<String, usize> = HashMap::new();
             let mut unkeyed: Vec<usize> = Vec::new();
             for (bpath, m) in blocks {
-                let name = bpath.as_deref().map(stem_of).unwrap_or_else(|| file_stem.clone());
-                meshes.push(SceneMesh { name, mesh: m, source: MeshSource::Embedded, color: None });
+                let name = bpath
+                    .as_deref()
+                    .map(stem_of)
+                    .unwrap_or_else(|| file_stem.clone());
+                meshes.push(SceneMesh {
+                    name,
+                    mesh: m,
+                    source: MeshSource::Embedded,
+                    color: None,
+                });
                 match bpath.as_deref().map(dl::file_key) {
                     Some(k) => {
                         by_key.insert(k, meshes.len() - 1);
@@ -912,24 +1161,29 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
                 if !comp.is_assembly {
                     let key = dl::file_key(&comp.path);
                     mesh_idx = by_key.get(&key).copied();
-                    if mesh_idx.is_none() && opts.resolve_external && !comp.suppressed && !key.is_empty() {
+                    if mesh_idx.is_none()
+                        && opts.resolve_external
+                        && !comp.suppressed
+                        && !key.is_empty()
+                    {
                         mesh_idx = *ext_cache.entry(key.clone()).or_insert_with(|| {
                             let te = Instant::now();
-                            let r = resolve_component_path(&asm_dir, &comp.path, &mut dir_cache).and_then(|p| {
-                                let faces = load_faces(&p).ok()?;
-                                if faces.is_empty() {
-                                    return None;
-                                }
-                                let m = mesh::try_build(&faces, opts.edges, ctl).ok()?;
-                                meshes.push(SceneMesh {
-                                    name: stem_of(&comp.path),
-                                    mesh: m,
-                                    source: MeshSource::External(p),
-                                    color: None,
+                            let r = resolve_component_path(&asm_dir, &comp.path, &mut dir_cache)
+                                .and_then(|p| {
+                                    let faces = load_faces(&p).ok()?;
+                                    if faces.is_empty() {
+                                        return None;
+                                    }
+                                    let m = mesh::try_build(&faces, opts.edges, ctl).ok()?;
+                                    meshes.push(SceneMesh {
+                                        name: stem_of(&comp.path),
+                                        mesh: m,
+                                        source: MeshSource::External(p),
+                                        color: None,
+                                    });
+                                    used.push(true);
+                                    Some(meshes.len() - 1)
                                 });
-                                used.push(true);
-                                Some(meshes.len() - 1)
-                            });
                             ext_time += te.elapsed();
                             r
                         });
@@ -971,7 +1225,10 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
                     });
                 }
             }
-            let missing = components.iter().filter(|c| !c.is_assembly && !c.suppressed && c.mesh.is_none()).count();
+            let missing = components
+                .iter()
+                .filter(|c| !c.is_assembly && !c.suppressed && c.mesh.is_none())
+                .count();
             if missing > 0 {
                 warnings.push(format!("{missing} composant(s) sans maillage (ni en cache, ni trouvé à côté de l'assemblage)"));
             }
@@ -1015,7 +1272,11 @@ mod resolve_tests {
         let want = sub.join("VIS M6.SLDPRT");
         // moved project tree: the stored folders re-rooted next to the assembly
         let mut c = std::collections::HashMap::new();
-        let r = super::resolve_component_path(&asm, r"D:\Old\Projet\pièces\visserie\vis m6.sldprt", &mut c);
+        let r = super::resolve_component_path(
+            &asm,
+            r"D:\Old\Projet\pièces\visserie\vis m6.sldprt",
+            &mut c,
+        );
         assert_eq!(r.as_deref(), Some(want.as_path()));
         // unrelated stored folders: found by the bounded tree walk
         let mut c = std::collections::HashMap::new();

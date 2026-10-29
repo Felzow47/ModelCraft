@@ -18,7 +18,8 @@
 use crate::meshdata::MeshBodies;
 
 fn u32_at(b: &[u8], o: usize) -> Option<u32> {
-    b.get(o..o + 4).map(|s| u32::from_le_bytes(s.try_into().unwrap()))
+    b.get(o..o + 4)
+        .map(|s| u32::from_le_bytes(s.try_into().unwrap()))
 }
 fn f32_at(b: &[u8], o: usize) -> f32 {
     f32::from_le_bytes(b[o..o + 4].try_into().unwrap())
@@ -27,7 +28,10 @@ fn f32_at(b: &[u8], o: usize) -> f32 {
 const STRIP_HDR: [u8; 12] = [4, 0, 0, 0, 8, 0, 0, 0, 2, 0, 0, 0];
 
 fn arr_hdr(b: &[u8], o: usize, size: u32, kind: u32, n: u64) -> bool {
-    u32_at(b, o) == Some(size) && u32_at(b, o + 4) == Some(kind) && u32_at(b, o + 8) == Some(2) && u32_at(b, o + 12).map(|x| x as u64) == Some(n)
+    u32_at(b, o) == Some(size)
+        && u32_at(b, o + 4) == Some(kind)
+        && u32_at(b, o + 8) == Some(2)
+        && u32_at(b, o + 12).map(|x| x as u64) == Some(n)
 }
 
 /// Decode every strip block in `bytes`. Each block becomes one body of [`MeshBodies`].
@@ -38,13 +42,17 @@ pub fn decode(bytes: &[u8]) -> MeshBodies {
     while let Some(rel) = finder.find(&bytes[pos..]) {
         let p = pos + rel;
         pos = p + 1;
-        let Some(k) = u32_at(bytes, p + 12) else { break };
+        let Some(k) = u32_at(bytes, p + 12) else {
+            break;
+        };
         let k = k as usize;
         if k == 0 || k > 50_000_000 {
             continue;
         }
         let lens_at = p + 16;
-        let Some(lens) = bytes.get(lens_at..lens_at + 4 * k) else { continue };
+        let Some(lens) = bytes.get(lens_at..lens_at + 4 * k) else {
+            continue;
+        };
         let mut sum = 0u64;
         let mut ok = true;
         for c in lens.chunks_exact(4) {
@@ -87,7 +95,11 @@ pub fn decode(bytes: &[u8]) -> MeshBodies {
                 if i % 2 == 1 {
                     std::mem::swap(&mut a, &mut b);
                 }
-                let (pa, pb, pc) = (out.positions[(base + a) as usize], out.positions[(base + b) as usize], out.positions[(base + c) as usize]);
+                let (pa, pb, pc) = (
+                    out.positions[(base + a) as usize],
+                    out.positions[(base + b) as usize],
+                    out.positions[(base + c) as usize],
+                );
                 if pa == pb || pb == pc || pa == pc {
                     continue;
                 }
@@ -127,7 +139,13 @@ mod tests {
     }
     #[test]
     fn strips_two_blocks() {
-        let q: &[[f32; 3]] = &[[0., 0., 0.], [0., 0., 0.], [1., 0., 0.], [0., 1., 0.], [1., 1., 0.]];
+        let q: &[[f32; 3]] = &[
+            [0., 0., 0.],
+            [0., 0., 0.],
+            [1., 0., 0.],
+            [0., 1., 0.],
+            [1., 1., 0.],
+        ];
         let mut o = vec![9u8; 7];
         block(&mut o, &[q, q]);
         o.extend_from_slice(&[1, 2, 3]);

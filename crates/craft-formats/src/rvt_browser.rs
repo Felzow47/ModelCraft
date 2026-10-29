@@ -51,7 +51,9 @@ fn u32_at(d: &[u8], p: usize) -> Option<u32> {
     Some(u32::from_le_bytes(d.get(p..p + 4)?.try_into().ok()?))
 }
 fn ident(b: &[u8]) -> bool {
-    b.first().is_some_and(|c| c.is_ascii_alphabetic()) && b.iter().all(|&c| c.is_ascii_alphanumeric() || b"_:<>, ".contains(&c))
+    b.first().is_some_and(|c| c.is_ascii_alphabetic())
+        && b.iter()
+            .all(|&c| c.is_ascii_alphanumeric() || b"_:<>, ".contains(&c))
 }
 
 impl Schema {
@@ -63,7 +65,12 @@ impl Schema {
         let mut i = 0;
         while i + 5 < d.len() {
             let l = d[i] as usize;
-            if (3..=0x7f).contains(&l) && d[i + 1] == 0 && i + 2 + l <= d.len() && ident(&d[i + 2..i + 2 + l]) && !d[i + 2..].starts_with(b"m_") {
+            if (3..=0x7f).contains(&l)
+                && d[i + 1] == 0
+                && i + 2 + l <= d.len()
+                && ident(&d[i + 2..i + 2 + l])
+                && !d[i + 2..].starts_with(b"m_")
+            {
                 let mut t = cnt;
                 if i >= 4 && d[i - 2] == 0 && d[i - 1] == 0 {
                     let pre = u16::from_le_bytes([d[i - 4], d[i - 3]]) as u32;
@@ -80,7 +87,12 @@ impl Schema {
     }
 
     pub fn parse(d: &[u8]) -> Schema {
-        let mut s = Schema { classes: HashMap::new(), by_name: HashMap::new(), chains: HashMap::new(), id_tag: 20 };
+        let mut s = Schema {
+            classes: HashMap::new(),
+            by_name: HashMap::new(),
+            chains: HashMap::new(),
+            id_tag: 20,
+        };
         for (t, i) in Self::tags(d) {
             if s.classes.contains_key(&t) {
                 continue;
@@ -108,7 +120,11 @@ impl Schema {
                 }
                 c = cl.parent;
             }
-            let fields = chain.iter().rev().flat_map(|c| s.classes[c].fields.iter().cloned()).collect();
+            let fields = chain
+                .iter()
+                .rev()
+                .flat_map(|c| s.classes[c].fields.iter().cloned())
+                .collect();
             s.chains.insert(t, fields);
         }
         s
@@ -122,7 +138,9 @@ impl Schema {
     pub fn isa(&self, tag: u16, base: &str) -> bool {
         let mut c = tag;
         for _ in 0..64 {
-            let Some(cl) = self.classes.get(&c) else { return false };
+            let Some(cl) = self.classes.get(&c) else {
+                return false;
+            };
             if cl.name == base {
                 return true;
             }
@@ -139,19 +157,54 @@ impl Schema {
     }
     /// Classes whose name contains `sub`: (tag, name, parent name, own field names).
     pub fn find(&self, sub: &str) -> Vec<(u16, String, String, Vec<String>)> {
-        let mut v: Vec<_> = self.classes.iter().filter(|(_, c)| c.name.contains(sub)).map(|(t, c)| (*t, c.name.clone(), self.name(c.parent).to_string(), c.fields.iter().map(|f| f.0.clone()).collect())).collect();
+        let mut v: Vec<_> = self
+            .classes
+            .iter()
+            .filter(|(_, c)| c.name.contains(sub))
+            .map(|(t, c)| {
+                (
+                    *t,
+                    c.name.clone(),
+                    self.name(c.parent).to_string(),
+                    c.fields.iter().map(|f| f.0.clone()).collect(),
+                )
+            })
+            .collect();
         v.sort();
         v
     }
     /// Full field chain of a class (base first) as `(name, "b0 b1 n tag-name")`, for probes.
     pub fn describe(&self, tag: u16) -> Vec<(String, String)> {
-        self.chains.get(&tag).map(|c| c.iter().map(|(n, t)| (n.clone(), format!("{:02x} {:02x} {} [{:02x}x{}] {}", t.b0, t.b1, t.n, t.e0, t.en, if t.tag != 0 { self.name(t.tag) } else { "" }))).collect()).unwrap_or_default()
+        self.chains
+            .get(&tag)
+            .map(|c| {
+                c.iter()
+                    .map(|(n, t)| {
+                        (
+                            n.clone(),
+                            format!(
+                                "{:02x} {:02x} {} [{:02x}x{}] {}",
+                                t.b0,
+                                t.b1,
+                                t.n,
+                                t.e0,
+                                t.en,
+                                if t.tag != 0 { self.name(t.tag) } else { "" }
+                            ),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
     pub fn tag_of(&self, name: &str) -> Option<u16> {
         self.by_name.get(name).copied()
     }
     pub fn name(&self, tag: u16) -> &str {
-        self.classes.get(&tag).map(|c| c.name.as_str()).unwrap_or("")
+        self.classes
+            .get(&tag)
+            .map(|c| c.name.as_str())
+            .unwrap_or("")
     }
 }
 
@@ -161,7 +214,9 @@ fn parse_def(d: &[u8], i: usize, depth: u32) -> Option<(Class, usize)> {
         return None;
     }
     let l = u16_at(d, i)? as usize;
-    let name = std::str::from_utf8(d.get(i + 2..i + 2 + l)?).ok()?.to_string();
+    let name = std::str::from_utf8(d.get(i + 2..i + 2 + l)?)
+        .ok()?
+        .to_string();
     let mut p = i + 2 + l;
     let mut parent = u16_at(d, p)?;
     p += 2;
@@ -181,7 +236,9 @@ fn parse_def(d: &[u8], i: usize, depth: u32) -> Option<(Class, usize)> {
         if fl > 256 {
             return None;
         }
-        let fname = std::str::from_utf8(d.get(p + 4..p + 4 + fl)?).ok()?.to_string();
+        let fname = std::str::from_utf8(d.get(p + 4..p + 4 + fl)?)
+            .ok()?
+            .to_string();
         p += 4 + fl;
         let (ty, q) = parse_type(d, p, depth)?;
         p = q;
@@ -192,13 +249,27 @@ fn parse_def(d: &[u8], i: usize, depth: u32) -> Option<(Class, usize)> {
         return None;
     }
     p += 4 + 16 * ng as usize;
-    (p <= d.len()).then_some((Class { name, parent, fields }, p))
+    (p <= d.len()).then_some((
+        Class {
+            name,
+            parent,
+            fields,
+        },
+        p,
+    ))
 }
 
 fn parse_type(d: &[u8], mut p: usize, depth: u32) -> Option<(Ty, usize)> {
     let (b0, b1) = (*d.get(p)?, *d.get(p + 1)?);
     p += 4;
-    let mut ty = Ty { b0, b1, n: 0, tag: 0, e0: 7, en: 3 };
+    let mut ty = Ty {
+        b0,
+        b1,
+        n: 0,
+        tag: 0,
+        e0: 7,
+        en: 3,
+    };
     // `1x`: fixed array of n (`10` values, `13` raw pointers…)
     if b1 & 0xf0 == 0x10 {
         ty.n = u32_at(d, p)?;
@@ -206,9 +277,16 @@ fn parse_type(d: &[u8], mut p: usize, depth: u32) -> Option<(Ty, usize)> {
     }
     // `0d` (XYZ-like): `[u32 len][name][element type]`, e.g. `01 00 00 00 20` + `07 10 00 00 03 00 00 00`
     if b0 == 0x0d && u32_at(d, p) == Some(1) && d.get(p + 4) == Some(&0x20) {
-        let (e, q) = parse_type(d, p + 5, depth + 1)?;
+        let (e, mut q) = parse_type(d, p + 5, depth + 1)?;
+        // an element of class type: its tag is written once more after it
+        if e.b0 == 0x0e && e.tag != 0 && u16_at(d, q) == Some(e.tag) {
+            q += 2;
+        }
         ty.e0 = e.b0;
         ty.en = if e.b1 == 0x10 { e.n } else { 1 };
+        if e.b0 == 0x0e {
+            ty.tag = e.tag;
+        }
         p = q;
     }
     if b0 == 0x0e && matches!(b1, 0x00 | 0x50 | 0x10) {
@@ -257,7 +335,13 @@ fn int(m: &Map, k: &str) -> Option<i64> {
 fn text(m: &Map, k: &str) -> Option<String> {
     match m.get(k)? {
         V::S(v) => Some(v.clone()),
-        V::O(o) => o.values().find_map(|v| if let V::S(s) = v { Some(s.clone()) } else { None }),
+        V::O(o) => o.values().find_map(|v| {
+            if let V::S(s) = v {
+                Some(s.clone())
+            } else {
+                None
+            }
+        }),
         _ => None,
     }
 }
@@ -290,7 +374,11 @@ const MAX_DEFERRED: usize = 24;
 impl<'a, 's> Dec<'a, 's> {
     fn id(&self, p: usize) -> Option<i64> {
         let b = self.d.get(p..p + self.w)?;
-        Some(if self.w == 8 { i64::from_le_bytes(b.try_into().ok()?) } else { i32::from_le_bytes(b.try_into().ok()?) as i64 })
+        Some(if self.w == 8 {
+            i64::from_le_bytes(b.try_into().ok()?)
+        } else {
+            i32::from_le_bytes(b.try_into().ok()?) as i64
+        })
     }
 
     fn fields(&mut self, tag: u16, mut p: usize, out: &mut Map<'s>, depth: u32) -> Option<usize> {
@@ -303,7 +391,13 @@ impl<'a, 's> Dec<'a, 's> {
                 Some(q) => p = q,
                 None => {
                     if std::env::var_os("RVT_BROWSER_DEBUG").is_some() {
-                        eprintln!("fail {} {name} {:02x} {:02x} {}", s.name(tag), ty.b0, ty.b1, ty.tag);
+                        eprintln!(
+                            "fail {} {name} {:02x} {:02x} {}",
+                            s.name(tag),
+                            ty.b0,
+                            ty.b1,
+                            ty.tag
+                        );
                     }
                     return None;
                 }
@@ -312,7 +406,14 @@ impl<'a, 's> Dec<'a, 's> {
         Some(p)
     }
 
-    fn val(&mut self, ty: Ty, p: usize, out: &mut Map<'s>, name: &'s str, depth: u32) -> Option<usize> {
+    fn val(
+        &mut self,
+        ty: Ty,
+        p: usize,
+        out: &mut Map<'s>,
+        name: &'s str,
+        depth: u32,
+    ) -> Option<usize> {
         let d = self.d;
         if ty.b0 == 0x0e {
             return match ty.b1 {
@@ -343,7 +444,20 @@ impl<'a, 's> Dec<'a, 's> {
                 0x11 | 0x12 => {
                     let mut p = p;
                     for _ in 0..ty.n {
-                        p = self.val(Ty { b0: 0x0e, b1: 1, n: 0, tag: 0, e0: 7, en: 3 }, p, out, name, depth)?;
+                        p = self.val(
+                            Ty {
+                                b0: 0x0e,
+                                b1: 1,
+                                n: 0,
+                                tag: 0,
+                                e0: 7,
+                                en: 3,
+                            },
+                            p,
+                            out,
+                            name,
+                            depth,
+                        )?;
                     }
                     Some(p)
                 }
@@ -367,7 +481,20 @@ impl<'a, 's> Dec<'a, 's> {
                     }
                     let mut p = p + 4;
                     for _ in 0..n {
-                        p = self.val(Ty { b0: 0x0e, b1: 1, n: 0, tag: 0, e0: 7, en: 3 }, p, out, name, depth)?;
+                        p = self.val(
+                            Ty {
+                                b0: 0x0e,
+                                b1: 1,
+                                n: 0,
+                                tag: 0,
+                                e0: 7,
+                                en: 3,
+                            },
+                            p,
+                            out,
+                            name,
+                            depth,
+                        )?;
                     }
                     Some(p)
                 }
@@ -418,13 +545,17 @@ impl<'a, 's> Dec<'a, 's> {
                 return None;
             }
             let b = d.get(p + 4..p + 4 + 2 * n)?;
-            let u: Vec<u16> = b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+            let u: Vec<u16> = b
+                .chunks_exact(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect();
             out.insert(name, V::S(String::from_utf16_lossy(&u)));
             return Some(p + 4 + 2 * n);
         }
         let sz = match ty.b0 {
             9 => 16,
-            // XYZ (or another compound of `en` elements of type `e0`)
+            // XYZ (or another compound of `en` elements of type `e0`; ids: `en` ids)
+            0x0d if ty.e0 == 0x0e => self.w * ty.en.max(1) as usize,
             0x0d => prim_size(ty.e0)? * ty.en.max(1) as usize,
             7 | 6 | 0x0b => 8,
             4 | 5 => 4,
@@ -481,7 +612,12 @@ impl<'a, 's> Dec<'a, 's> {
                 None => break,
             }
         }
-        Some(Elem { tag, id: int(&f, "m_id").unwrap_or(i64::MIN), f, def })
+        Some(Elem {
+            tag,
+            id: int(&f, "m_id").unwrap_or(i64::MIN),
+            f,
+            def,
+        })
     }
 }
 
@@ -500,14 +636,22 @@ impl<'s> Elem<'s> {
     }
     /// `(paramId, value)` pairs of a `ParamValueSet*` deferred object.
     fn params(&self, class: &str) -> &[Map<'s>] {
-        self.deferred(class).map(|m| list(m, "m_paramSet")).unwrap_or(&[])
+        self.deferred(class)
+            .map(|m| list(m, "m_paramSet"))
+            .unwrap_or(&[])
     }
 }
 
 /// Every element of a class in `want` in a partition: header `[id][u32][u32 size][u16 tag]`,
 /// body right after the tag; kept when its decoded `m_id` equals the header id.
 pub fn scan<'s>(s: &'s Schema, d: &[u8], w: usize, want: &[bool]) -> Vec<Elem<'s>> {
-    let mut dec = Dec { s, d, w, pending: Vec::new(), seen: HashSet::new() };
+    let mut dec = Dec {
+        s,
+        d,
+        w,
+        pending: Vec::new(),
+        seen: HashSet::new(),
+    };
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     if d.len() < 16 + w {
@@ -522,7 +666,9 @@ pub fn scan<'s>(s: &'s Schema, d: &[u8], w: usize, want: &[bool]) -> Vec<Elem<'s
         if v != 0 && v != 0xffff_ffff {
             continue;
         }
-        let Some(eid) = dec.id(at - 8 - w) else { continue };
+        let Some(eid) = dec.id(at - 8 - w) else {
+            continue;
+        };
         let size = u32::from_le_bytes([d[at - 4], d[at - 3], d[at - 2], d[at - 1]]);
         if !(17..0x40_0000).contains(&size) || eid <= 0 {
             continue;
@@ -648,7 +794,8 @@ impl Model {
                 }
             } else if cls == "FamSymSurrogate" {
                 if let Some(f) = int(&e.f, "m_famSurrogateId") {
-                    self.family_types.push((f, text(&e.f, "m_name").unwrap_or_default()));
+                    self.family_types
+                        .push((f, text(&e.f, "m_name").unwrap_or_default()));
                 }
             } else if cls == "Family" {
                 if int(&e.f, "m_inPlace") == Some(1) {
@@ -659,26 +806,55 @@ impl Model {
                     let attached = int(&e.f, "m_attachedParentId").unwrap_or(-1);
                     self.groups.push(Group {
                         id: e.id,
-                        name: e.deferred("SymbolInfo").and_then(|m| text(m, "m_name")).unwrap_or_default(),
+                        name: e
+                            .deferred("SymbolInfo")
+                            .and_then(|m| text(m, "m_name"))
+                            .unwrap_or_default(),
                         detail: int(&e.f, "m_viewType").unwrap_or(0) != 0 || attached > 0,
                         attached_to: if attached > 0 { attached } else { -1 },
                     });
                 }
             } else if cls == "RvtLinkSymbol" {
-                if int(&e.f, "m_parentSymbolId").unwrap_or(-1) == -1 && !self.links.iter().any(|l| l.id == e.id) {
-                    let name = e.deferred("SymbolInfo").and_then(|m| text(m, "m_name")).unwrap_or_default();
-                    self.links.push(Link { id: e.id, name, ..Default::default() });
+                if int(&e.f, "m_parentSymbolId").unwrap_or(-1) == -1
+                    && !self.links.iter().any(|l| l.id == e.id)
+                {
+                    let name = e
+                        .deferred("SymbolInfo")
+                        .and_then(|m| text(m, "m_name"))
+                        .unwrap_or_default();
+                    self.links.push(Link {
+                        id: e.id,
+                        name,
+                        ..Default::default()
+                    });
                 }
             } else if cls == "RvtLinkInstance" {
-                let sym = e.deferred("RvtLinkInstInfo").or_else(|| e.deferred("InstanceInfo")).and_then(|m| int(m, "m_symbolId")).unwrap_or(-1);
+                let sym = e
+                    .deferred("RvtLinkInstInfo")
+                    .or_else(|| e.deferred("InstanceInfo"))
+                    .and_then(|m| int(m, "m_symbolId"))
+                    .unwrap_or(-1);
                 if int(&e.f, "m_parentInstanceId").unwrap_or(-1) == -1 {
-                    self.link_instances.push((sym, text(&e.f, "m_name").unwrap_or_default()));
+                    self.link_instances
+                        .push((sym, text(&e.f, "m_name").unwrap_or_default()));
                 }
             } else if s.isa(e.tag, "DBViewType") {
-                let name = e.deferred("SymbolInfo").and_then(|m| text(m, "m_name")).unwrap_or_default();
-                self.types.insert(e.id, ViewType { family: int(&e.f, "m_systemFamilyIdx").unwrap_or(-1), name });
+                let name = e
+                    .deferred("SymbolInfo")
+                    .and_then(|m| text(m, "m_name"))
+                    .unwrap_or_default();
+                self.types.insert(
+                    e.id,
+                    ViewType {
+                        family: int(&e.f, "m_systemFamilyIdx").unwrap_or(-1),
+                        name,
+                    },
+                );
             } else if s.isa(e.tag, "BrowserOrganization") {
-                let name = e.deferred("SymbolInfo").and_then(|m| text(m, "m_name")).unwrap_or_default();
+                let name = e
+                    .deferred("SymbolInfo")
+                    .and_then(|m| text(m, "m_name"))
+                    .unwrap_or_default();
                 let filters = list(&e.f, "m_filters")
                     .iter()
                     .map(|f| {
@@ -686,17 +862,43 @@ impl Model {
                             Some(V::O(o)) => o.clone(),
                             _ => Map::new(),
                         };
-                        (int(f, "m_paramId").unwrap_or(-1), int(f, "m_relation").unwrap_or(0), text(&v, "m_str").unwrap_or_default(), int(&v, "m_int").unwrap_or(0), int(&v, "m_elemId").unwrap_or(-1))
+                        (
+                            int(f, "m_paramId").unwrap_or(-1),
+                            int(f, "m_relation").unwrap_or(0),
+                            text(&v, "m_str").unwrap_or_default(),
+                            int(&v, "m_int").unwrap_or(0),
+                            int(&v, "m_elemId").unwrap_or(-1),
+                        )
                     })
                     .collect();
-                let folders = list(&e.f, "m_folderDefinitions").iter().map(|f| (int(f, "m_paramId").unwrap_or(-1), int(f, "m_numCharsToUse").unwrap_or(0).max(0) as usize)).collect();
-                self.orgs.insert(e.id, Org { id: e.id, name, kind: int(&e.f, "m_type").unwrap_or(-1), default: int(&e.f, "m_bDefault") == Some(1), filters, folders, sort_asc: int(&e.f, "m_bSortOrderAsc") != Some(0) });
+                let folders = list(&e.f, "m_folderDefinitions")
+                    .iter()
+                    .map(|f| {
+                        (
+                            int(f, "m_paramId").unwrap_or(-1),
+                            int(f, "m_numCharsToUse").unwrap_or(0).max(0) as usize,
+                        )
+                    })
+                    .collect();
+                self.orgs.insert(
+                    e.id,
+                    Org {
+                        id: e.id,
+                        name,
+                        kind: int(&e.f, "m_type").unwrap_or(-1),
+                        default: int(&e.f, "m_bDefault") == Some(1),
+                        filters,
+                        folders,
+                        sort_asc: int(&e.f, "m_bSortOrderAsc") != Some(0),
+                    },
+                );
             } else if cls == "InitialViewSettings" {
                 if let Some(v) = int(&e.f, "m_initialViewId").filter(|&v| v > 0) {
                     self.initial_view = Some(v);
                 }
             } else if cls == "ProjectPhase" {
-                self.phases.insert(e.id, text(&e.f, "m_name").unwrap_or_default());
+                self.phases
+                    .insert(e.id, text(&e.f, "m_name").unwrap_or_default());
             } else if s.isa(e.tag, "DBView") {
                 let mut v = View {
                     id: e.id,
@@ -707,19 +909,31 @@ impl Model {
                     family_owned: false,
                     owner_view: int(&e.f, "m_ownerDBViewId").unwrap_or(-1),
                     primary: int(&e.f, "m_primaryViewId").unwrap_or(-1),
-                    on_sheet: ids(&e.f, "m_sheetViewportElemIds").iter().chain(ids(&e.f, "m_sheetViewportElemId").iter()).any(|&i| i != -1),
+                    on_sheet: ids(&e.f, "m_sheetViewportElemIds")
+                        .iter()
+                        .chain(ids(&e.f, "m_sheetViewportElemId").iter())
+                        .any(|&i| i != -1),
                     section_type: int(&e.f, "m_sectionViewType").unwrap_or(-1),
                     sheet_number: text(&e.f, "m_sheetNumber").unwrap_or_default(),
                     ..Default::default()
                 };
                 for p in e.params("ParamValueSetInt") {
-                    v.ints.insert(int(p, "m_paramId").unwrap_or(0), int(p, "m_value").unwrap_or(0));
+                    v.ints.insert(
+                        int(p, "m_paramId").unwrap_or(0),
+                        int(p, "m_value").unwrap_or(0),
+                    );
                 }
                 for p in e.params("ParamValueSetElementId") {
-                    v.elem_ids.insert(int(p, "m_paramId").unwrap_or(0), int(p, "m_value").unwrap_or(-1));
+                    v.elem_ids.insert(
+                        int(p, "m_paramId").unwrap_or(0),
+                        int(p, "m_value").unwrap_or(-1),
+                    );
                 }
                 for p in e.params("ParamValueSetAString") {
-                    v.strs.insert(int(p, "m_paramId").unwrap_or(0), text(p, "m_value").unwrap_or_default());
+                    v.strs.insert(
+                        int(p, "m_paramId").unwrap_or(0),
+                        text(p, "m_value").unwrap_or_default(),
+                    );
                 }
                 for p in e.params("ParamValueSetDouble") {
                     if let Some(V::F(x)) = p.get("m_value") {
@@ -736,8 +950,16 @@ impl Model {
     /// `BrowserOrganizationTracking` in `/Global/Latest`: the object whose id set lists the
     /// organizations found in the partitions.
     fn tracking(&mut self, s: &Schema, g: &[u8], w: usize) {
-        let Some(tag) = s.tag("BrowserOrganizationTracking") else { return };
-        let mut dec = Dec { s, d: g, w, pending: Vec::new(), seen: HashSet::new() };
+        let Some(tag) = s.tag("BrowserOrganizationTracking") else {
+            return;
+        };
+        let mut dec = Dec {
+            s,
+            d: g,
+            w,
+            pending: Vec::new(),
+            seen: HashSet::new(),
+        };
         for p in 0..g.len().saturating_sub(8) {
             if u32_at(g, p) != Some(1) {
                 continue;
@@ -751,11 +973,19 @@ impl Model {
                 continue;
             }
             let set = ids(&f, "m_elemIdSet");
-            let cur = [int(&f, "m_currentBrOrgViews"), int(&f, "m_currentBrOrgSheets"), int(&f, "m_currentBrOrgSchedules")];
+            let cur = [
+                int(&f, "m_currentBrOrgViews"),
+                int(&f, "m_currentBrOrgSheets"),
+                int(&f, "m_currentBrOrgSchedules"),
+            ];
             if set.is_empty() || cur.iter().any(|c| c.is_none()) {
                 continue;
             }
-            let known = cur.iter().flatten().filter(|c| self.orgs.contains_key(c)).count();
+            let known = cur
+                .iter()
+                .flatten()
+                .filter(|c| self.orgs.contains_key(c))
+                .count();
             if known == 0 && !self.orgs.is_empty() {
                 continue;
             }
@@ -766,13 +996,22 @@ impl Model {
 }
 
 /// Reads the browser model of a Revit file (`None` when the schema is unreadable).
-pub fn read_model<F: Read + std::io::Seek>(cf: &mut cfb::CompoundFile<F>, names: &[(String, u64)], max_partition: u64) -> Option<Model> {
+pub fn read_model<F: Read + std::io::Seek>(
+    cf: &mut cfb::CompoundFile<F>,
+    names: &[(String, u64)],
+    max_partition: u64,
+) -> Option<Model> {
     read_model_with(cf, names, max_partition, &mut |_, _, _| {})
 }
 
 /// [`read_model`], also handing every inflated partition (schema, data, id width) to `each`
 /// (one inflation for several readers).
-pub fn read_model_with<F: Read + std::io::Seek>(cf: &mut cfb::CompoundFile<F>, names: &[(String, u64)], max_partition: u64, each: &mut dyn FnMut(&Schema, &[u8], usize)) -> Option<Model> {
+pub fn read_model_with<F: Read + std::io::Seek>(
+    cf: &mut cfb::CompoundFile<F>,
+    names: &[(String, u64)],
+    max_partition: u64,
+    each: &mut dyn FnMut(&Schema, &[u8], usize),
+) -> Option<Model> {
     let fmt = rvt_model::read_stream(cf, "/Formats/Latest", 64 << 20, 64 << 20, |_| true)?;
     if fmt.verified == 0 {
         return None;
@@ -781,14 +1020,37 @@ pub fn read_model_with<F: Read + std::io::Seek>(cf: &mut cfb::CompoundFile<F>, n
     drop(fmt);
     let mut want = vec![false; 65536];
     for &t in schema.classes.keys() {
-        if ["DBView", "DBViewType", "BrowserOrganization", "ProjectPhase", "RvtLinkSymbol", "RvtLinkInstance", "FamilySurrogate", "FamSymSurrogate", "Family", "ElementGroupType", "InitialViewSettings"].iter().any(|b| schema.isa(t, b)) {
+        if [
+            "DBView",
+            "DBViewType",
+            "BrowserOrganization",
+            "ProjectPhase",
+            "RvtLinkSymbol",
+            "RvtLinkInstance",
+            "FamilySurrogate",
+            "FamSymSurrogate",
+            "Family",
+            "ElementGroupType",
+            "InitialViewSettings",
+        ]
+        .iter()
+        .any(|b| schema.isa(t, b))
+        {
             want[t as usize] = true;
         }
     }
     let mut m = Model::default();
     let mut width = 0;
     for (n, _) in names.iter().filter(|(n, _)| n.starts_with("Partitions/")) {
-        let Some(inf) = rvt_model::read_stream(cf, &format!("/{n}"), max_partition, rvt_model::MAX_INFLATED, |_| true) else { continue };
+        let Some(inf) = rvt_model::read_stream(
+            cf,
+            &format!("/{n}"),
+            max_partition,
+            rvt_model::MAX_INFLATED,
+            |_| true,
+        ) else {
+            continue;
+        };
         let w = rvt_model::walk_chain(&inf.data).id_width;
         let w = if w == 0 { 4 } else { w };
         width = width.max(w);
@@ -804,7 +1066,10 @@ pub fn read_model_with<F: Read + std::io::Seek>(cf: &mut cfb::CompoundFile<F>, n
         m.tracking(&schema, &g.data, width);
     }
     let mut td = Vec::new();
-    if cf.entry("/TransmissionData").is_ok_and(|e| e.len() < (16 << 20)) {
+    if cf
+        .entry("/TransmissionData")
+        .is_ok_and(|e| e.len() < (16 << 20))
+    {
         if let Ok(mut st) = cf.open_stream("/TransmissionData") {
             let _ = st.read_to_end(&mut td);
         }
@@ -817,7 +1082,12 @@ pub fn read_model_with<F: Read + std::io::Seek>(cf: &mut cfb::CompoundFile<F>, n
 /// external file (`ElementId`, `ExternalFileReferenceType` "Revit Link", `LastSavedPath`,
 /// `LastSavedLoadState`…).
 pub fn transmission_refs(b: &[u8]) -> Vec<HashMap<String, String>> {
-    let u: Vec<u16> = b.get(4..).unwrap_or(&[]).chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+    let u: Vec<u16> = b
+        .get(4..)
+        .unwrap_or(&[])
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
     let x = String::from_utf16_lossy(&u);
     let mut out = Vec::new();
     for block in x.split("<ExternalFileReference>").skip(1) {
@@ -832,7 +1102,12 @@ pub fn transmission_refs(b: &[u8]) -> Vec<HashMap<String, String>> {
                 continue;
             }
             if let Some(end) = rest.find(&format!("</{tag}>")) {
-                let v = rest[..end].replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'");
+                let v = rest[..end]
+                    .replace("&amp;", "&")
+                    .replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                    .replace("&quot;", "\"")
+                    .replace("&apos;", "'");
                 m.insert(tag.to_string(), v);
                 rest = &rest[end + tag.len() + 3..];
             }
@@ -845,16 +1120,32 @@ pub fn transmission_refs(b: &[u8]) -> Vec<HashMap<String, String>> {
 impl Model {
     fn attach_links(&mut self, td: &[u8]) {
         let refs = transmission_refs(td);
-        for r in refs.iter().filter(|r| r.get("ExternalFileReferenceType").is_some_and(|t| t.contains("Revit"))) {
-            let id: i64 = r.get("ElementId").and_then(|v| v.trim().parse().ok()).unwrap_or(i64::MIN);
-            let path = r.get("LastSavedPath").or(r.get("DesiredPath")).cloned().unwrap_or_default();
+        for r in refs.iter().filter(|r| {
+            r.get("ExternalFileReferenceType")
+                .is_some_and(|t| t.contains("Revit"))
+        }) {
+            let id: i64 = r
+                .get("ElementId")
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(i64::MIN);
+            let path = r
+                .get("LastSavedPath")
+                .or(r.get("DesiredPath"))
+                .cloned()
+                .unwrap_or_default();
             let file = path.rsplit(['\\', '/']).next().unwrap_or("").to_string();
             let state = r.get("LastSavedLoadState").cloned().unwrap_or_default();
             if let Some(l) = self.links.iter_mut().find(|l| l.id == id) {
                 l.state = state;
                 l.path_name = file;
             } else {
-                self.links.push(Link { id, name: String::new(), state, path_name: file, instances: Vec::new() });
+                self.links.push(Link {
+                    id,
+                    name: String::new(),
+                    state,
+                    path_name: file,
+                    instances: Vec::new(),
+                });
             }
         }
         for (sym, name) in std::mem::take(&mut self.link_instances) {
@@ -872,24 +1163,74 @@ impl Model {
 fn family(idx: i64) -> Option<(K, &'static str, &'static str, &'static str)> {
     Some(match idx {
         0x66 => (K::View3d, "Vues 3D", "Vue 3D", "3D View"),
-        0x67 => (K::View3d, "Visites virtuelles", "Visite virtuelle", "Walkthrough"),
+        0x67 => (
+            K::View3d,
+            "Visites virtuelles",
+            "Visite virtuelle",
+            "Walkthrough",
+        ),
         0x68 => (K::Rendering, "Rendus", "Rendu", "Rendering"),
-        0x69 => (K::Schedule, "Nomenclatures/Quantités", "Nomenclature", "Schedule"),
-        0x6a => (K::Other, "Rapports de coûts", "Rapport de coûts", "Cost Report"),
+        0x69 => (
+            K::Schedule,
+            "Nomenclatures/Quantités",
+            "Nomenclature",
+            "Schedule",
+        ),
+        0x6a => (
+            K::Other,
+            "Rapports de coûts",
+            "Rapport de coûts",
+            "Cost Report",
+        ),
         0x6b => (K::Sheet, "Feuilles", "Feuille", "Sheet"),
-        0x6c => (K::Drafting, "Vues de dessin", "Vue de dessin", "Drafting View"),
+        0x6c => (
+            K::Drafting,
+            "Vues de dessin",
+            "Vue de dessin",
+            "Drafting View",
+        ),
         0x6d => (K::Plan, "Plans d'étage", "Plan d'étage", "Floor Plan"),
         0x6e => (K::Plan, "Plans de surface", "Plan de surface", "Area Plan"),
-        0x6f => (K::CeilingPlan, "Plans de plafond", "Plan de plafond", "Ceiling Plan"),
+        0x6f => (
+            K::CeilingPlan,
+            "Plans de plafond",
+            "Plan de plafond",
+            "Ceiling Plan",
+        ),
         0x70 => (K::Section, "Coupes", "Coupe", "Section"),
         0x71 => (K::Detail, "Vues de détail", "Vue de détail", "Detail View"),
         0x72 => (K::Elevation, "Élévations", "Élévation", "Elevation"),
-        0x73 => (K::Other, "Rapports de charges", "Rapport de charges", "Loads Report"),
-        0x74 => (K::Other, "Rapports de perte de charge", "Rapport de perte de charge", "Pressure Loss Report"),
+        0x73 => (
+            K::Other,
+            "Rapports de charges",
+            "Rapport de charges",
+            "Loads Report",
+        ),
+        0x74 => (
+            K::Other,
+            "Rapports de perte de charge",
+            "Rapport de perte de charge",
+            "Pressure Loss Report",
+        ),
         0x75 => (K::Legend, "Légendes", "Légende", "Legend"),
-        0x76 => (K::Schedule, "Nomenclatures de tableaux", "Nomenclature de tableau", "Panel Schedule"),
-        0x77 => (K::Schedule, "Nomenclatures de poteaux graphiques", "Nomenclature de poteaux graphique", "Graphical Column Schedule"),
-        0x78 => (K::Plan, "Plans de structure", "Plan de structure", "Structural Plan"),
+        0x76 => (
+            K::Schedule,
+            "Nomenclatures de tableaux",
+            "Nomenclature de tableau",
+            "Panel Schedule",
+        ),
+        0x77 => (
+            K::Schedule,
+            "Nomenclatures de poteaux graphiques",
+            "Nomenclature de poteaux graphique",
+            "Graphical Column Schedule",
+        ),
+        0x78 => (
+            K::Plan,
+            "Plans de structure",
+            "Plan de structure",
+            "Structural Plan",
+        ),
         _ => return None,
     })
 }
@@ -897,7 +1238,10 @@ fn family(idx: i64) -> Option<(K, &'static str, &'static str, &'static str)> {
 /// Revit's English labels for the French section and folder names, longest first (the viewer
 /// shows them when ModelCraft runs in English).
 pub const LABELS_EN: &[(&str, &str)] = &[
-    ("Nomenclatures de poteaux graphiques", "Graphical Column Schedules"),
+    (
+        "Nomenclatures de poteaux graphiques",
+        "Graphical Column Schedules",
+    ),
     ("Rapports de perte de charge", "Pressure Loss Reports"),
     ("Nomenclatures de tableaux", "Panel Schedules"),
     ("Nomenclatures/Quantités", "Schedules/Quantities"),
@@ -1105,7 +1449,13 @@ impl Node {
         if let Some(i) = self.folders.iter().position(|f| f.label == label) {
             return &mut self.folders[i];
         }
-        self.folders.push(Node { label: label.to_string(), kind: Some(K::Folder), id: -1, key: sort_key(label), ..Default::default() });
+        self.folders.push(Node {
+            label: label.to_string(),
+            kind: Some(K::Folder),
+            id: -1,
+            key: sort_key(label),
+            ..Default::default()
+        });
         self.folders.last_mut().unwrap()
     }
     fn find(&mut self, id: i64) -> Option<&mut Node> {
@@ -1121,13 +1471,25 @@ impl Node {
     }
     fn sort(&mut self, asc: bool) {
         self.folders.sort_by(|a, b| a.key.cmp(&b.key));
-        self.leaves.sort_by(|a, b| if asc { a.key.cmp(&b.key) } else { b.key.cmp(&a.key) });
+        self.leaves.sort_by(|a, b| {
+            if asc {
+                a.key.cmp(&b.key)
+            } else {
+                b.key.cmp(&a.key)
+            }
+        });
         for c in self.folders.iter_mut().chain(self.leaves.iter_mut()) {
             c.sort(asc);
         }
     }
     fn flatten(&self, depth: u16, out: &mut Vec<BrowserNode>) {
-        out.push(BrowserNode { label: self.label.clone(), depth, kind: self.kind.unwrap_or(K::Other), id: if self.id > 0 { self.id } else { -1 }, start: false });
+        out.push(BrowserNode {
+            label: self.label.clone(),
+            depth,
+            kind: self.kind.unwrap_or(K::Other),
+            id: if self.id > 0 { self.id } else { -1 },
+            start: false,
+        });
         // Revit lists the sub-folders before the views of a folder
         for c in self.folders.iter().chain(self.leaves.iter()) {
             c.flatten(depth + 1, out);
@@ -1172,24 +1534,35 @@ impl<'m> Ctx<'m> {
     }
 
     fn family_idx(&self, v: &View) -> i64 {
-        self.view_type(v).map(|(_, t)| t.family).unwrap_or(match v.class.as_str() {
-            "DBViewSchedule" => 0x69,
-            "DBViewLegend" => 0x75,
-            "DBViewRendering" => 0x68,
-            "DBView3d" => 0x66,
-            "DBViewDrafting" => 0x6c,
-            "DBViewSection" => 0x70,
-            _ => -1,
-        })
+        self.view_type(v)
+            .map(|(_, t)| t.family)
+            .unwrap_or(match v.class.as_str() {
+                "DBViewSchedule" => 0x69,
+                "DBViewLegend" => 0x75,
+                "DBViewRendering" => 0x68,
+                "DBView3d" => 0x66,
+                "DBViewDrafting" => 0x6c,
+                "DBViewSection" => 0x70,
+                _ => -1,
+            })
     }
 
     /// "Plans d'étage" or "Coupes (Wall Section)": family plural, plus the type name when it is
     /// not the family's default name.
     fn family_type_label(&self, v: &View) -> String {
         let fi = self.family_idx(v);
-        let Some((_, plural, fr, en)) = family(fi) else { return EMPTY.into() };
-        let tname = self.view_type(v).map(|(_, t)| t.name.trim().to_string()).unwrap_or_default();
-        if tname.is_empty() || tname.eq_ignore_ascii_case(fr) || tname.eq_ignore_ascii_case(en) || tname.eq_ignore_ascii_case(plural) {
+        let Some((_, plural, fr, en)) = family(fi) else {
+            return EMPTY.into();
+        };
+        let tname = self
+            .view_type(v)
+            .map(|(_, t)| t.name.trim().to_string())
+            .unwrap_or_default();
+        if tname.is_empty()
+            || tname.eq_ignore_ascii_case(fr)
+            || tname.eq_ignore_ascii_case(en)
+            || tname.eq_ignore_ascii_case(plural)
+        {
             plural.into()
         } else {
             format!("{plural} ({tname})")
@@ -1202,16 +1575,38 @@ impl<'m> Ctx<'m> {
             P_VIEW_NAME => v.name.clone(),
             P_SHEET_NUMBER => v.sheet_number.clone(),
             P_SHEET_NAME => v.name.clone(),
-            P_DISCIPLINE => v.ints.get(&p).and_then(|&d| discipline(d)).unwrap_or("").to_string(),
-            P_PHASE => v.elem_ids.get(&p).and_then(|i| self.m.phases.get(i)).cloned().unwrap_or_default(),
-            P_VIEW_SHEET_NUMBER => if v.on_sheet { "•".into() } else { String::new() },
+            P_DISCIPLINE => v
+                .ints
+                .get(&p)
+                .and_then(|&d| discipline(d))
+                .unwrap_or("")
+                .to_string(),
+            P_PHASE => v
+                .elem_ids
+                .get(&p)
+                .and_then(|i| self.m.phases.get(i))
+                .cloned()
+                .unwrap_or_default(),
+            P_VIEW_SHEET_NUMBER => {
+                if v.on_sheet {
+                    "•".into()
+                } else {
+                    String::new()
+                }
+            }
             _ => {
                 if let Some(s) = v.strs.get(&p) {
                     s.clone()
                 } else if let Some(i) = v.ints.get(&p) {
                     i.to_string()
                 } else if let Some(i) = v.elem_ids.get(&p) {
-                    self.m.phases.get(i).cloned().unwrap_or_else(|| if *i == -1 { String::new() } else { i.to_string() })
+                    self.m.phases.get(i).cloned().unwrap_or_else(|| {
+                        if *i == -1 {
+                            String::new()
+                        } else {
+                            i.to_string()
+                        }
+                    })
                 } else if let Some(x) = v.dbls.get(&p) {
                     format!("{x}")
                 } else {
@@ -1227,7 +1622,13 @@ impl<'m> Ctx<'m> {
     fn passes(&self, v: &View, org: &Org) -> bool {
         org.filters.iter().all(|(p, rel, s, i, e)| {
             let have = self.param(v, *p);
-            let want = if !s.is_empty() || (*i == 0 && *e == -1) { s.clone() } else if *e != -1 { self.m.phases.get(e).cloned().unwrap_or(e.to_string()) } else { i.to_string() };
+            let want = if !s.is_empty() || (*i == 0 && *e == -1) {
+                s.clone()
+            } else if *e != -1 {
+                self.m.phases.get(e).cloned().unwrap_or(e.to_string())
+            } else {
+                i.to_string()
+            };
             match rel {
                 0 => have == want,
                 1 => have != want,
@@ -1255,23 +1656,53 @@ impl<'m> Ctx<'m> {
     }
 
     /// One section: its views placed in their folders, dependent views under their primary view.
-    fn section(&self, label: String, kind: K, items: &[&View], org: Option<&Org>, leaf: impl Fn(&View) -> (String, K)) -> Node {
-        let mut root = Node { label, kind: Some(kind), id: -1, ..Default::default() };
-        let items: Vec<&View> = items.iter().copied().filter(|v| org.is_none_or(|o| self.passes(v, o))).collect();
+    fn section(
+        &self,
+        label: String,
+        kind: K,
+        items: &[&View],
+        org: Option<&Org>,
+        leaf: impl Fn(&View) -> (String, K),
+    ) -> Node {
+        let mut root = Node {
+            label,
+            kind: Some(kind),
+            id: -1,
+            ..Default::default()
+        };
+        let items: Vec<&View> = items
+            .iter()
+            .copied()
+            .filter(|v| org.is_none_or(|o| self.passes(v, o)))
+            .collect();
         let ids: HashSet<i64> = items.iter().map(|v| v.id).collect();
-        let (deps, prims): (Vec<&View>, Vec<&View>) = items.iter().partition(|v| v.primary != -1 && ids.contains(&v.primary));
+        let (deps, prims): (Vec<&View>, Vec<&View>) = items
+            .iter()
+            .partition(|v| v.primary != -1 && ids.contains(&v.primary));
         for v in prims {
             let mut n = &mut root;
             for f in self.folder_path(v, org) {
                 n = n.folder(&f);
             }
             let (l, k) = leaf(v);
-            n.leaves.push(Node { key: sort_key(&l), label: l, kind: Some(k), id: v.id, ..Default::default() });
+            n.leaves.push(Node {
+                key: sort_key(&l),
+                label: l,
+                kind: Some(k),
+                id: v.id,
+                ..Default::default()
+            });
         }
         for v in deps {
             let (l, k) = leaf(v);
             if let Some(p) = root.find(v.primary) {
-                p.leaves.push(Node { key: sort_key(&l), label: l, kind: Some(k), id: v.id, ..Default::default() });
+                p.leaves.push(Node {
+                    key: sort_key(&l),
+                    label: l,
+                    kind: Some(k),
+                    id: v.id,
+                    ..Default::default()
+                });
             }
         }
         root.sort(org.is_none_or(|o| o.sort_asc));
@@ -1287,7 +1718,16 @@ pub fn build(m: &Model) -> Vec<BrowserNode> {
     let mut schedules = Vec::new();
     let mut sheets = Vec::new();
     for v in &m.views {
-        if v.template || v.family_owned || v.owner_view != -1 || v.name.is_empty() || v.name == EMPTY || matches!(v.class.as_str(), "DBViewProject" | "RbsDbViewSystemNavigator") {
+        if v.template
+            || v.family_owned
+            || v.owner_view != -1
+            || v.name.is_empty()
+            || v.name == EMPTY
+            || matches!(
+                v.class.as_str(),
+                "DBViewProject" | "RbsDbViewSystemNavigator"
+            )
+        {
             continue;
         }
         match c.family_idx(v) {
@@ -1298,21 +1738,71 @@ pub fn build(m: &Model) -> Vec<BrowserNode> {
             _ => views.push(v),
         }
     }
-    let org = |k: usize, kind: i64| -> Option<&Org> { m.current[k].and_then(|i| m.orgs.get(&i)).or_else(|| m.orgs.values().filter(|o| o.kind == kind && o.default).min_by_key(|o| o.id)) };
+    let org = |k: usize, kind: i64| -> Option<&Org> {
+        m.current[k].and_then(|i| m.orgs.get(&i)).or_else(|| {
+            m.orgs
+                .values()
+                .filter(|o| o.kind == kind && o.default)
+                .min_by_key(|o| o.id)
+        })
+    };
     let (ov, osh, osc) = (org(0, 0), org(1, 1), org(2, 3));
-    let title = |base: &str, o: Option<&Org>| format!("{base} ({})", org_label(o.map(|o| o.name.as_str()).unwrap_or("")));
+    let title = |base: &str, o: Option<&Org>| {
+        format!(
+            "{base} ({})",
+            org_label(o.map(|o| o.name.as_str()).unwrap_or(""))
+        )
+    };
     let mut out = Vec::new();
-    let view_leaf = |v: &View| (v.name.clone(), family(c.family_idx(v)).map(|f| f.0).unwrap_or(K::Other));
-    let stock = Org { kind: 0, default: true, folders: vec![(P_FAMILY_TYPE, 0)], sort_asc: true, ..Default::default() };
-    c.section(title("Vues", ov), K::Views, &views, ov.or(Some(&stock)), view_leaf).flatten(0, &mut out);
+    let view_leaf = |v: &View| {
+        (
+            v.name.clone(),
+            family(c.family_idx(v)).map(|f| f.0).unwrap_or(K::Other),
+        )
+    };
+    let stock = Org {
+        kind: 0,
+        default: true,
+        folders: vec![(P_FAMILY_TYPE, 0)],
+        sort_asc: true,
+        ..Default::default()
+    };
+    c.section(
+        title("Vues", ov),
+        K::Views,
+        &views,
+        ov.or(Some(&stock)),
+        view_leaf,
+    )
+    .flatten(0, &mut out);
     if !legends.is_empty() {
-        c.section("Légendes".into(), K::Legends, &legends, None, |v| (v.name.clone(), K::Legend)).flatten(0, &mut out);
+        c.section("Légendes".into(), K::Legends, &legends, None, |v| {
+            (v.name.clone(), K::Legend)
+        })
+        .flatten(0, &mut out);
     }
     if !schedules.is_empty() {
-        c.section(title("Nomenclatures/Quantités", osc), K::Schedules, &schedules, osc, |v| (v.name.clone(), K::Schedule)).flatten(0, &mut out);
+        c.section(
+            title("Nomenclatures/Quantités", osc),
+            K::Schedules,
+            &schedules,
+            osc,
+            |v| (v.name.clone(), K::Schedule),
+        )
+        .flatten(0, &mut out);
     }
-    let sheet_leaf = |v: &View| (if v.sheet_number.is_empty() { v.name.clone() } else { format!("{} - {}", v.sheet_number, v.name) }, K::Sheet);
-    c.section(title("Feuilles", osh), K::Sheets, &sheets, osh, sheet_leaf).flatten(0, &mut out);
+    let sheet_leaf = |v: &View| {
+        (
+            if v.sheet_number.is_empty() {
+                v.name.clone()
+            } else {
+                format!("{} - {}", v.sheet_number, v.name)
+            },
+            K::Sheet,
+        )
+    };
+    c.section(title("Feuilles", osh), K::Sheets, &sheets, osh, sheet_leaf)
+        .flatten(0, &mut out);
     families(m, &mut out);
     groups(m, &mut out);
     links(m, &mut out);
@@ -1329,28 +1819,30 @@ pub fn build(m: &Model) -> Vec<BrowserNode> {
 /// Built-in annotation categories (tags, heads, symbols, tick marks, view titles,
 /// boundary conditions), sorted ascending. Ids from the public Revit API BuiltInCategory list.
 const ANNOTATION_CATEGORIES: &[i64] = &[
-    -2009663, -2009656, -2009655, -2009654, -2009653, -2009652, -2009651, -2009650, -2009649, -2009608,
-    -2009064, -2009063, -2009061, -2009059, -2009058, -2009057, -2009056, -2009055, -2009040, -2009033,
-    -2009028, -2009023, -2009022, -2009021, -2009020, -2009011, -2009010, -2009005, -2008236, -2008235,
-    -2008233, -2008229, -2008213, -2008209, -2008204, -2008194, -2008155, -2008154, -2008153, -2008133,
-    -2008131, -2008129, -2008127, -2008115, -2008100, -2008088, -2008086, -2008084, -2008082, -2008080,
-    -2008078, -2008076, -2008074, -2008061, -2008060, -2008057, -2008056, -2008048, -2008047, -2008038,
-    -2008017, -2008014, -2008004, -2008003, -2006282, -2006281, -2006279, -2006278, -2006276, -2006273,
-    -2006266, -2006264, -2006243, -2006230, -2006226, -2006222, -2006220, -2006211, -2006210, -2006209,
-    -2006208, -2006178, -2006177, -2006176, -2006175, -2006174, -2006173, -2006172, -2006171, -2006170,
-    -2006100, -2006080, -2006045, -2006040, -2006020, -2005307, -2005306, -2005305, -2005304, -2005303,
-    -2005302, -2005301, -2005255, -2005254, -2005253, -2005252, -2005251, -2005250, -2005130, -2005111,
-    -2005110, -2005102, -2005101, -2005100, -2005033, -2005032, -2005031, -2005030, -2005029, -2005028,
-    -2005027, -2005026, -2005025, -2005024, -2005023, -2005022, -2005021, -2005020, -2005019, -2005018,
-    -2005017, -2005016, -2005015, -2005014, -2005013, -2005012, -2005011, -2005010, -2005009, -2005008,
-    -2005007, -2005006, -2005004, -2005003, -2005002, -2005001, -2005000, -2003410, -2003405, -2001355,
-    -2001335, -2001269, -2001267, -2001221, -2001116, -2001114, -2001111, -2001110, -2001103, -2001102,
-    -2001094, -2001078, -2001074, -2001073, -2001072, -2001071, -2001070, -2001069, -2001068, -2001067,
-    -2001066, -2001065, -2001064, -2001063, -2001062, -2001061, -2001057, -2001054, -2001051, -2001048,
-    -2001045, -2001042, -2001038, -2001015, -2001007, -2000989, -2000988, -2000986, -2000984, -2000958,
-    -2000957, -2000956, -2000955, -2000943, -2000942, -2000941, -2000940, -2000930, -2000917, -2000834,
-    -2000538, -2000515, -2000485, -2000480, -2000460, -2000450, -2000400, -2000270, -2000268, -2000266,
-    -2000197, -2000150, -2000133,
+    -2009663, -2009656, -2009655, -2009654, -2009653, -2009652, -2009651, -2009650, -2009649,
+    -2009608, -2009064, -2009063, -2009061, -2009059, -2009058, -2009057, -2009056, -2009055,
+    -2009040, -2009033, -2009028, -2009023, -2009022, -2009021, -2009020, -2009011, -2009010,
+    -2009005, -2008236, -2008235, -2008233, -2008229, -2008213, -2008209, -2008204, -2008194,
+    -2008155, -2008154, -2008153, -2008133, -2008131, -2008129, -2008127, -2008115, -2008100,
+    -2008088, -2008086, -2008084, -2008082, -2008080, -2008078, -2008076, -2008074, -2008061,
+    -2008060, -2008057, -2008056, -2008048, -2008047, -2008038, -2008017, -2008014, -2008004,
+    -2008003, -2006282, -2006281, -2006279, -2006278, -2006276, -2006273, -2006266, -2006264,
+    -2006243, -2006230, -2006226, -2006222, -2006220, -2006211, -2006210, -2006209, -2006208,
+    -2006178, -2006177, -2006176, -2006175, -2006174, -2006173, -2006172, -2006171, -2006170,
+    -2006100, -2006080, -2006045, -2006040, -2006020, -2005307, -2005306, -2005305, -2005304,
+    -2005303, -2005302, -2005301, -2005255, -2005254, -2005253, -2005252, -2005251, -2005250,
+    -2005130, -2005111, -2005110, -2005102, -2005101, -2005100, -2005033, -2005032, -2005031,
+    -2005030, -2005029, -2005028, -2005027, -2005026, -2005025, -2005024, -2005023, -2005022,
+    -2005021, -2005020, -2005019, -2005018, -2005017, -2005016, -2005015, -2005014, -2005013,
+    -2005012, -2005011, -2005010, -2005009, -2005008, -2005007, -2005006, -2005004, -2005003,
+    -2005002, -2005001, -2005000, -2003410, -2003405, -2001355, -2001335, -2001269, -2001267,
+    -2001221, -2001116, -2001114, -2001111, -2001110, -2001103, -2001102, -2001094, -2001078,
+    -2001074, -2001073, -2001072, -2001071, -2001070, -2001069, -2001068, -2001067, -2001066,
+    -2001065, -2001064, -2001063, -2001062, -2001061, -2001057, -2001054, -2001051, -2001048,
+    -2001045, -2001042, -2001038, -2001015, -2001007, -2000989, -2000988, -2000986, -2000984,
+    -2000958, -2000957, -2000956, -2000955, -2000943, -2000942, -2000941, -2000940, -2000930,
+    -2000917, -2000834, -2000538, -2000515, -2000485, -2000480, -2000460, -2000450, -2000400,
+    -2000270, -2000268, -2000266, -2000197, -2000150, -2000133,
 ];
 
 /// Annotation families (tags, heads, generic annotations…) share "Symboles d'annotation".
@@ -1425,28 +1917,70 @@ pub fn category_label(id: i64) -> &'static str {
 /// "Familles": category > loadable family > types (in-place families are not listed).
 fn families(m: &Model, out: &mut Vec<BrowserNode>) {
     // "Autres familles" (categories not in the table) last
-    let mut cats: std::collections::BTreeMap<(bool, Vec<(u8, u64, String)>), (&str, Vec<&Fam>)> = Default::default();
-    for f in m.families.iter().filter(|f| !m.in_place.contains(&f.family) && !f.name.is_empty()) {
+    let mut cats: std::collections::BTreeMap<(bool, Vec<(u8, u64, String)>), (&str, Vec<&Fam>)> =
+        Default::default();
+    for f in m
+        .families
+        .iter()
+        .filter(|f| !m.in_place.contains(&f.family) && !f.name.is_empty())
+    {
         let l = category_label(f.category);
-        cats.entry((l == "Autres familles", sort_key(l))).or_insert((l, Vec::new())).1.push(f);
+        cats.entry((l == "Autres familles", sort_key(l)))
+            .or_insert((l, Vec::new()))
+            .1
+            .push(f);
     }
     if cats.is_empty() {
         return;
     }
-    out.push(BrowserNode { label: "Familles".into(), depth: 0, kind: K::Families, id: -1, start: false });
+    out.push(BrowserNode {
+        label: "Familles".into(),
+        depth: 0,
+        kind: K::Families,
+        id: -1,
+        start: false,
+    });
     for (_, (label, mut fams)) in cats {
-        out.push(BrowserNode { label: label.into(), depth: 1, kind: K::Folder, id: -1, start: false });
+        out.push(BrowserNode {
+            label: label.into(),
+            depth: 1,
+            kind: K::Folder,
+            id: -1,
+            start: false,
+        });
         fams.sort_by_key(|f| sort_key(&f.name));
         // the same family can have several surrogates: one row, types merged
         fams.dedup_by(|a, b| a.name == b.name);
         for f in fams {
-            out.push(BrowserNode { label: f.name.clone(), depth: 2, kind: K::Family, id: -1, start: false });
-            let ids: Vec<i64> = m.families.iter().filter(|g| g.name == f.name && category_label(g.category) == label).map(|g| g.surrogate).collect();
-            let mut types: Vec<&str> = m.family_types.iter().filter(|(s, n)| ids.contains(s) && !n.is_empty()).map(|(_, n)| n.as_str()).collect();
+            out.push(BrowserNode {
+                label: f.name.clone(),
+                depth: 2,
+                kind: K::Family,
+                id: -1,
+                start: false,
+            });
+            let ids: Vec<i64> = m
+                .families
+                .iter()
+                .filter(|g| g.name == f.name && category_label(g.category) == label)
+                .map(|g| g.surrogate)
+                .collect();
+            let mut types: Vec<&str> = m
+                .family_types
+                .iter()
+                .filter(|(s, n)| ids.contains(s) && !n.is_empty())
+                .map(|(_, n)| n.as_str())
+                .collect();
             types.sort_by_key(|n| sort_key(n));
             types.dedup();
             for t in types {
-                out.push(BrowserNode { label: t.into(), depth: 3, kind: K::FamilyType, id: -1, start: false });
+                out.push(BrowserNode {
+                    label: t.into(),
+                    depth: 3,
+                    kind: K::FamilyType,
+                    id: -1,
+                    start: false,
+                });
             }
         }
     }
@@ -1463,16 +1997,64 @@ fn groups(m: &Model, out: &mut Vec<BrowserNode>) {
         return;
     }
     let named: Vec<&Group> = m.groups.iter().filter(|g| !g.name.is_empty()).collect();
-    out.push(BrowserNode { label: "Groupes".into(), depth: 0, kind: K::Groups, id: -1, start: false });
-    out.push(BrowserNode { label: "Détail".into(), depth: 1, kind: K::Folder, id: -1, start: false });
-    for g in sorted_groups(named.iter().copied().filter(|g| g.detail && !named.iter().any(|p| p.id == g.attached_to)).collect()) {
-        out.push(BrowserNode { label: g.name.clone(), depth: 2, kind: K::Group, id: -1, start: false });
+    out.push(BrowserNode {
+        label: "Groupes".into(),
+        depth: 0,
+        kind: K::Groups,
+        id: -1,
+        start: false,
+    });
+    out.push(BrowserNode {
+        label: "Détail".into(),
+        depth: 1,
+        kind: K::Folder,
+        id: -1,
+        start: false,
+    });
+    for g in sorted_groups(
+        named
+            .iter()
+            .copied()
+            .filter(|g| g.detail && !named.iter().any(|p| p.id == g.attached_to))
+            .collect(),
+    ) {
+        out.push(BrowserNode {
+            label: g.name.clone(),
+            depth: 2,
+            kind: K::Group,
+            id: -1,
+            start: false,
+        });
     }
-    out.push(BrowserNode { label: "Modèle".into(), depth: 1, kind: K::Folder, id: -1, start: false });
+    out.push(BrowserNode {
+        label: "Modèle".into(),
+        depth: 1,
+        kind: K::Folder,
+        id: -1,
+        start: false,
+    });
     for g in sorted_groups(named.iter().copied().filter(|g| !g.detail).collect()) {
-        out.push(BrowserNode { label: g.name.clone(), depth: 2, kind: K::Group, id: -1, start: false });
-        for a in sorted_groups(named.iter().copied().filter(|a| a.attached_to == g.id).collect()) {
-            out.push(BrowserNode { label: a.name.clone(), depth: 3, kind: K::Group, id: -1, start: false });
+        out.push(BrowserNode {
+            label: g.name.clone(),
+            depth: 2,
+            kind: K::Group,
+            id: -1,
+            start: false,
+        });
+        for a in sorted_groups(
+            named
+                .iter()
+                .copied()
+                .filter(|a| a.attached_to == g.id)
+                .collect(),
+        ) {
+            out.push(BrowserNode {
+                label: a.name.clone(),
+                depth: 3,
+                kind: K::Group,
+                id: -1,
+                start: false,
+            });
         }
     }
 }
@@ -1483,24 +2065,62 @@ fn links(m: &Model, out: &mut Vec<BrowserNode>) {
     let mut items: Vec<(String, &Link)> = m
         .links
         .iter()
-        .map(|l| (if !l.name.trim().is_empty() { l.name.clone() } else if !l.path_name.is_empty() { l.path_name.clone() } else { EMPTY.into() }, l))
+        .map(|l| {
+            (
+                if !l.name.trim().is_empty() {
+                    l.name.clone()
+                } else if !l.path_name.is_empty() {
+                    l.path_name.clone()
+                } else {
+                    EMPTY.into()
+                },
+                l,
+            )
+        })
         .collect();
     if items.is_empty() {
         return;
     }
     items.sort_by_key(|(n, _)| sort_key(n));
-    out.push(BrowserNode { label: "Liens Revit".into(), depth: 0, kind: K::Links, id: -1, start: false });
+    out.push(BrowserNode {
+        label: "Liens Revit".into(),
+        depth: 0,
+        kind: K::Links,
+        id: -1,
+        start: false,
+    });
     for (name, l) in items {
         let loaded = l.state.is_empty() || l.state.eq_ignore_ascii_case("Loaded");
-        out.push(BrowserNode { label: name.clone(), depth: 1, kind: if loaded { K::Link } else { K::LinkUnloaded }, id: -1, start: false });
-        let mut inst: Vec<String> = l.instances.iter().map(|i| if i.trim().is_empty() { name.clone() } else { format!("{name} : {i}") }).collect();
+        out.push(BrowserNode {
+            label: name.clone(),
+            depth: 1,
+            kind: if loaded { K::Link } else { K::LinkUnloaded },
+            id: -1,
+            start: false,
+        });
+        let mut inst: Vec<String> = l
+            .instances
+            .iter()
+            .map(|i| {
+                if i.trim().is_empty() {
+                    name.clone()
+                } else {
+                    format!("{name} : {i}")
+                }
+            })
+            .collect();
         inst.sort_by_key(|n| sort_key(n));
         for i in inst {
-            out.push(BrowserNode { label: i, depth: 2, kind: K::LinkInstance, id: -1, start: false });
+            out.push(BrowserNode {
+                label: i,
+                depth: 2,
+                kind: K::LinkInstance,
+                id: -1,
+                start: false,
+            });
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1508,8 +2128,14 @@ mod tests {
     fn annotation_categories_sorted() {
         assert!(super::ANNOTATION_CATEGORIES.windows(2).all(|w| w[0] < w[1]));
         assert_eq!(super::category_label(-2008047), "Symboles d'annotation");
-        assert_eq!(super::category_label(-2008055), "Accessoires de canalisation");
-        assert_eq!(super::category_label(-2001043), "Equipement de restauration");
+        assert_eq!(
+            super::category_label(-2008055),
+            "Accessoires de canalisation"
+        );
+        assert_eq!(
+            super::category_label(-2001043),
+            "Equipement de restauration"
+        );
     }
 
     use super::*;
@@ -1519,12 +2145,27 @@ mod tests {
         let p = std::path::Path::new(&dir).join("ad").join(name);
         let f = std::fs::File::open(p).ok()?;
         let mut cf = cfb::CompoundFile::open(std::io::BufReader::new(f)).ok()?;
-        let names: Vec<(String, u64)> = cf.walk().filter(|e| e.is_stream()).map(|e| (e.path().to_string_lossy().replace('\\', "/").trim_start_matches('/').to_string(), e.len())).collect();
+        let names: Vec<(String, u64)> = cf
+            .walk()
+            .filter(|e| e.is_stream())
+            .map(|e| {
+                (
+                    e.path()
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                        .trim_start_matches('/')
+                        .to_string(),
+                    e.len(),
+                )
+            })
+            .collect();
         read_model(&mut cf, &names, 2 << 30)
     }
 
     fn lines(rows: &[BrowserNode]) -> Vec<String> {
-        rows.iter().map(|r| format!("{}{}", "  ".repeat(r.depth as usize), r.label)).collect()
+        rows.iter()
+            .map(|r| format!("{}{}", "  ".repeat(r.depth as usize), r.label))
+            .collect()
     }
 
     #[test]
@@ -1533,11 +2174,28 @@ mod tests {
         let mut b = (x.encode_utf16().count() as u32).to_le_bytes().to_vec();
         b.extend(x.encode_utf16().flat_map(|c| c.to_le_bytes()));
         assert_eq!(transmission_refs(&b).len(), 2);
-        let mut m = Model { links: vec![Link { id: 42, name: "Lien A.rvt".into(), ..Default::default() }], link_instances: vec![(42, "1".into())], ..Default::default() };
+        let mut m = Model {
+            links: vec![Link {
+                id: 42,
+                name: "Lien A.rvt".into(),
+                ..Default::default()
+            }],
+            link_instances: vec![(42, "1".into())],
+            ..Default::default()
+        };
         m.attach_links(&b);
         let mut out = Vec::new();
         links(&m, &mut out);
-        assert_eq!(out.iter().map(|r| (r.label.as_str(), r.depth, r.kind)).collect::<Vec<_>>(), [("Liens Revit", 0, K::Links), ("Lien A.rvt", 1, K::LinkUnloaded), ("Lien A.rvt : 1", 2, K::LinkInstance)]);
+        assert_eq!(
+            out.iter()
+                .map(|r| (r.label.as_str(), r.depth, r.kind))
+                .collect::<Vec<_>>(),
+            [
+                ("Liens Revit", 0, K::Links),
+                ("Lien A.rvt", 1, K::LinkUnloaded),
+                ("Lien A.rvt : 1", 2, K::LinkInstance)
+            ]
+        );
         // no link: no section
         let mut out = Vec::new();
         links(&Model::default(), &mut out);
@@ -1548,17 +2206,42 @@ mod tests {
     /// loaded when it was saved).
     #[test]
     fn sample_families_groups_links() {
-        let Some(m) = model("rac_2018.rvt") else { return };
+        let Some(m) = model("rac_2018.rvt") else {
+            return;
+        };
         let l = lines(&build(&m));
-        let at = |s: &str| l.iter().position(|x| x == s).unwrap_or_else(|| panic!("{s} missing"));
+        let at = |s: &str| {
+            l.iter()
+                .position(|x| x == s)
+                .unwrap_or_else(|| panic!("{s} missing"))
+        };
         let f = at("Familles");
         assert!(at("  Installations de plomberie") > f);
         let shower = at("    M_Shower Stall-2D");
-        assert_eq!(&l[shower + 1..shower + 3], ["      M_Shower Stall-2D", "      small"]);
-        assert_eq!(l.iter().filter(|x| *x == "    M_Pile-Steel Pipe").count(), 1);
+        assert_eq!(
+            &l[shower + 1..shower + 3],
+            ["      M_Shower Stall-2D", "      small"]
+        );
+        assert_eq!(
+            l.iter().filter(|x| *x == "    M_Pile-Steel Pipe").count(),
+            1
+        );
         let g = at("Groupes");
-        assert_eq!(&l[g..g + 7], ["Groupes", "  Détail", "  Modèle", "    Array Group 1", "    Array Group 2", "    Array Group 3", "    Array Group 4"]);
-        let Some(m) = model("rst_2025.rvt") else { return };
+        assert_eq!(
+            &l[g..g + 7],
+            [
+                "Groupes",
+                "  Détail",
+                "  Modèle",
+                "    Array Group 1",
+                "    Array Group 2",
+                "    Array Group 3",
+                "    Array Group 4"
+            ]
+        );
+        let Some(m) = model("rst_2025.rvt") else {
+            return;
+        };
         let rows = build(&m);
         let k = rows.iter().position(|r| r.kind == K::Links).unwrap();
         assert_eq!(rows[k + 1].kind, K::LinkUnloaded);
@@ -1569,7 +2252,10 @@ mod tests {
     fn english_labels() {
         assert_eq!(label_en("Vues (tout)"), "Views (all)");
         assert_eq!(label_en("Coupes (Wall Section)"), "Sections (Wall Section)");
-        assert_eq!(label_en("Nomenclatures/Quantités (tout)"), "Schedules/Quantities (all)");
+        assert_eq!(
+            label_en("Nomenclatures/Quantités (tout)"),
+            "Schedules/Quantities (all)"
+        );
         assert_eq!(label_en("Vues 3D"), "3D Views");
         assert_eq!(label_en("Coupes de bâtiment"), "Coupes de bâtiment");
     }
@@ -1578,27 +2264,61 @@ mod tests {
     fn sort_is_natural_and_accent_free() {
         let mut v = vec!["Niveau 10", "niveau 2", "Élévations", "Coupes", "Vues 3D"];
         v.sort_by_key(|s| sort_key(s));
-        assert_eq!(v, ["Coupes", "Élévations", "niveau 2", "Niveau 10", "Vues 3D"]);
+        assert_eq!(
+            v,
+            ["Coupes", "Élévations", "niveau 2", "Niveau 10", "Vues 3D"]
+        );
     }
 
     #[test]
     fn sample_project_browser() {
-        let Some(mut m) = model("rac_2018.rvt") else { return };
+        let Some(mut m) = model("rac_2018.rvt") else {
+            return;
+        };
         assert_eq!(m.current, [Some(24945), Some(24946), Some(1088448)]);
         let l = lines(&build(&m));
-        for want in ["Vues (tout)", "  Plans d'étage", "    Level 1", "  Coupes (Wall Section)", "  Élévations (Building Elevation)", "Nomenclatures/Quantités (tout)", "  Planting Schedule", "Feuilles (tout)", "  A001 - Title Sheet"] {
+        for want in [
+            "Vues (tout)",
+            "  Plans d'étage",
+            "    Level 1",
+            "  Coupes (Wall Section)",
+            "  Élévations (Building Elevation)",
+            "Nomenclatures/Quantités (tout)",
+            "  Planting Schedule",
+            "Feuilles (tout)",
+            "  A001 - Title Sheet",
+        ] {
             assert!(l.iter().any(|x| x == want), "{want} missing in {l:#?}");
         }
         // templates, revision schedules and system views are not listed
-        assert!(!l.iter().any(|x| x.contains("Revision Schedule") || x.contains("???")), "{l:#?}");
+        assert!(
+            !l.iter()
+                .any(|x| x.contains("Revision Schedule") || x.contains("???")),
+            "{l:#?}"
+        );
         // other organizations
         m.current = [Some(26013), Some(26017), None];
         let l = lines(&build(&m));
-        assert!(l.contains(&"Vues (discipline)".to_string()) && l.contains(&"  Architecture".to_string()) && l.contains(&"    Plans d'étage".to_string()), "{l:#?}");
-        assert!(l.contains(&"Feuilles (préfixe de feuille)".to_string()) && l.contains(&"  A".to_string()) && l.contains(&"    A101 - Site Plan".to_string()), "{l:#?}");
+        assert!(
+            l.contains(&"Vues (discipline)".to_string())
+                && l.contains(&"  Architecture".to_string())
+                && l.contains(&"    Plans d'étage".to_string()),
+            "{l:#?}"
+        );
+        assert!(
+            l.contains(&"Feuilles (préfixe de feuille)".to_string())
+                && l.contains(&"  A".to_string())
+                && l.contains(&"    A101 - Site Plan".to_string()),
+            "{l:#?}"
+        );
         m.current = [Some(24947), None, None];
         let l = lines(&build(&m));
-        assert!(l.contains(&"Vues (pas sur des feuilles)".to_string()) && l.contains(&"    {3D}".to_string()) && !l.contains(&"    Level 1".to_string()), "{l:#?}");
+        assert!(
+            l.contains(&"Vues (pas sur des feuilles)".to_string())
+                && l.contains(&"    {3D}".to_string())
+                && !l.contains(&"    Level 1".to_string()),
+            "{l:#?}"
+        );
         m.current = [Some(26012), None, None];
         let l = lines(&build(&m));
         assert!(l.contains(&"  Working Drawings".to_string()), "{l:#?}");
@@ -1606,12 +2326,26 @@ mod tests {
 
     #[test]
     fn samples_all_versions() {
-        for f in ["rac_2021.rvt", "rst_2018.rvt", "rst_2023.rvt", "rst_2025.rvt"] {
+        for f in [
+            "rac_2021.rvt",
+            "rst_2018.rvt",
+            "rst_2023.rvt",
+            "rst_2025.rvt",
+        ] {
             let Some(m) = model(f) else { continue };
             assert!(m.current.iter().all(|c| c.is_some()), "{f}");
             let l = lines(&build(&m));
-            assert!(l.contains(&"  Élévations (Building Elevation)".to_string()), "{f}: {l:#?}");
-            assert!(l.iter().filter(|x| x.starts_with("  ") && x.contains(" - ") && !x.starts_with("    ")).count() >= 6, "{f}: {l:#?}");
+            assert!(
+                l.contains(&"  Élévations (Building Elevation)".to_string()),
+                "{f}: {l:#?}"
+            );
+            assert!(
+                l.iter()
+                    .filter(|x| x.starts_with("  ") && x.contains(" - ") && !x.starts_with("    "))
+                    .count()
+                    >= 6,
+                "{f}: {l:#?}"
+            );
         }
     }
 }
