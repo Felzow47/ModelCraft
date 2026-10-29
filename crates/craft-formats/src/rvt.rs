@@ -268,10 +268,21 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
         }
     }
     ctl.check().map_err(|e| e.to_string())?;
-    let meshes = match &boxes {
+    let mut meshes = match &boxes {
         Ok(b) => shapes.finish(&b.iter().filter(|b| b.id != 0).map(|b| (b.id, (b.min, b.max))).collect(), family),
         Err(_) => Default::default(),
     };
+    if let Ok(b) = &boxes {
+        // planting and entourage carry no mesh: a simple stand-in fitted to their box
+        for b in b.iter().filter(|b| b.id != 0) {
+            if meshes.contains_key(&b.id) {
+                continue;
+            }
+            if let Some(m) = crate::rvt_shape::proxy(b.category, b.min, b.max) {
+                meshes.insert(b.id, m);
+            }
+        }
+    }
     s.timings.decode += t1.elapsed();
     if std::env::var_os("RVT_BOX_CATS").is_some() {
         if let Ok(b) = &boxes {
@@ -336,7 +347,7 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
 /// Warning when every element has its rebuilt shape (translated by the viewer).
 pub const WARN_SHAPES: &str = "Revit : formes reconstruites à partir des paramètres des éléments ; les raccords et ouvertures peuvent différer légèrement de Revit.";
 /// Warning when some elements stay boxes (translated by the viewer).
-pub const WARN_SHAPES_PARTIAL: &str = "Revit : les murs droits, sols, plafonds et solides extrudés des familles incluses sont affichés avec leur forme reconstruite ; les autres éléments (familles chargées sans géométrie lisible dans le projet, toits, murs courbes, balayages…) restent des boîtes englobantes colorées par catégorie. Pour la géométrie complète : dans Revit, Fichier › Exporter › IFC, puis ouvrez le .ifc dans ModelCraft.";
+pub const WARN_SHAPES_PARTIAL: &str = "Revit : murs, sols, plafonds, toits, escaliers, garde-corps, structure et solides des familles incluses sont affichés avec leur forme reconstruite (plantes et entourage en silhouettes simples) ; quelques éléments sans géométrie lisible dans le projet restent des boîtes englobantes colorées par catégorie. Pour la géométrie exacte : dans Revit, Fichier › Exporter › IFC, puis ouvrez le .ifc dans ModelCraft.";
 /// Warning when the file holds no placed element with a box (translated by the viewer).
 pub const NO_ELEMENTS: &str = "Aucun élément 3D placé dans ce fichier";
 /// Same when the element records are not recognised (Revit 2008 and similar old formats).

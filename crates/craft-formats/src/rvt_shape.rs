@@ -2710,3 +2710,80 @@ mod tests {
         assert_eq!(l[2], [1.0, 1.0, 0.0]);
     }
 }
+
+/// Appends an ellipsoid centred on `c` with radii `r` (metres) to `m`.
+fn ellipsoid(m: &mut Mesh, c: [f64; 3], r: [f64; 3]) {
+    const LAT: u32 = 6;
+    const LON: u32 = 10;
+    let base = m.pos.len() as u32;
+    m.pos.push([c[0] as f32, c[1] as f32, (c[2] - r[2]) as f32]);
+    for i in 1..LAT {
+        let th = std::f64::consts::PI * i as f64 / LAT as f64;
+        let (z, s) = (-th.cos(), th.sin());
+        for k in 0..LON {
+            let ph = std::f64::consts::TAU * k as f64 / LON as f64;
+            m.pos.push([(c[0] + r[0] * s * ph.cos()) as f32, (c[1] + r[1] * s * ph.sin()) as f32, (c[2] + r[2] * z) as f32]);
+        }
+    }
+    let top = m.pos.len() as u32;
+    m.pos.push([c[0] as f32, c[1] as f32, (c[2] + r[2]) as f32]);
+    let ring = |i: u32, k: u32| base + 1 + i * LON + k % LON;
+    for k in 0..LON {
+        m.tri.push([base, ring(0, k + 1), ring(0, k)]);
+        m.tri.push([top, ring(LAT - 2, k), ring(LAT - 2, k + 1)]);
+    }
+    for i in 0..LAT - 2 {
+        for k in 0..LON {
+            let (a, b, c2, d) = (ring(i, k), ring(i, k + 1), ring(i + 1, k), ring(i + 1, k + 1));
+            m.tri.push([a, b, d]);
+            m.tri.push([a, d, c2]);
+        }
+    }
+}
+
+/// Appends an axis-aligned cuboid between `lo` and `hi` (metres) to `m`.
+fn block(m: &mut Mesh, lo: [f64; 3], hi: [f64; 3]) {
+    let c = cuboid(mul(lo, 1.0 / FEET), mul(hi, 1.0 / FEET));
+    let base = m.pos.len() as u32;
+    m.pos.extend(c.pos);
+    m.tri.extend(c.tri.iter().map(|t| [t[0] + base, t[1] + base, t[2] + base]));
+}
+
+/// A simple stand-in for planting and entourage (RPC content: Revit stores a picture and a
+/// box, not a mesh). Trees get a trunk and a crown, people a body and a head, cars a body and
+/// a cabin, all fitted to the element box (metres).
+pub fn proxy(category: i64, lo: [f64; 3], hi: [f64; 3]) -> Option<Mesh> {
+    let d: V3 = sub(hi, lo);
+    if d.iter().any(|x| !x.is_finite() || *x <= 0.01) || d.iter().any(|x| *x > 200.0) {
+        return None;
+    }
+    let c = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5];
+    let mut m = Mesh::default();
+    match category {
+        // planting: trunk on the lower third, crown above
+        -2001360 => {
+            let trunk_top = lo[2] + d[2] * 0.4;
+            let r = (d[0].min(d[1]) * 0.06).clamp(0.03, 0.4);
+            tube(&mut m, &[mul([c[0], c[1], lo[2]], 1.0 / FEET), mul([c[0], c[1], trunk_top + d[2] * 0.1], 1.0 / FEET)], r / FEET);
+            let rz = (hi[2] - trunk_top) * 0.5;
+            ellipsoid(&mut m, [c[0], c[1], trunk_top + rz], [d[0] * 0.5, d[1] * 0.5, rz]);
+        }
+        -2001370 if d[2] > d[0].max(d[1]) => {
+            // a standing person: body then head
+            let head = (d[2] * 0.12).min(d[0].min(d[1]) * 0.5);
+            let body_top = hi[2] - head * 2.0;
+            ellipsoid(&mut m, [c[0], c[1], (lo[2] + body_top) * 0.5], [d[0] * 0.4, d[1] * 0.4, (body_top - lo[2]) * 0.5]);
+            ellipsoid(&mut m, [c[0], c[1], hi[2] - head], [head, head, head]);
+        }
+        -2001370 => {
+            // a vehicle: body on the lower half, a narrower cabin above
+            let mid = lo[2] + d[2] * 0.5;
+            block(&mut m, [lo[0], lo[1], lo[2] + d[2] * 0.12], [hi[0], hi[1], mid]);
+            let (ax, sx, sy) = if d[0] >= d[1] { (0, d[0] * 0.2, d[1] * 0.06) } else { (1, d[0] * 0.06, d[1] * 0.2) };
+            let _ = ax;
+            block(&mut m, [lo[0] + sx, lo[1] + sy, mid], [hi[0] - sx, hi[1] - sy, hi[2]]);
+        }
+        _ => return None,
+    }
+    (!m.tri.is_empty()).then_some(m)
+}
