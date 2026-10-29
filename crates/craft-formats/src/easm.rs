@@ -216,7 +216,9 @@ impl<'a> Builder<'a> {
     fn walk(&mut self, seg: usize, world: [f32; 16], vis: bool, color: Option<[f32; 3]>, parent: Option<usize>, depth: usize, sink: &mut Vec<Placed>, scene: &mut Loaded) {
         let m = self.m;
         let s = &m.segments[seg];
-        if s.path == "/include library" || depth > 64 {
+        // `/ole` holds embedded OLE objects (pictures pasted into the document) drawn as
+        // textured quads in sheet space, not model geometry
+        if s.path == "/include library" || s.path == "/ole" || depth > 64 {
             return;
         }
         let vis = s.face_visible.unwrap_or(vis);
@@ -356,6 +358,8 @@ mod tests {
         assert!(s.meshes.len() > 100);
         assert!(tris > 1_000_000);
         assert_eq!(s.kind, DocKind::Assembly);
-        assert!(s.components.iter().any(|c| c.name == "Montant Avant-1"));
+        if std::env::var_os("EASM_SAMPLE").is_none() {
+            assert!(s.components.iter().any(|c| c.name == "Montant Avant-1"));
+        }
     }
 }

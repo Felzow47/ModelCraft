@@ -338,9 +338,11 @@ ModelCraft restarts with Vulkan then OpenGL. Force a backend with `WGPU_BACKEND=
   (area…) are not drawn yet. For the exact geometry, export
   to **IFC** from Revit and open the `.ifc` in ModelCraft.
 - **eDrawings `.easm` / `.eprt`**: read natively (clean-room HSF reader written from Tech Soft 3D's
-  public format documentation; eDrawings does not need to be installed). Not handled yet:
+  public format documentation; eDrawings does not need to be installed). Tested with HSF V18.00
+  and V19.10 streams (eDrawings 2014 to 2026). Not handled yet:
   Edgebreaker-compressed shells and globally quantized points (not written by the eDrawings
-  versions tested), textures (shown with their base colour), 2D drawing sheets and markups;
+  versions tested), textures (shown with their base colour), 2D drawing sheets, markups and
+  embedded OLE pictures;
   stored normals are recomputed; only the first configuration is shown; conditional includes are
   always drawn. An unknown opcode stops the reading and keeps the geometry read so far.
 - **Parasolid `.x_t`**: not supported (no free reader); export to STEP. SolidWorks files without a

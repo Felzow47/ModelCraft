@@ -59,6 +59,8 @@ pub struct Model {
     pub stats: Stats,
     /// Set when the stream could not be read to its end (unknown opcode, truncated data…).
     pub error: Option<String>,
+    /// Offsets and opcodes of the last few records read (diagnostics).
+    pub recent: Vec<(usize, u8)>,
 }
 
 impl Model {
@@ -247,12 +249,19 @@ struct Parser<'a> {
     tags: Vec<Tag>,
     last: Tag,
     repeats: Vec<(i32, i32, [f32; 12])>,
+    /// Stream version x100 (`V19.10` -> 1910), 0 when unknown.
+    version: u32,
 }
 
 /// Parse an uncompressed HSF stream (the bytes that follow `TKE_Start_Compression`, inflated,
 /// or a whole uncompressed file).
 pub fn parse(data: &[u8]) -> Model {
-    let mut p = Parser { r: R { d: data, p: 0 }, m: Model::default(), stack: Vec::new(), tags: Vec::new(), last: Tag::Other, repeats: Vec::new() };
+    parse_version(data, 0)
+}
+
+/// [`parse`] for a stream of a known version (x100, as in [`version_number`]).
+pub fn parse_version(data: &[u8], version: u32) -> Model {
+    let mut p = Parser { r: R { d: data, p: 0 }, m: Model::default(), stack: Vec::new(), tags: Vec::new(), last: Tag::Other, repeats: Vec::new(), version };
     let root = p.m.seg("/");
     p.stack.push(root);
     if let Err(e) = p.run() {
@@ -268,6 +277,7 @@ pub fn parse_file(data: &[u8]) -> Result<Model, String> {
     if !data.starts_with(b";; HSF V") {
         return Err("flux HSF introuvable".into());
     }
+    let ver = version_number(data);
     let mut r = R { d: data, p: 0 };
     // header opcodes before compression: comment, file info, bounding info…
     loop {
@@ -288,12 +298,12 @@ pub fn parse_file(data: &[u8]) -> Result<Model, String> {
                         return Err(format!("décompression HSF impossible : {e}"));
                     }
                 }
-                return Ok(parse(&out));
+                return Ok(parse_version(&out, ver));
             }
             _ => {
                 // uncompressed stream: hand everything from this opcode on to the parser
                 r.p -= 1;
-                return Ok(parse(&data[r.p..]));
+                return Ok(parse_version(&data[r.p..], ver));
             }
         }
     }
@@ -306,6 +316,14 @@ pub fn version(data: &[u8]) -> Option<String> {
     s.strip_prefix(";; HSF V").map(|v| v.trim().to_string())
 }
 
+/// Version from the leading comment as a number: `V19.10` -> 1910 (0 when absent).
+pub fn version_number(data: &[u8]) -> u32 {
+    let Some(v) = version(data) else { return 0 };
+    let (a, b) = v.split_once('.').unwrap_or((&v, "0"));
+    let b: String = b.chars().take_while(|c| c.is_ascii_digit()).collect();
+    a.parse::<u32>().unwrap_or(0) * 100 + format!("{b:0<2}")[..2].parse::<u32>().unwrap_or(0)
+}
+
 impl<'a> Parser<'a> {
     fn cur(&self) -> usize {
         *self.stack.last().unwrap_or(&0)
@@ -316,6 +334,10 @@ impl<'a> Parser<'a> {
             let at = self.r.p;
             let op = self.r.u8()?;
             self.m.stats.opcodes += 1;
+            if self.m.recent.len() >= 16 {
+                self.m.recent.remove(0);
+            }
+            self.m.recent.push((at, op));
             self.opcode(op).map_err(|e| format!("opcode 0x{op:02x} à l'octet {at} : {e}"))?;
             if op == 0x00 {
                 break;
@@ -467,6 +489,7 @@ impl<'a> Parser<'a> {
             }
             b'$' => r.skip(48)?, // texture matrix
             b'S' => last = self.shell()?,
+            b'M' => last = self.mesh()?,
             b'&' => {
                 let from = r.i32()?;
                 r.i32()?;
@@ -509,7 +532,8 @@ impl<'a> Parser<'a> {
                 r.skip(n.checked_mul(12).ok_or("trop de points")?)?;
             }
             b'l' => r.skip(24)?,
-            b'i' => image(r)?,
+            b'X' => r.skip(12)?, // marker
+            b'i' => image(r, self.version)?,
             b'J' => {
                 r.name8()?;
                 let n = r.u16()? as usize;
@@ -530,6 +554,12 @@ impl<'a> Parser<'a> {
                     n = r.len()?;
                 }
                 r.skip(n)?;
+            }
+            b'-' | 0x0D => {
+                // line / edge pattern: a pattern byte, or 0xFF and a pattern name
+                if r.u8()? == 0xFF {
+                    r.name8()?;
+                }
             }
             b'R' => rendering_options(r)?,
             b't' => texture(r)?,
@@ -581,21 +611,7 @@ impl<'a> Parser<'a> {
         }
         // points
         let points: Vec<[f32; 3]> = if sub & 0x01 != 0 {
-            let scheme = r.u8()?;
-            let n = r.len()?;
-            let bits = r.u8()? as u32;
-            if scheme != 1 || !(2..=31).contains(&bits) || sub2 & 0x0004 != 0 {
-                return Err(format!("points compressés (schéma {scheme}, {bits} bits) non pris en charge"));
-            }
-            let bb = r.floats(6)?;
-            let len = r.len()?;
-            if Some(len) != n.checked_mul(3 * bits as usize).map(|b| b.div_ceil(8)) {
-                return Err("points compressés : longueur inattendue".into());
-            }
-            let data = r.take(len)?;
-            let q = unpack_bits(data, bits, n * 3);
-            let maxq = ((1u64 << bits) - 1) as f32;
-            q.chunks_exact(3).map(|c| [0, 1, 2].map(|k| bb[k] + (bb[k + 3] - bb[k]) * c[k] as f32 / maxq)).collect()
+            compressed_points(r, sub2, None)?
         } else {
             let n = r.len()?;
             let v = r.floats(n.checked_mul(3).ok_or("trop de points")?)?;
@@ -645,6 +661,44 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// `TKE_Mesh`: a `rows` x `columns` grid of points, triangulated as quads.
+    fn mesh(&mut self) -> Res<Tag> {
+        let r = &mut self.r;
+        let sub = r.u8()?;
+        let sub2 = if sub & 0x80 != 0 { r.u16()? } else { 0 };
+        let rows = r.len()?;
+        let cols = r.len()?;
+        let n = rows.checked_mul(cols).filter(|&n| n < 1 << 28).ok_or("maillage trop grand")?;
+        let points: Vec<[f32; 3]> = if sub & 0x01 != 0 {
+            compressed_points(r, sub2, None)?
+        } else {
+            let v = r.floats(n * 3)?;
+            v.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect()
+        };
+        if points.len() != n {
+            return Err("maillage : nombre de points inattendu".into());
+        }
+        if sub & 0x08 != 0 {
+            optionals(r, n)?;
+        }
+        let mut tris = Vec::new();
+        for i in 0..rows.saturating_sub(1) {
+            for j in 0..cols.saturating_sub(1) {
+                let a = (i * cols + j) as u32;
+                let b = a + 1;
+                let c = a + cols as u32;
+                let d = c + 1;
+                tris.push([a, b, d]);
+                tris.push([a, d, c]);
+            }
+        }
+        let id = self.m.shells.len();
+        self.m.shells.push(Some(Shell { points, tris }));
+        let c = self.cur();
+        self.m.segments[c].shells.push(id);
+        Ok(Tag::Shell(id))
+    }
+
     fn resolve_repeats(&mut self) {
         let mut pending = std::mem::take(&mut self.repeats);
         loop {
@@ -670,6 +724,25 @@ impl<'a> Parser<'a> {
             }
         }
     }
+}
+
+/// Quantised point list: scheme, count, bits per coordinate, bounding box, byte length, data.
+fn compressed_points(r: &mut R, sub2: u16, _count: Option<usize>) -> Res<Vec<[f32; 3]>> {
+    let scheme = r.u8()?;
+    let n = r.len()?;
+    let bits = r.u8()? as u32;
+    if scheme != 1 || !(2..=31).contains(&bits) || sub2 & 0x0004 != 0 {
+        return Err(format!("points compressés (schéma {scheme}, {bits} bits) non pris en charge"));
+    }
+    let bb = r.floats(6)?;
+    let len = r.len()?;
+    if Some(len) != n.checked_mul(3 * bits as usize).map(|b| b.div_ceil(8)) {
+        return Err("points compressés : longueur inattendue".into());
+    }
+    let data = r.take(len)?;
+    let q = unpack_bits(data, bits, n * 3);
+    let maxq = ((1u64 << bits) - 1) as f32;
+    Ok(q.chunks_exact(3).map(|c| [0, 1, 2].map(|k| bb[k] + (bb[k + 3] - bb[k]) * c[k] as f32 / maxq)).collect())
 }
 
 /// `p * M` for a row-vector 4x3 matrix.
@@ -799,9 +872,12 @@ fn poly_polyline(r: &mut R) -> Res<()> {
     Ok(())
 }
 
-fn image(r: &mut R) -> Res<()> {
+fn image(r: &mut R, version: u32) -> Res<()> {
     r.skip(12)?;
     let fmt = r.u8()?;
+    if version >= 1900 {
+        r.skip(3)?; // V19 widened the format/options field to 32 bits
+    }
     if fmt & 0x80 != 0 {
         r.name8()?;
     }
@@ -836,17 +912,26 @@ fn image(r: &mut R) -> Res<()> {
 }
 
 fn rendering_options(r: &mut R) -> Res<()> {
+    // masks first (extended words included), then the values
     let m = r.i32()? as u32;
+    let m2 = if m & 0x8000_0000 != 0 { r.i32()? as u32 } else { 0 };
+    if m2 & 0x8000_0000 != 0 {
+        return Err("options de rendu : troisième mot non pris en charge".into());
+    }
     r.i32()?;
-    let m2 = if m & 0x8000_0000 != 0 {
-        let m2 = r.i32()?;
+    if m & 0x8000_0000 != 0 {
         r.i32()?;
-        m2
-    } else {
-        0
-    };
-    if (m & 0x7FEF_FFFF) != 0 || m2 != 0 {
-        return Err(format!("options de rendu 0x{m:08x} non prises en charge"));
+    }
+    const KNOWN0: u32 = 0x0000_1000 | 0x0000_2000 | 0x0010_0000 | 0x0100_0000 | 0x8000_0000;
+    const KNOWN1: u32 = 0x0000_0010;
+    if m & !KNOWN0 != 0 || m2 & !KNOWN1 != 0 {
+        return Err(format!("options de rendu 0x{m:08x}/0x{m2:08x} non prises en charge"));
+    }
+    if m & 0x0000_1000 != 0 {
+        r.u8()?; // hidden surface removal algorithm
+    }
+    if m & 0x0000_2000 != 0 {
+        r.u8()?; // transparent hidden surface removal algorithm
     }
     if m & 0x0010_0000 != 0 {
         // attribute locks; with the colour lock, colour lock masks and per-channel masks follow
@@ -865,6 +950,16 @@ fn rendering_options(r: &mut R) -> Res<()> {
             }
         }
     }
+    if m & 0x0100_0000 != 0 {
+        // hidden line options: a flag byte (only payload-free flags seen so far)
+        let h = r.u8()?;
+        if h & !0x20 != 0 {
+            return Err(format!("options de lignes cachées 0x{h:02x} non prises en charge"));
+        }
+    }
+    if m2 & 0x0000_0010 != 0 {
+        r.skip(8)?; // depth range
+    }
     Ok(())
 }
 
@@ -880,6 +975,7 @@ fn texture(r: &mut R) -> Res<()> {
                     r.name8()?;
                 }
                 11 => r.skip(2)?,
+                12..=14 => {} // caching / down-sampling flags carry no operand
                 _ => r.skip(1)?,
             }
         }
@@ -977,5 +1073,67 @@ mod tests {
         for k in 0..s.len() - 1 {
             let _ = parse(&s[..k]);
         }
+    }
+
+    /// Records first met in HSF V19.10 files: a mesh, extended rendering options, line and edge
+    /// patterns, a marker, a texture with payload-free flags and a named JPEG image.
+    #[test]
+    fn v19_records() {
+        let mut s = Vec::new();
+        // texture with the no-down-sampling flag (0x4000), then a segment close
+        s.push(b'(');
+        s.push(1);
+        s.push(b'a');
+        s.extend_from_slice(&[b't', 1, b'x', 1, b'x', 0x00, 0x40]);
+        // mesh 2 x 2 with an optionals list holding parameters
+        s.extend_from_slice(&[b'M', 0x08]);
+        s.extend_from_slice(&2i32.to_le_bytes());
+        s.extend_from_slice(&2i32.to_le_bytes());
+        for p in [[0f32, 0., 0.], [1., 0., 0.], [0., 1., 0.], [1., 1., 0.]] {
+            for c in p {
+                s.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        s.extend_from_slice(&[0x03, 0x01, 0x03]);
+        s.extend_from_slice(&[0u8; 24]);
+        s.push(8);
+        s.extend_from_slice(&12i32.to_le_bytes());
+        s.extend_from_slice(&[0u8; 12]);
+        s.push(0);
+        // rendering options: masks 0x81101000 / 0x10, values, HSR, colour lock, hidden lines, depth range
+        s.push(b'R');
+        for v in [0x8110_1000u32, 0x10, 0x0110_1000, 0x10, 0] {
+            s.extend_from_slice(&v.to_le_bytes());
+        }
+        s.truncate(s.len() - 4);
+        s.push(0); // HSR algorithm
+        s.extend_from_slice(&4i32.to_le_bytes());
+        s.extend_from_slice(&4i32.to_le_bytes());
+        s.extend_from_slice(&[0x7f, 0x7f, 0x7f, 0x03, 0x7f, 0x7f, 0x7f, 0x03]);
+        for _ in 0..36 {
+            s.extend_from_slice(&[0xff, 0x01]);
+        }
+        s.push(0x20);
+        s.extend_from_slice(&[0u8; 8]);
+        // line pattern by name, edge pattern by name, marker
+        s.extend_from_slice(&[b'-', 0xff, 2, b'p', b'1', 0x0D, 0xff, 2, b'p', b'1']);
+        s.push(b'X');
+        s.extend_from_slice(&[0u8; 12]);
+        // named RGB image, JPEG-compressed, 32-bit format field
+        s.push(b'i');
+        s.extend_from_slice(&[0u8; 12]);
+        s.extend_from_slice(&[0xa3, 0, 0, 0, 1, b'm']);
+        s.extend_from_slice(&2i32.to_le_bytes());
+        s.extend_from_slice(&2i32.to_le_bytes());
+        s.push(2);
+        s.extend_from_slice(&3i32.to_le_bytes());
+        s.extend_from_slice(&[0xff, 0xd8, 0xd9, 0x00, 0xff]);
+        s.extend_from_slice(&[b')', 0]);
+        let m = parse_version(&s, 1910);
+        assert!(m.error.is_none(), "{:?}", m.error);
+        let seg = m.segment("/a").unwrap();
+        assert_eq!(m.shells[seg.shells[0]].as_ref().unwrap().tris.len(), 2);
+        assert_eq!(version_number(b";; HSF V19.10 \n"), 1910);
+        assert_eq!(version_number(b";; HSF V18.00 \n"), 1800);
     }
 }
