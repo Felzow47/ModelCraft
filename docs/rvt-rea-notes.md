@@ -435,3 +435,20 @@ interactive, dont les composants regroupent plusieurs éléments).
 - Limite : l'épaisseur ne vient pas encore des styles d'objet du projet (les catégories intégrées
   n'ont pas de `GStyleElem` dans le fichier ; leurs styles restent à localiser), une seule
   épaisseur de coupe est utilisée, les lignes en projection restent fines.
+
+## Ossature, meneaux et panneaux de mur-rideau
+
+Les poutres et contreventements (`FamilyInstance` avec `m_pCurveDriver` → `FamInstCurveDriver`)
+portent leur ligne de positionnement : `m_pCrv` → `GLine` (`m_origin`, `m_dirVec`, `m_endParams`),
+avec les retraits `m_setbacks` aux deux extrémités. Quand les solides de la famille ne sont pas
+retrouvés (profils paramétrés par la longueur de l'instance), on construit une boîte le long de
+cette ligne : la largeur et la hauteur de la section sont résolues (moindres carrés) à partir de la
+boîte englobante de l'élément, chaque étendue monde valant `L·|n_i| + w·|y_i| + h·|z_i|` ; la section
+est centrée sur la boîte englobante (décalages de justification), la longueur sur la ligne.
+
+Les meneaux (`MullionFamRef`) et panneaux (`CurtainCellFamRef`) sont des boîtes dans les axes de
+leur `m_Trf` : les arêtes résolvent `e_i = Σ_j |u_j[i]| · l_j` (Cramer), refusé si le système est
+dégénéré (rotation à 45°) ou une arête négative.
+
+Limites : section rectangulaire seulement (pas de profil en I ni de tube), pas de coupes d'onglet,
+meneaux d'angle et panneaux non rectangulaires restent approchés.

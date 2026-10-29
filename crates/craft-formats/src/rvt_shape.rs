@@ -818,6 +818,10 @@ pub struct Shapes {
     /// symbol id → (m_famId, m_familyId)
     symbols: HashMap<i64, (i64, i64)>,
     mep: Vec<Mep>,
+    /// curve-driven instance (beam, brace) → its location line (start, end), feet
+    framing: Vec<(i64, V3, V3)>,
+    /// curtain mullions and panels → their placement, for a box in their own axes
+    curtain: Vec<(i64, Trf)>,
 }
 
 /// A straight pipe, duct, cable tray or conduit: a section swept along its centre line.
@@ -875,6 +879,66 @@ fn mep(m: &Mep) -> Option<Mesh> {
     };
     let out = solid(&f, &[sec], &[], 0.0, len, None);
     (!out.tri.is_empty()).then_some(out)
+}
+
+/// A box along a beam's location line `a`→`b` (feet), its section solved from the element's
+/// world box (`lo`, `hi`, metres): each world extent is the sum of the box edges projected on it.
+fn framing_box(a: V3, b: V3, lo: [f64; 3], hi: [f64; 3]) -> Option<Mesh> {
+    let lo = mul(lo, 1.0 / FEET);
+    let hi = mul(hi, 1.0 / FEET);
+    let d = sub(b, a);
+    let len = dot(d, d).sqrt();
+    let n = norm(d)?;
+    let y = norm(cross([0.0, 0.0, 1.0], n)).unwrap_or([1.0, 0.0, 0.0]);
+    let z = norm(cross(n, y))?;
+    let e = sub(hi, lo);
+    // least squares for (w, h): e_i - len |n_i| = w |y_i| + h |z_i|
+    let r: Vec<f64> = (0..3).map(|i| e[i] - len * n[i].abs()).collect();
+    let (ya, za) = ([y[0].abs(), y[1].abs(), y[2].abs()], [z[0].abs(), z[1].abs(), z[2].abs()]);
+    let (s11, s12, s22) = (dot(ya, ya), dot(ya, za), dot(za, za));
+    let (b1, b2) = ((0..3).map(|i| ya[i] * r[i]).sum::<f64>(), (0..3).map(|i| za[i] * r[i]).sum::<f64>());
+    let det = s11 * s22 - s12 * s12;
+    if det.abs() < 1e-9 {
+        return None;
+    }
+    let w = (b1 * s22 - b2 * s12) / det;
+    let h = (s11 * b2 - s12 * b1) / det;
+    if !(w > 0.01 && h > 0.01) || w > 10.0 || h > 10.0 {
+        return None;
+    }
+    // the section is centred on the world box (justification offsets), the length on the line
+    let c = mul(add(lo, hi), 0.5);
+    let mid = mul(add(a, b), 0.5);
+    let off = sub(c, mid);
+    let off = sub(off, mul(n, dot(off, n)));
+    let m = Mep { id: 0, a: add(a, off), b: add(b, off), w, h, up: z, round: false };
+    mep(&m)
+}
+
+/// A box in the axes of the placement `t` whose world box is (`lo`, `hi`, metres): its edges
+/// solve `e_i = sum_j |u_j[i]| l_j`. For mullions and curtain panels, whose solids are boxes.
+fn oriented_box(t: &Trf, lo: [f64; 3], hi: [f64; 3]) -> Option<Mesh> {
+    let e = mul(sub(hi, lo), 1.0 / FEET);
+    let u = [norm(t.lin([1.0, 0.0, 0.0]))?, norm(t.lin([0.0, 1.0, 0.0]))?, norm(t.lin([0.0, 0.0, 1.0]))?];
+    let a = |i: usize, j: usize| u[j][i].abs();
+    let det3 = |c: [V3; 3]| dot(c[0], cross(c[1], c[2]));
+    let cols = [[a(0, 0), a(1, 0), a(2, 0)], [a(0, 1), a(1, 1), a(2, 1)], [a(0, 2), a(1, 2), a(2, 2)]];
+    let d = det3(cols);
+    if d.abs() < 1e-3 {
+        return None;
+    }
+    let mut l = [0.0; 3];
+    for j in 0..3 {
+        let mut c = cols;
+        c[j] = e;
+        l[j] = det3(c) / d;
+        if !(l[j] > 1e-3) {
+            return None;
+        }
+    }
+    let c = mul(add(lo, hi), 0.5 / FEET);
+    let m = Mep { id: 0, a: sub(c, mul(u[0], l[0] * 0.5)), b: add(c, mul(u[0], l[0] * 0.5)), w: l[1], h: l[2], up: u[2], round: false };
+    mep(&m)
 }
 
 fn param(tr: &Tree, id: i64) -> Option<f64> {
@@ -1117,6 +1181,23 @@ impl Shapes {
                 let Some(t) = ii.obj("m_Trf").and_then(Trf::from) else { return };
                 let sym = ii.int("m_symbolId").unwrap_or(-1);
                 self.instances.push((id, sym, tr.root.int("m_famId").unwrap_or(-1), t));
+                if tr.objs.iter().any(|o| matches!(s.name(o.tag), "MullionFamRef" | "CurtainCellFamRef")) {
+                    self.curtain.push((id, t.clone()));
+                }
+                // beams and braces: the location line, for a box along it when the family solids are not found
+                let crv = tr.root.ptr("m_pCurveDriver").and_then(|i| tr.objs.get(i)).and_then(|d| {
+                    let sb = d.fs("m_setbacks").map(|s| s.to_vec()).unwrap_or_default();
+                    d.ptr("m_pCrv").and_then(|i| tr.objs.get(i)).map(|c| (c, sb))
+                });
+                if let Some((c, sb)) = crv {
+                    if let (Some(o), Some(dv), Some([t0, t1, ..])) = (v3(c.fs("m_origin")), v3(c.fs("m_dirVec")), c.fs("m_endParams")) {
+                        let (s0, s1) = (sb.first().copied().unwrap_or(0.0).max(0.0), sb.get(1).copied().unwrap_or(0.0).max(0.0));
+                        let (a, b) = (t0 + s0, t1 - s1);
+                        if b - a > 1e-3 {
+                            self.framing.push((id, add(o, mul(dv, a)), add(o, mul(dv, b))));
+                        }
+                    }
+                }
             }
             "FamilySymbol" => {
                 self.symbols.insert(id, (tr.root.int("m_famId").unwrap_or(-1), tr.root.int("m_familyId").unwrap_or(-1)));
@@ -1396,6 +1477,31 @@ impl Shapes {
         if dbg {
             eprintln!("instances placed in {:?}", t0.elapsed());
             eprintln!("instances top {} family found {} solids {} trimmed {} off box {} fitted {}", st[0], st[1], st[2], st[3], st[4], st[5]);
+        }
+        let mut nf = 0;
+        for (id, a, b) in &self.framing {
+            if out.contains_key(id) {
+                continue;
+            }
+            let Some(&(lo, hi)) = boxes.get(id) else { continue };
+            if let Some(m) = framing_box(*a, *b, lo, hi) {
+                nf += 1;
+                out.insert(*id, m);
+            }
+        }
+        let mut nc = 0;
+        for (id, t) in &self.curtain {
+            if out.contains_key(id) {
+                continue;
+            }
+            let Some(&(lo, hi)) = boxes.get(id) else { continue };
+            if let Some(m) = oriented_box(t, lo, hi) {
+                nc += 1;
+                out.insert(*id, m);
+            }
+        }
+        if dbg {
+            eprintln!("framing boxes {nf} of {}, curtain boxes {nc} of {}", self.framing.len(), self.curtain.len());
         }
         out
     }

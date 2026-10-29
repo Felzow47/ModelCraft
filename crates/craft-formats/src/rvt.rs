@@ -273,6 +273,23 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
         Err(_) => Default::default(),
     };
     s.timings.decode += t1.elapsed();
+    if std::env::var_os("RVT_BOX_CATS").is_some() {
+        if let Ok(b) = &boxes {
+            // diagnostic: elements per category still drawn as boxes, with one example id
+            let mut by: std::collections::BTreeMap<i64, (usize, usize, i64)> = Default::default();
+            for b in b.iter().filter(|b| rvt_model::category_in(b.category, false).is_some()) {
+                let e = by.entry(b.category).or_default();
+                e.0 += 1;
+                if meshes.get(&b.id).is_none() {
+                    e.1 += 1;
+                    e.2 = b.id;
+                }
+            }
+            for (c, (n, k, x)) in by {
+                eprintln!("category {c}: {n} elements, {k} boxes, e.g. {x} ({:?})", rvt_model::category_in(c, false));
+            }
+        }
+    }
     if !sheet_ids.is_empty() {
         let model: Vec<(i64, i64, [f64; 3], [f64; 3], Option<&crate::rvt_shape::Mesh>)> = match &boxes {
             Ok(b) => b.iter().filter(|b| rvt_model::category_in(b.category, false).is_some()).map(|b| (b.id, b.category, b.min, b.max, meshes.get(&b.id))).collect(),
