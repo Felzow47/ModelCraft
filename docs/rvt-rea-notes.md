@@ -400,3 +400,12 @@ interactive, dont les composants regroupent plusieurs éléments).
   `m_horizLeaderLength` = épaulement, valeurs = [altitude, est, nord]. La présence d'un objet
   `SpotCoordinateState` signale une coordonnée ponctuelle (texte « N … » / « E … »).
   Vérifié sur rst_2023 S101 (E 13062 / N 2799).
+
+## Cadrage des annotations
+
+- Porté par l'élément `Viewer` de la vue (et non par `DBView`) : `m_bAnnotationCropActive` et
+  `m_pAnnotationCropOffsets` → objet avec `m_leftRightTopBottomOffsets` (gauche, droite, haut, bas),
+  en pieds **papier** au-delà de la zone cadrée (valeur par défaut 0,0833 = 25,4 mm).
+- Comme dans Revit, une annotation entièrement hors du cadre n'est pas dessinée ; une annotation qui
+  le touche reste entière (pas de découpe). Appliqué seulement aux vues cadrées.
+- Sur les exemples publics toutes les annotations sont déjà dans le cadre : aucun changement visible.

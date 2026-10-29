@@ -241,6 +241,9 @@ struct Crop {
     bz: V3,
     off: [f64; 6],
     active: [bool; 6],
+    /// Annotation crop, when switched on (`Viewer.m_bAnnotationCropActive`): offsets past the
+    /// crop on paper (feet), left, right, top, bottom (`m_leftRightTopBottomOffsets`).
+    annot: Option<[f64; 4]>,
 }
 
 #[derive(Default, Debug, Clone)]
@@ -301,6 +304,7 @@ fn bounded(b: &Obj) -> Option<Crop> {
         bz: [m[6], m[7], m[8]],
         off: off.try_into().ok()?,
         active: std::array::from_fn(|k| act.get(k).copied().unwrap_or(0) != 0),
+        annot: None,
     })
 }
 
@@ -507,6 +511,11 @@ impl Sheets {
                 let (Some(c), Some(view)) = (r.obj("m_boundedSpace").and_then(bounded), r.int("m_dbViewId")) else {
                     return;
                 };
+                let mut c = c;
+                // annotation crop (paper feet: left, right, top, bottom past the crop)
+                if r.int("m_bAnnotationCropActive").unwrap_or(0) != 0 {
+                    c.annot = r.ptr("m_pAnnotationCropOffsets").and_then(|i| tr.objs.get(i)).and_then(|o| o.fs("m_leftRightTopBottomOffsets")).and_then(|f| f.try_into().ok());
+                }
                 self.crops.insert(view, c);
             }
             "ModelClipBox" => {
@@ -1055,6 +1064,21 @@ impl Sheets {
             eprintln!("  view {} {:?} {} crop {:?} ub {:?} offset {:?} label {:?} len {} k {}", vp.view, view.name, view.class, crop.map(|c| (c.orig, c.off, c.active)), ub, vp.offset, vp.label, vp.label_len, k);
         }
         let to_paper = |p: P2| [vp.offset[0] + (p[0] - cu) * k, vp.offset[1] + (p[1] - cv) * k];
+        // annotation crop: the annotations wholly outside it are not drawn
+        let acrop = crop.and_then(|c| c.annot).filter(|_| cropped && k > 0.0).map(|a| {
+            let (p, q) = (to_paper([ub[0], ub[1]]), to_paper([ub[2], ub[3]]));
+            [p[0] - a[0], p[1] - a[3], q[0] + a[1], q[1] + a[2]]
+        });
+        let inside = |p: P2| acrop.map_or(true, |r| p[0] >= r[0] && p[0] <= r[2] && p[1] >= r[1] && p[1] <= r[3]);
+        let mut ann = ann;
+        if acrop.is_some() && std::env::var_os("SHEET_DEBUG").is_some() {
+            eprintln!("    annotation crop {acrop:?}");
+        }
+        if acrop.is_some() {
+            ann.strokes.retain(|s| s.0.iter().any(|p| inside(to_paper(*p))));
+            ann.fills.retain(|f| f.0.iter().flatten().any(|p| inside(to_paper(*p))));
+            ann.texts.retain(|t| inside(to_paper(t.0)));
+        }
         let m = |x: f64| (x * FEET) as f32;
         // hidden lines removed: the faces in a depth buffer over the frame, then the edges
         // keep the parts in front of them
@@ -1087,11 +1111,17 @@ impl Sheets {
         // model → paper, for the view's texts and tags
         let mp = Trf::new([k * bx[0], k * by[0], 0.0, k * bx[1], k * by[1], 0.0, k * bx[2], k * by[2], 0.0], [vp.offset[0] - k * (dot(o, bx) + cu), vp.offset[1] - k * (dot(o, by) + cv), 0.0]);
         for (_, t) in self.texts.iter().filter(|t| t.0 == vp.view) {
+            if !inside([mp.apply(t.orig)[0], mp.apply(t.orig)[1]]) {
+                continue;
+            }
             push_text(out, t, Some(&mp), 1.0, t.text.clone());
         }
         for tg in self.ann.tags.iter().filter(|t| t.owner == vp.view) {
             let Some(sy) = self.symbols.get(&tg.symbol) else { continue };
             let h = mp.apply(tg.head);
+            if !inside([h[0], h[1]]) {
+                continue;
+            }
             let (c, s) = (tg.angle.cos(), tg.angle.sin());
             let tf = Trf::new([c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0], [h[0], h[1], 0.0]);
             let w = m(self.ann.pen(1));
