@@ -973,6 +973,13 @@ impl Sheets {
         let hlr_on = std::env::var_os("RVT_NO_HLR").is_none();
         let mut segs: Vec<[V3; 2]> = Vec::new();
         let mut tris: Vec<[V3; 3]> = Vec::new();
+        // the cut plane (plans: the cut height; sections and elevations: their line), on the
+        // side of the kept box towards the viewer, in clip coordinates
+        let cut_z = keep.filter(|_| !view.class.to_ascii_lowercase().contains("3d")).and_then(|k| {
+            let z = if dot(k.ax[2], nz) > 0.0 { k.hi[2] } else { k.lo[2] };
+            z.is_finite().then_some(z)
+        });
+        let mut cuts: Vec<[V3; 2]> = Vec::new();
         // drafting views draw no model, only their own lines
         let drafting = view.class.contains("Drafting");
         for (id, cat, lo, hi, list, mesh) in edges.items.iter().filter(|_| !drafting) {
@@ -1023,6 +1030,30 @@ impl Sheets {
                     Some(m) => {
                         for t in &m.tri {
                             add(t.map(|i| ft(m.pos.get(i as usize).copied().unwrap_or_default().map(|x| x as f64))));
+                        }
+                        // the element's section at the cut plane, drawn heavier
+                        if let (Some(k), Some(z)) = (keep.as_ref(), cut_z) {
+                            if !NOT_CUT.contains(cat) && cuts.len() < MAX_SEGMENTS {
+                                for t in &m.tri {
+                                    let c = t.map(|i| k.coords(ft(m.pos.get(i as usize).copied().unwrap_or_default().map(|x| x as f64))));
+                                    let mut pts: Vec<V3> = Vec::new();
+                                    for (a, b) in [(c[0], c[1]), (c[1], c[2]), (c[2], c[0])] {
+                                        let (da, db) = (a[2] - z, b[2] - z);
+                                        if (da < 0.0) != (db < 0.0) && (da - db).abs() > 1e-12 {
+                                            let f = da / (da - db);
+                                            pts.push([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, z]);
+                                        }
+                                    }
+                                    if pts.len() == 2 {
+                                        if let Some((a, b)) = k.segment(pts[0], pts[1]) {
+                                            let (a, b) = (to_view(back(k, a)), to_view(back(k, b)));
+                                            if (a[0] - b[0]).abs() + (a[1] - b[1]).abs() > 1e-5 {
+                                                cuts.push([a, b]);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                     // a box is not the element's shape (curtain walls, stairs, rooms…):
@@ -1104,7 +1135,16 @@ impl Sheets {
                 }
             }
         }
+        // cut lines: on the front plane, never hidden
+        let cut_w = m(CUT_PEN);
+        for s in &cuts {
+            if let Some((a, b)) = clip([s[0][0], s[0][1]], [s[1][0], s[1][1]], ub) {
+                let (a, b) = (to_paper(a), to_paper(b));
+                out.strokes.push(Stroke2d { pts: vec![[m(a[0]), m(a[1])], [m(b[0]), m(b[1])]], width: cut_w, color: [0; 3] });
+            }
+        }
         if std::env::var_os("SHEET_DEBUG").is_some() {
+            eprintln!("    cut pieces {} at {cut_z:?}", cuts.len());
             eprintln!("    edges {} faces {} drawn {} shown pieces {shown} nz {nz:?} bz {:?} keep {:?}", segs.len(), tris.len(), hlr.as_ref().map_or(0, |h| h.faces), crop.map(|c| c.bz), keep.map(|k| (k.ax[2], k.lo[2], k.hi[2])));
         }
         put_drawn(out, &ann, &to_paper);
@@ -1194,6 +1234,11 @@ fn put_drawn(out: &mut Sheet2d, d: &crate::rvt_annot::Drawn, to_paper: &dyn Fn(P
     }
 }
 
+/// Weight of the lines where the view cuts the elements (paper feet, 0.35 mm).
+const CUT_PEN: f64 = 0.35 / 304.8;
+/// Built-in categories Revit does not cut (furniture, fixtures, equipment, planting,
+/// entourage, parking, site, topography): drawn in projection even across the cut plane.
+const NOT_CUT: [i64; 13] = [-2000080, -2001100, -2001160, -2001120, -2001060, -2001040, -2001140, -2001350, -2001360, -2001370, -2001180, -2001260, -2001340];
 /// Most model edges drawn in one view.
 const MAX_SEGMENTS: usize = 60_000;
 /// Most faces drawn to hide edges in one view.

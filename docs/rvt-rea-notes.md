@@ -423,3 +423,15 @@ interactive, dont les composants regroupent plusieurs éléments).
 - Dessin : trait oblique à 45° de la taille donnée ; flèche pointe sur la ligne d'attache, corps vers
   l'intérieur du segment (deux flèches dos à dos sur les attaches intermédiaires), pleine, fermée ou
   ouverte selon le type.
+
+## Lignes de coupe
+
+- Le plan de coupe d'une vue est la borne de la boîte conservée du côté de l'observateur
+  (plans : hauteur de coupe de la plage de vue ; coupes et élévations : leur ligne). Les maillages
+  reconstruits qui le traversent y sont sectionnés (intersection triangle/plan) et le contour est
+  dessiné en trait épais (0,35 mm), jamais masqué.
+- Les catégories que Revit ne coupe pas (mobilier, appareils sanitaires, luminaires, équipements,
+  plantes, entourage, stationnement, site, topographie) restent en projection.
+- Limite : l'épaisseur ne vient pas encore des styles d'objet du projet (les catégories intégrées
+  n'ont pas de `GStyleElem` dans le fichier ; leurs styles restent à localiser), une seule
+  épaisseur de coupe est utilisée, les lignes en projection restent fines.
