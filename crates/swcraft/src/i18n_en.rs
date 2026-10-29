@@ -1,6 +1,12 @@
 //! English strings: French source -> English. Checked by i18n tests.
 
 pub static EN: &[(&str, &str)] = &[
+    ("Lecteur", "Reader"),
+    ("Hors niveau", "No storey"),
+    ("Schéma IFC", "IFC schema"),
+    ("Éléments", "Elements"),
+    ("glTF binaire", "Binary glTF"),
+    ("X3D binaire", "Binary X3D"),
     ("Ouvrir un modèle 3D", "Open a 3D model"),
     ("Modèles 3D", "3D models"),
     ("Tous les fichiers", "All files"),
@@ -460,7 +466,7 @@ pub static EN: &[(&str, &str)] = &[
     ("Aucun élément 3D placé dans ce fichier", "No placed 3D elements in this file"),
     ("Aucun élément 3D placé lisible dans ce fichier (format Revit trop ancien ou non reconnu)", "No readable placed 3D elements in this file (Revit format too old or not recognised)"),
     ("Revit : formes reconstruites à partir des paramètres des éléments ; les raccords et ouvertures peuvent différer légèrement de Revit.", "Revit: shapes rebuilt from the elements' parameters; joins and openings may differ slightly from Revit."),
-    ("Revit : les murs droits, sols, plafonds et solides extrudés des familles incluses sont affichés avec leur forme reconstruite ; les autres éléments (familles chargées sans géométrie lisible dans le projet, toits, murs courbes, balayages…) restent des boîtes englobantes colorées par catégorie. Pour la géométrie complète : dans Revit, Fichier › Exporter › IFC, puis ouvrez le .ifc dans ModelCraft.", "Revit: straight walls, floors, ceilings and the extruded solids of embedded families are shown with their rebuilt shape; the other elements (loaded families without readable geometry in the project, roofs, curved walls, sweeps…) stay bounding boxes coloured by category. For the full geometry: in Revit, File › Export › IFC, then open the .ifc in ModelCraft."),
+    ("Revit : murs, sols, plafonds, toits, escaliers, garde-corps, structure et solides des familles incluses sont affichés avec leur forme reconstruite (plantes et entourage en silhouettes simples) ; quelques éléments sans géométrie lisible dans le projet restent des boîtes englobantes colorées par catégorie. Pour la géométrie exacte : dans Revit, Fichier › Exporter › IFC, puis ouvrez le .ifc dans ModelCraft.", "Revit: walls, floors, ceilings, roofs, stairs, railings, structure and the solids of the embedded families are shown with their rebuilt shape (planting and entourage as simple stand-ins); a few elements without readable geometry in the project stay bounding boxes coloured by category. For the exact geometry: in Revit, File › Export › IFC, then open the .ifc in ModelCraft."),
     ("Boîtes 3D des éléments par catégorie (Revit 2018 et plus), vignette et informations du projet ; pas encore la forme exacte.", "3D bounding boxes of the elements by category (Revit 2018 and later), thumbnail and project information; not the exact shapes yet."),
     ("Parasolid", "Parasolid"),
     ("Format B-rep propriétaire ; exportez en STEP depuis SolidWorks.", "Proprietary B-rep format; export to STEP from SolidWorks."),

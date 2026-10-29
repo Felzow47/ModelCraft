@@ -157,7 +157,7 @@ pub fn tree_panel(ui: &mut egui::Ui, doc: &mut Document, cmds: &mut Cmds, browse
             let text_col = if !vis { t.text_faint } else if selected { t.text } else { t.text };
             let font = if selected { theme::medium(13.0) } else { theme::regular(13.0) };
             let eye_w = if resp.hovered() || doc.hidden.get(i).copied().unwrap_or(false) { 26.0 } else { 0.0 };
-            widgets::row_text(ui, egui::pos2(x0 + 38.0, rect.center().y), c.name.clone(), font, text_col, rect.right() - x0 - 44.0 - eye_w);
+            widgets::row_text(ui, egui::pos2(x0 + 38.0, rect.center().y), comp_name(&c.name), font, text_col, rect.right() - x0 - 44.0 - eye_w);
             if eye_w > 0.0 {
                 let er = Rect::from_center_size(egui::pos2(rect.right() - 16.0, rect.center().y), vec2(20.0, 20.0));
                 let hid = doc.hidden.get(i).copied().unwrap_or(false);
@@ -176,7 +176,7 @@ pub fn tree_panel(ui: &mut egui::Ui, doc: &mut Document, cmds: &mut Cmds, browse
             }
             resp.context_menu(|ui| {
                 ui.set_min_width(210.0);
-                ui.label(egui::RichText::new(&c.name).font(theme::semibold(12.5)).color(t.text));
+                ui.label(egui::RichText::new(comp_name(&c.name)).font(theme::semibold(12.5)).color(t.text));
                 ui.separator();
                 let hid = doc.hidden.get(i).copied().unwrap_or(false);
                 if widgets::menu_icon_item(ui, if hid { "eye" } else { "eye-off" }, if hid { tr("Afficher") } else { tr("Masquer") }, "H").clicked() {
@@ -2334,7 +2334,7 @@ pub fn info_panel(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, cmds: &m
             card(ui, tr("Propriétés"), &mut |ui| {
                 for (k, v) in &s.properties {
                     ui.label(egui::RichText::new(prop_label(k)).font(theme::regular(11.5)).color(t.text_muted));
-                    ui.add(egui::Label::new(egui::RichText::new(v).font(theme::medium(12.5)).color(t.text)).wrap());
+                    ui.add(egui::Label::new(egui::RichText::new(prop_value(k, v)).font(theme::medium(12.5)).color(t.text)).wrap());
                     ui.add_space(3.0);
                 }
             });
@@ -2381,7 +2381,7 @@ pub fn info_panel(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, cmds: &m
         if let Some(i) = doc.selected {
             let c = &s.components[i];
             card(ui, tr("Sélection"), &mut |ui| {
-                ui.label(egui::RichText::new(&c.name).font(theme::semibold(13.0)).color(t.text));
+                ui.label(egui::RichText::new(comp_name(&c.name)).font(theme::semibold(13.0)).color(t.text));
                 if !c.path.is_empty() && c.path != c.name {
                     ui.label(egui::RichText::new(&c.path).font(theme::regular(11.0)).color(t.text_faint));
                 }
@@ -2574,7 +2574,41 @@ fn prop_label(k: &str) -> String {
         "Catégorie" => tr("Catégorie").into(),
         "Données du modèle" => tr("Données du modèle").into(),
         "Éléments 3D" => tr("Éléments 3D").into(),
-        _ => k.to_string(),
+        "Lecteur" => tr("Lecteur").into(),
+        "Schéma IFC" => tr("Schéma IFC").into(),
+        "Éléments" => tr("Éléments").into(),
+        _ => crate::i18n::tr_str(k),
+    }
+}
+
+/// A component name: the labels made up by the readers are translated, the model's own names are not.
+fn comp_name(n: &str) -> String {
+    match n {
+        "Hors niveau" => tr("Hors niveau").into(),
+        _ => n.to_string(),
+    }
+}
+
+/// A property value in the current language: the reader's French sentences are rebuilt in English.
+fn prop_value(k: &str, v: &str) -> String {
+    if crate::i18n::current() == crate::i18n::Lang::Fr {
+        return v.to_string();
+    }
+    let nums = |s: &str| -> Vec<String> {
+        s.split(|c: char| !(c.is_ascii_digit() || c == '.')).filter(|w| !w.is_empty() && w != &".").map(str::to_string).collect()
+    };
+    match k {
+        // "{n} dont {s} en forme reconstruite, {b} en boîte englobante"
+        "Éléments 3D" if v.contains(" dont ") => match nums(v).as_slice() {
+            [n, s, b] => format!("{n}, of which {s} rebuilt as shapes and {b} as bounding boxes"),
+            _ => v.to_string(),
+        },
+        // "{np} partition(s), {x} Mo (format Autodesk propriétaire)"
+        "Données du modèle" if v.contains("Mo") => match nums(v).as_slice() {
+            [np, mb] => format!("{np} partition(s), {mb} MB (proprietary Autodesk format)"),
+            _ => v.to_string(),
+        },
+        _ => crate::i18n::tr_str(v),
     }
 }
 

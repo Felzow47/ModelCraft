@@ -1233,7 +1233,7 @@ fn terrain(pts: &[V3], bnd: &[usize]) -> Option<Mesh> {
     (!m.tri.is_empty()).then_some(m)
 }
 
-/// Delaunay triangulation (Bowyer–Watson) of points in the plane: triangles of indices,
+/// Delaunay triangulation (Bowyer-Watson) of points in the plane: triangles of indices,
 /// counter-clockwise. Duplicate points are skipped.
 fn delaunay(p: &[[f64; 2]]) -> Vec<[usize; 3]> {
     let n = p.len();
