@@ -363,3 +363,14 @@ Lu par `crates/craft-formats/src/rvt_sheet.rs`, dans la même passe que le navig
   Sud (-y) et les plans (+z). `Scene.view_frames` : direction, haut et boîte de la zone cadrée ×
   profondeur (bornée à la maquette) ; la visionneuse en tire lacet / tangage de l'orbite type
   Blender (plans pivotés : lacet tiré du haut).
+
+### Lignes cachées des vues placées (`rvt_hlr.rs`)
+
+Pas de donnée Revit : calcul fait par ModelCraft. Repère de la vue : u = `m_horzDir` (ou axe x
+de la zone cadrée), v = haut, w = `m_viewDir` (vers l'observateur ; l'axe z de la zone cadrée
+d'une coupe pointe à l'opposé, la profondeur lointaine `off[4]` y est positive). Les faces des
+formes reconstruites (pas les boîtes englobantes : murs-rideaux, escaliers, pièces y seraient
+pleins) sont découpées par ce que garde la vue (zone cadrée, plage de vue, coupe 3D), puis
+dessinées dans un tampon de profondeur (2 400 px sur le grand côté). Une arête garde les
+parties devant la face la plus proche (minimum des 3 × 3 pixels voisins, tolérance 0,02 pi
++ ¼ pixel). `RVT_NO_HLR=1` : toutes les arêtes.

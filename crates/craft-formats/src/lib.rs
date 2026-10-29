@@ -21,6 +21,7 @@ pub mod rvt_model;
 pub mod rvt_shape;
 pub mod rvt_annot;
 pub mod rvt_sheet;
+pub(crate) mod rvt_hlr;
 pub mod stl;
 pub mod tds;
 pub mod xml3d;

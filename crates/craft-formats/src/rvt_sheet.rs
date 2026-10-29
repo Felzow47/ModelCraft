@@ -761,7 +761,7 @@ impl Sheets {
         v.and_then(|v| v.strs.get(&p)).or_else(|| self.project.get(&p)).cloned()
     }
 
-    fn sheet(&self, id: i64, number: &str, name: &str, edges: &Edges) -> Sheet2d {
+    fn sheet(&self, id: i64, number: &str, name: &str, edges: &Edges<'_>) -> Sheet2d {
         let mut out = Sheet2d { id, ..Default::default() };
         let m = |x: f64| (x * FEET) as f32;
         let pt = |p: P2| [m(p[0]), m(p[1])];
@@ -922,7 +922,7 @@ impl Sheets {
 
     /// A model view on the sheet: the edges of the elements it sees, clipped by its crop
     /// region, at the viewport's scale. Returns the frame (feet, paper).
-    fn draw_view(&self, out: &mut Sheet2d, view: &ViewInfo, vp: &Vp, edges: &Edges) -> Option<[f64; 4]> {
+    fn draw_view(&self, out: &mut Sheet2d, view: &ViewInfo, vp: &Vp, edges: &Edges<'_>) -> Option<[f64; 4]> {
         let crop = self.crops.get(&vp.view);
         // view axes: the crop basis, else the view directions
         let (o, bx, by, _bz) = match crop {
@@ -937,15 +937,29 @@ impl Sheets {
         // what the view keeps (crop, view range, depth clips), segments clipped to it
         let keep = self.clip_of(vp.view, view);
         let mut uv_box = crop.filter(|c| c.active[0] && c.active[1] && c.active[2] && c.active[3]).map(|c| [c.off[1], c.off[3], c.off[0], c.off[2]]);
-        let mut segs: Vec<[P2; 2]> = Vec::new();
+        let cropped = uv_box.is_some();
         let ft = |p: V3| [p[0] / FEET, p[1] / FEET, p[2] / FEET];
         let proj = |p: V3| -> P2 {
             let d = sub(p, o);
             [dot(d, bx), dot(d, by)]
         };
+        // towards the viewer: the view direction (`m_viewDir`), else right × up
+        let nz = {
+            let c = view.dir.filter(|d| dot(*d, *d) > 1e-12).unwrap_or([bx[1] * by[2] - bx[2] * by[1], bx[2] * by[0] - bx[0] * by[2], bx[0] * by[1] - bx[1] * by[0]]);
+            let l = dot(c, c).sqrt().max(1e-12);
+            [c[0] / l, c[1] / l, c[2] / l]
+        };
+        let to_view = |p: V3| -> V3 {
+            let d = sub(p, o);
+            [dot(d, bx), dot(d, by), dot(d, nz)]
+        };
+        let back = |k: &Clip, c: V3| -> V3 { std::array::from_fn(|i| k.orig[i] + k.ax[0][i] * c[0] + k.ax[1][i] * c[1] + k.ax[2][i] * c[2]) };
+        let hlr_on = std::env::var_os("RVT_NO_HLR").is_none();
+        let mut segs: Vec<[V3; 2]> = Vec::new();
+        let mut tris: Vec<[V3; 3]> = Vec::new();
         // drafting views draw no model, only their own lines
         let drafting = view.class.contains("Drafting");
-        for (lo, hi, list) in edges.items.iter().filter(|_| !drafting) {
+        for (lo, hi, list, mesh) in edges.items.iter().filter(|_| !drafting) {
             if keep.is_some_and(|k| k.misses(ft(*lo), ft(*hi))) {
                 continue;
             }
@@ -956,14 +970,53 @@ impl Sheets {
                         let Some((a, b)) = k.segment(k.coords(p), k.coords(q)) else {
                             continue;
                         };
-                        let back = |c: V3| std::array::from_fn(|i| k.orig[i] + k.ax[0][i] * c[0] + k.ax[1][i] * c[1] + k.ax[2][i] * c[2]);
-                        (back(a), back(b))
+                        (back(k, a), back(k, b))
                     }
                     None => (p, q),
                 };
-                let (a, b) = (proj(p), proj(q));
+                let (a, b) = (to_view(p), to_view(q));
                 if (a[0] - b[0]).abs() + (a[1] - b[1]).abs() > 1e-4 {
                     segs.push([a, b]);
+                }
+            }
+            // the faces that hide edges: the rebuilt solid, else the element's box
+            if hlr_on && tris.len() < MAX_FACES {
+                let mut add = |t: [V3; 3]| match &keep {
+                    Some(k) => {
+                        let mut poly: Vec<V3> = t.iter().map(|p| k.coords(*p)).collect();
+                        for ax in 0..3 {
+                            let (l, h) = (k.lo[ax], k.hi[ax]);
+                            if l.is_finite() {
+                                poly = crate::rvt_hlr::clip_poly(&poly, |c| c[ax] - l);
+                            }
+                            if h.is_finite() {
+                                poly = crate::rvt_hlr::clip_poly(&poly, |c| h - c[ax]);
+                            }
+                            if poly.len() < 3 {
+                                return;
+                            }
+                        }
+                        let v: Vec<V3> = poly.iter().map(|c| to_view(back(k, *c))).collect();
+                        for i in 1..v.len() - 1 {
+                            tris.push([v[0], v[i], v[i + 1]]);
+                        }
+                    }
+                    None => tris.push(t.map(to_view)),
+                };
+                match mesh {
+                    Some(m) => {
+                        for t in &m.tri {
+                            add(t.map(|i| ft(m.pos.get(i as usize).copied().unwrap_or_default().map(|x| x as f64))));
+                        }
+                    }
+                    // a box is not the element's shape (curtain walls, stairs, rooms…):
+                    // only small ones hide what is behind them
+                    None if (0..3).all(|k| hi[k] - lo[k] < SOLID_BOX) => {
+                        for bt in BOX_TRIS {
+                            add(bt.map(|c| ft(corner(*lo, *hi, c))));
+                        }
+                    }
+                    None => {}
                 }
             }
             if segs.len() > MAX_SEGMENTS {
@@ -976,7 +1029,7 @@ impl Sheets {
         if uv_box.is_none() {
             // no crop: the extents of what is seen
             let mut e = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
-            for p in segs.iter().flatten().chain(ann.strokes.iter().flat_map(|s| s.0.iter())) {
+            for p in segs.iter().flatten().map(|p| [p[0], p[1]]).chain(ann.strokes.iter().flat_map(|s| s.0.iter().copied())) {
                 e = [e[0].min(p[0]), e[1].min(p[1]), e[2].max(p[0]), e[3].max(p[1])];
             }
             if !e[0].is_finite() {
@@ -987,18 +1040,41 @@ impl Sheets {
         let ub = uv_box?;
         // a cropped view puts its origin (the crop's) at the viewport offset; without a crop
         // the centre of what is seen is used
-        let (cu, cv) = if crop.is_some() { (0.0, 0.0) } else { ((ub[0] + ub[2]) * 0.5, (ub[1] + ub[3]) * 0.5) };
+        // (a crop region that is not active counts as none: 3D views and uncropped plans are
+        // centred on what they show)
+        let (cu, cv) = if cropped { (0.0, 0.0) } else { ((ub[0] + ub[2]) * 0.5, (ub[1] + ub[3]) * 0.5) };
         let k = vp.scale;
         if std::env::var_os("SHEET_DEBUG").is_some() {
             eprintln!("  view {} {:?} {} crop {:?} ub {:?} offset {:?} label {:?} len {} k {}", vp.view, view.name, view.class, crop.map(|c| (c.orig, c.off, c.active)), ub, vp.offset, vp.label, vp.label_len, k);
         }
         let to_paper = |p: P2| [vp.offset[0] + (p[0] - cu) * k, vp.offset[1] + (p[1] - cv) * k];
         let m = |x: f64| (x * FEET) as f32;
-        for s in segs {
-            if let Some((a, b)) = clip(s[0], s[1], ub) {
-                let (a, b) = (to_paper(a), to_paper(b));
-                out.fine.push([[m(a[0]), m(a[1])], [m(b[0]), m(b[1])]]);
+        // hidden lines removed: the faces in a depth buffer over the frame, then the edges
+        // keep the parts in front of them
+        let hlr = if hlr_on && !tris.is_empty() { crate::rvt_hlr::Hlr::new(ub, HLR_PIXELS) } else { None };
+        let mut hlr = hlr;
+        if let Some(h) = hlr.as_mut() {
+            for t in &tris {
+                h.tri(t[0], t[1], t[2]);
             }
+        }
+        let tol = hlr.as_ref().map_or(0.0, |h| 0.02 + h.pixel() * 0.25);
+        let mut shown = 0usize;
+        for s in &segs {
+            let parts = match &hlr {
+                Some(h) => h.visible(s[0], s[1], tol),
+                None => vec![(s[0], s[1])],
+            };
+            for (a, b) in parts {
+                if let Some((a, b)) = clip([a[0], a[1]], [b[0], b[1]], ub) {
+                    let (a, b) = (to_paper(a), to_paper(b));
+                    out.fine.push([[m(a[0]), m(a[1])], [m(b[0]), m(b[1])]]);
+                    shown += 1;
+                }
+            }
+        }
+        if std::env::var_os("SHEET_DEBUG").is_some() {
+            eprintln!("    edges {} faces {} drawn {} shown pieces {shown} nz {nz:?} bz {:?} keep {:?}", segs.len(), tris.len(), hlr.as_ref().map_or(0, |h| h.faces), crop.map(|c| c.bz), keep.map(|k| (k.ax[2], k.lo[2], k.hi[2])));
         }
         put_drawn(out, &ann, &to_paper);
         // model → paper, for the view's texts and tags
@@ -1083,6 +1159,12 @@ fn put_drawn(out: &mut Sheet2d, d: &crate::rvt_annot::Drawn, to_paper: &dyn Fn(P
 
 /// Most model edges drawn in one view.
 const MAX_SEGMENTS: usize = 60_000;
+/// Most faces drawn to hide edges in one view.
+const MAX_FACES: usize = 1_500_000;
+/// Depth buffer size (pixels on the longer side of a placed view).
+const HLR_PIXELS: usize = 2400;
+/// Element boxes (metres) small enough to stand for the element when hiding edges.
+const SOLID_BOX: f64 = 0.0;
 
 /// Liang-Barsky clip of a segment to a box [umin, vmin, umax, vmax].
 fn clip(a: P2, b: P2, r: [f64; 4]) -> Option<(P2, P2)> {
@@ -1109,24 +1191,30 @@ fn clip(a: P2, b: P2, r: [f64; 4]) -> Option<(P2, P2)> {
 }
 
 /// The model's drawable edges (metres): feature edges of the rebuilt meshes, box edges of
-/// the others, with each element's box.
-struct Edges {
-    items: Vec<([f64; 3], [f64; 3], Vec<[V3; 2]>)>,
+/// the others, with each element's box and the faces that hide what is behind them.
+struct Edges<'a> {
+    items: Vec<([f64; 3], [f64; 3], Vec<[V3; 2]>, Option<&'a Mesh>)>,
 }
 
-impl Edges {
-    fn new(model: &[(i64, [f64; 3], [f64; 3], Option<&Mesh>)]) -> Edges {
+/// Corners of box `k` (bit 0: x, 1: y, 2: z).
+fn corner(lo: V3, hi: V3, k: usize) -> V3 {
+    [if k & 1 == 0 { lo[0] } else { hi[0] }, if k & 2 == 0 { lo[1] } else { hi[1] }, if k & 4 == 0 { lo[2] } else { hi[2] }]
+}
+
+/// The 12 triangles of a box (corner indices).
+const BOX_TRIS: [[usize; 3]; 12] = [[0, 1, 3], [0, 3, 2], [4, 6, 7], [4, 7, 5], [0, 4, 5], [0, 5, 1], [2, 3, 7], [2, 7, 6], [0, 2, 6], [0, 6, 4], [1, 5, 7], [1, 7, 3]];
+
+impl<'a> Edges<'a> {
+    fn new(model: &[(i64, [f64; 3], [f64; 3], Option<&'a Mesh>)]) -> Edges<'a> {
         let items = model
             .iter()
             .map(|(_, lo, hi, mesh)| {
+                let mesh = mesh.filter(|m| !m.tri.is_empty());
                 let list = match mesh {
-                    Some(m) if !m.tri.is_empty() => feature_edges(m),
-                    _ => {
-                        let c = |k: usize| [if k & 1 == 0 { lo[0] } else { hi[0] }, if k & 2 == 0 { lo[1] } else { hi[1] }, if k & 4 == 0 { lo[2] } else { hi[2] }];
-                        [(0, 1), (2, 3), (4, 5), (6, 7), (0, 2), (1, 3), (4, 6), (5, 7), (0, 4), (1, 5), (2, 6), (3, 7)].iter().map(|&(a, b)| [c(a), c(b)]).collect()
-                    }
+                    Some(m) => feature_edges(m),
+                    None => [(0, 1), (2, 3), (4, 5), (6, 7), (0, 2), (1, 3), (4, 6), (5, 7), (0, 4), (1, 5), (2, 6), (3, 7)].iter().map(|&(a, b)| [corner(*lo, *hi, a), corner(*lo, *hi, b)]).collect(),
                 };
-                (*lo, *hi, list)
+                (*lo, *hi, list, mesh)
             })
             .collect();
         Edges { items }
