@@ -304,10 +304,12 @@ moteur : `WGPU_BACKEND=dx12|vulkan|gl`.
 - **eDrawings `.easm`** : seule la vignette est affichée (géométrie HSF non décodée).
 - **Revit `.rvt` / `.rfa`** : depuis la V7, les **murs droits** (profil modifié compris, ouvertures
   rectangulaires des portes et fenêtres), **sols, plafonds, dalles**, **canalisations, gaines, chemins de
-  câbles** et les **solides extrudés des familles incluses** (fichiers `.rfa`, familles intégrées au
-  projet) sont affichés avec leur **forme reconstruite** à partir des paramètres stockés (la B-rep
-  Revit n'est pas enregistrée dans le fichier). Les autres éléments (familles chargées sans géométrie
-  dans le projet : raccords, mobilier, portes…, toits, murs courbes, balayages, lissages, révolutions)
+  câbles** et les **solides des familles** (extrusions, révolutions, balayages le long d'un tracé 2D ou
+  3D, lissages ; fichiers `.rfa` et familles chargées dans le projet, familles imbriquées comprises,
+  placées à leur insertion et recalées sur la boîte Revit quand le type a d'autres cotes) sont affichés avec leur **forme reconstruite** à partir des paramètres stockés (la B-rep
+  Revit n'est pas enregistrée dans le fichier). Les autres éléments (une partie des raccords MEP dont
+  la forme dépend des cotes du type, murs-rideaux, portes, fenêtres, escaliers, garde-corps, toits,
+  murs courbes)
   restent des **boîtes englobantes** colorées par catégorie (fichiers Revit 2018 à 2026, en travail
   partagé ou non, ouverts en lecture seule sans verrou ni synchronisation ; voir
   `docs/rvt-rea-notes.md`). Pour la géométrie complète : exporter en **IFC** depuis Revit, puis

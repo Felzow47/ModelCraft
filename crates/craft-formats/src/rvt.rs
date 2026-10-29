@@ -258,6 +258,15 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
             shapes.partition(&sc, &inf.data, if w == 0 { 4 } else { w });
         }
     }
+    // family documents stored in the project: GUID → root element (loaded family solids)
+    if !family {
+        if let (Some(f), Some(cd)) = (
+            rvt_model::read_stream(&mut cf, "/Formats/Latest", 64 << 20, 64 << 20, |_| true).filter(|f| f.verified > 0),
+            rvt_model::read_stream(&mut cf, "/Global/ContentDocuments", MAX_PARTITION, rvt_model::MAX_INFLATED, |_| true),
+        ) {
+            shapes.content_docs(&crate::rvt_browser::Schema::parse(&f.data), &cd.data);
+        }
+    }
     ctl.check().map_err(|e| e.to_string())?;
     let meshes = match &boxes {
         Ok(b) => shapes.finish(&b.iter().filter(|b| b.id != 0).map(|b| (b.id, (b.min, b.max))).collect(), family),

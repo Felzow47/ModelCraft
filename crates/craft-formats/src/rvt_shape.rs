@@ -66,11 +66,6 @@ impl Mesh {
         }
         (!self.pos.is_empty()).then_some((lo, hi))
     }
-    fn append(&mut self, o: &Mesh) {
-        let base = self.pos.len() as u32;
-        self.pos.extend_from_slice(&o.pos);
-        self.tri.extend(o.tri.iter().map(|t| [t[0] + base, t[1] + base, t[2] + base]));
-    }
 }
 
 /// A frame: origin and three axes (feet). Points (u, v, w) map to `o + u·U + v·V + w·N`.
@@ -125,7 +120,10 @@ pub(crate) fn curve_points(c: &Obj, s: &Schema) -> Vec<V3> {
             if !(span.abs() < 64.0) {
                 return vec![];
             }
-            let n = ((span.abs() / (std::f64::consts::PI / 24.0)).ceil() as usize).clamp(2, 192);
+            // 24 segments a turn, finer on large radii (chord within about 1 cm)
+            let r = rx.abs().max(ry.abs());
+            let step = if r > 0.03 { (std::f64::consts::PI / 12.0).min(2.0 * (1.0 - 0.03 / r).acos()) } else { std::f64::consts::PI / 12.0 };
+            let n = ((span.abs() / step.max(std::f64::consts::PI / 96.0)).ceil() as usize).clamp(2, 192);
             (0..=n)
                 .map(|i| {
                     let t = t0 + span * i as f64 / n as f64;
@@ -357,6 +355,340 @@ fn solid(f: &Frame, loops: &[Vec<[f64; 2]>], cuts: &[[f64; 4]], w0: f64, w1: f64
     m
 }
 
+// ------------------------------------------------------------------ swept solids
+
+/// Closed loops and open chains formed by curves (feet) whose ends meet.
+fn loops_from(curves: &[Vec<V3>]) -> (Vec<Vec<V3>>, Vec<Vec<V3>>) {
+    let d2 = |a: V3, b: V3| dot(sub(a, b), sub(a, b));
+    let tol = 1e-8;
+    let mut left: Vec<Vec<V3>> = curves.iter().filter(|c| c.len() >= 2).cloned().collect();
+    let (mut closed, mut open) = (Vec::new(), Vec::new());
+    while !left.is_empty() {
+        let mut cur = left.remove(0);
+        loop {
+            if cur.len() > 2 && d2(cur[0], *cur.last().unwrap()) < tol {
+                break;
+            }
+            let tail = *cur.last().unwrap();
+            let head = cur[0];
+            if let Some(k) = left.iter().position(|c| d2(c[0], tail) < tol || d2(*c.last().unwrap(), tail) < tol) {
+                let mut c = left.remove(k);
+                if d2(c[0], tail) >= tol {
+                    c.reverse();
+                }
+                cur.extend(c.into_iter().skip(1));
+            } else if let Some(k) = left.iter().position(|c| d2(c[0], head) < tol || d2(*c.last().unwrap(), head) < tol) {
+                let mut c = left.remove(k);
+                if d2(*c.last().unwrap(), head) >= tol {
+                    c.reverse();
+                }
+                c.pop();
+                c.extend(cur);
+                cur = c;
+            } else {
+                break;
+            }
+        }
+        if cur.len() > 3 && d2(cur[0], *cur.last().unwrap()) < tol {
+            cur.pop();
+            closed.push(cur);
+        } else {
+            open.push(cur);
+        }
+    }
+    (closed, open)
+}
+
+fn area2(l: &[[f64; 2]]) -> f64 {
+    (0..l.len()).map(|i| {
+        let (a, b) = (l[i], l[(i + 1) % l.len()]);
+        a[0] * b[1] - b[0] * a[1]
+    }).sum::<f64>() * 0.5
+}
+
+fn inside(p: [f64; 2], l: &[[f64; 2]]) -> bool {
+    let mut c = false;
+    for i in 0..l.len() {
+        let (a, b) = (l[i], l[(i + 1) % l.len()]);
+        if (a[1] > p[1]) != (b[1] > p[1]) && p[0] < a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]) {
+            c = !c;
+        }
+    }
+    c
+}
+
+/// Orients outer loops counter-clockwise and holes clockwise (even-odd nesting).
+fn orient(mut loops: Vec<Vec<[f64; 2]>>) -> Vec<Vec<[f64; 2]>> {
+    let depth: Vec<usize> = (0..loops.len()).map(|i| (0..loops.len()).filter(|&j| j != i && inside(loops[i][0], &loops[j])).count()).collect();
+    for (l, d) in loops.iter_mut().zip(depth) {
+        if (area2(l) > 0.0) != (d % 2 == 0) {
+            l.reverse();
+        }
+    }
+    loops
+}
+
+/// Region inside `loops` as triangles facing +N (counter-clockwise in u, v).
+fn cap2d(loops: &[Vec<[f64; 2]>]) -> (Vec<[f64; 2]>, Vec<[u32; 3]>) {
+    let (pts, tri) = extrude_region(loops, &[], 0.0, 1.0);
+    let mut out = Vec::new();
+    let mut ix: HashMap<usize, u32> = HashMap::new();
+    let mut t2 = Vec::new();
+    for t in tri {
+        if t.iter().all(|&k| (pts[k as usize][2] - 1.0).abs() < 1e-12) {
+            let mut q = [0u32; 3];
+            for (n, &k) in t.iter().enumerate() {
+                q[n] = *ix.entry(k as usize).or_insert_with(|| {
+                    out.push([pts[k as usize][0], pts[k as usize][1]]);
+                    (out.len() - 1) as u32
+                });
+            }
+            t2.push(q);
+        }
+    }
+    (out, t2)
+}
+
+/// Mesh (metres) from rings of loops (feet, one ring per station, loops with matching point
+/// counts, counter-clockwise about the advance direction) and the end caps (`cap0` facing
+/// backwards, `cap1` forwards). Turned inside out when its signed volume is negative.
+fn assemble(rings: &[Vec<Vec<V3>>], wrap: bool, caps: [Option<(Vec<V3>, Vec<[u32; 3]>)>; 2]) -> Option<Mesh> {
+    let mut pts: Vec<V3> = Vec::new();
+    let mut tri: Vec<[u32; 3]> = Vec::new();
+    let n = rings.len();
+    let steps = if wrap { n } else { n.saturating_sub(1) };
+    for i in 0..steps {
+        let (a, b) = (&rings[i], &rings[(i + 1) % n]);
+        for (la, lb) in a.iter().zip(b) {
+            let m = la.len();
+            if m != lb.len() {
+                return None;
+            }
+            for j in 0..m {
+                let k = (j + 1) % m;
+                let base = pts.len() as u32;
+                pts.extend_from_slice(&[la[j], la[k], lb[k], lb[j]]);
+                tri.push([base, base + 1, base + 2]);
+                tri.push([base, base + 2, base + 3]);
+            }
+        }
+    }
+    for (e, c) in caps.into_iter().enumerate() {
+        if let Some((p, t)) = c {
+            let base = pts.len() as u32;
+            pts.extend(p);
+            tri.extend(t.into_iter().map(|t| if e == 0 { [t[0] + base, t[2] + base, t[1] + base] } else { [t[0] + base, t[1] + base, t[2] + base] }));
+        }
+    }
+    tri.retain(|t| {
+        let (a, b, c) = (pts[t[0] as usize], pts[t[1] as usize], pts[t[2] as usize]);
+        let x = cross(sub(b, a), sub(c, a));
+        dot(x, x) > 1e-18
+    });
+    if tri.is_empty() || pts.iter().any(|p| !p.iter().all(|x| x.is_finite())) {
+        return None;
+    }
+    let vol: f64 = tri.iter().map(|t| dot(pts[t[0] as usize], cross(pts[t[1] as usize], pts[t[2] as usize]))).sum();
+    if vol < 0.0 {
+        for t in &mut tri {
+            t.swap(1, 2);
+        }
+    }
+    Some(Mesh { pos: pts.iter().map(|q| [(q[0] * FEET) as f32, (q[1] * FEET) as f32, (q[2] * FEET) as f32]).collect(), tri })
+}
+
+/// Frame of a sketch: its plane, or the plane of its loops.
+fn sketch_frame(plane: Option<(V3, V3, V3)>, loops: &[Vec<V3>]) -> Option<Frame> {
+    let (o, x, y) = match plane {
+        Some(p) => p,
+        None => {
+            let l = loops.first()?;
+            let mut nn = [0.0; 3];
+            for i in 0..l.len() {
+                nn = add(nn, cross(l[i], l[(i + 1) % l.len()]));
+            }
+            let nz = norm(nn)?;
+            let x = norm(sub(l[1], l[0]))?;
+            (l[0], x, cross(nz, x))
+        }
+    };
+    let u = norm(x)?;
+    let n = norm(cross(x, y))?;
+    let f = Frame { o, u, v: cross(n, u), n };
+    // the loops must lie in it
+    if loops.iter().flatten().any(|&p| dot(sub(p, o), n).abs() > 1e-3 * (1.0 + dot(sub(p, o), sub(p, o)).sqrt())) {
+        return None;
+    }
+    Some(f)
+}
+
+/// Rotation of `p` by `a` radians about the line through `o` along the unit `d`.
+fn rotate(p: V3, o: V3, d: V3, a: f64) -> V3 {
+    let v = sub(p, o);
+    let (c, s) = (a.cos(), a.sin());
+    add(o, add(add(mul(v, c), mul(cross(d, v), s)), mul(d, dot(d, v) * (1.0 - c))))
+}
+
+/// Vector `v` turned by the rotation taking unit `a` to unit `b`.
+fn turn(v: V3, a: V3, b: V3) -> V3 {
+    let ax = cross(a, b);
+    let s = dot(ax, ax).sqrt();
+    let c = dot(a, b);
+    if s < 1e-12 {
+        return if c > 0.0 { v } else { mul(v, -1.0) };
+    }
+    rotate(v, [0.0; 3], mul(ax, 1.0 / s), s.atan2(c))
+}
+
+fn revolution(sk: &SketchData, a0: f64, a1: f64) -> Option<Mesh> {
+    let (closed, open) = loops_from(&sk.curves);
+    if closed.is_empty() {
+        return None;
+    }
+    let axis = open.iter().find(|c| c.len() == 2)?;
+    let (ao, ad) = (axis[0], norm(sub(axis[1], axis[0]))?);
+    let f = sketch_frame(sk.plane, &closed)?;
+    let prof = orient(closed.iter().map(|l| l.iter().map(|&p| f.uv(p)).collect()).collect());
+    let span = a1 - a0;
+    if !(span.abs() > 1e-4 && span.abs() <= std::f64::consts::TAU + 1e-6) {
+        return None;
+    }
+    let full = span.abs() > std::f64::consts::TAU - 1e-4;
+    let n = ((span.abs() / (std::f64::consts::PI / 12.0)).ceil() as usize).clamp(3, 32);
+    let at = |i: usize, q: [f64; 2]| rotate(f.at(q[0], q[1], 0.0), ao, ad, a0 + span * i as f64 / n as f64);
+    let count = if full { n } else { n + 1 };
+    let rings: Vec<Vec<Vec<V3>>> = (0..count).map(|i| prof.iter().map(|l| l.iter().map(|&q| at(i, q)).collect()).collect()).collect();
+    let caps = if full {
+        [None, None]
+    } else {
+        let (cp, ct) = cap2d(&prof);
+        [Some((cp.iter().map(|&q| at(0, q)).collect(), ct.clone())), Some((cp.iter().map(|&q| at(n, q)).collect(), ct))]
+    };
+    assemble(&rings, full, caps)
+}
+
+fn sweep(profile: &SketchData, path: &SketchData) -> Option<Mesh> {
+    let (closed, _) = loops_from(&profile.curves);
+    if closed.is_empty() {
+        return None;
+    }
+    let f = sketch_frame(profile.plane, &closed)?;
+    let (pc, po) = loops_from(&path.curves);
+    let mut p: Vec<V3> = match (pc.first(), po.first()) {
+        (_, Some(o)) if pc.is_empty() && po.len() == 1 => o.clone(),
+        (Some(c), _) if po.is_empty() && pc.len() == 1 => {
+            let mut c = c.clone();
+            c.push(c[0]);
+            c
+        }
+        _ => return None,
+    };
+    p.dedup_by(|a, b| dot(sub(*a, *b), sub(*a, *b)) < 1e-14);
+    if p.len() < 2 || p.len() > 4096 {
+        return None;
+    }
+    let seg: Vec<V3> = p.windows(2).map(|w| norm(sub(w[1], w[0]))).collect::<Option<_>>()?;
+    // where the profile plane meets the path
+    let side = |q: V3| dot(sub(q, f.o), f.n);
+    let k = (0..seg.len()).find(|&k| side(p[k]) * side(p[k + 1]) <= 0.0).or_else(|| (0..seg.len()).min_by(|&a, &b| side(p[a]).abs().total_cmp(&side(p[b]).abs())))?;
+    let (sa, sb) = (side(p[k]), side(p[k + 1]));
+    let q = if (sa - sb).abs() > 1e-12 { add(p[k], mul(sub(p[k + 1], p[k]), sa / (sa - sb))) } else { p[k] };
+    if dot(f.n, seg[k]).abs() < 0.9 {
+        return None; // the profile is not across the path
+    }
+    let prof = orient(closed.iter().map(|l| l.iter().map(|&x| {
+        let d = sub(x, q);
+        [dot(d, f.u), dot(d, f.v)]
+    }).collect()).collect());
+    // profile axes on each segment, carried along by the turns of the path
+    let mut ax = vec![(f.u, f.v); seg.len()];
+    for j in k + 1..seg.len() {
+        ax[j] = (turn(ax[j - 1].0, seg[j - 1], seg[j]), turn(ax[j - 1].1, seg[j - 1], seg[j]));
+    }
+    for j in (0..k).rev() {
+        ax[j] = (turn(ax[j + 1].0, seg[j + 1], seg[j]), turn(ax[j + 1].1, seg[j + 1], seg[j]));
+    }
+    let n = p.len();
+    let at = |i: usize, c: [f64; 2]| -> V3 {
+        let s = if i == 0 { 0 } else { i - 1 };
+        let (u, v) = ax[s];
+        let x = add(p[i], add(mul(u, c[0]), mul(v, c[1])));
+        if i > 0 && i + 1 < n {
+            // mitre joint: onto the plane halfway between the two segments
+            if let Some(t) = norm(add(seg[i - 1], seg[i])) {
+                let c = dot(seg[i - 1], t);
+                if c > 0.2 {
+                    return sub(x, mul(seg[i - 1], dot(sub(x, p[i]), t) / c));
+                }
+            }
+        }
+        x
+    };
+    let rings: Vec<Vec<Vec<V3>>> = (0..n).map(|i| prof.iter().map(|l| l.iter().map(|&c| at(i, c)).collect()).collect()).collect();
+    let (cp, ct) = cap2d(&prof);
+    let caps = [Some((cp.iter().map(|&c| at(0, c)).collect(), ct.clone())), Some((cp.iter().map(|&c| at(n - 1, c)).collect(), ct))];
+    assemble(&rings, false, caps)
+}
+
+/// Loop resampled to `n` points evenly along its length.
+fn resample(l: &[V3], n: usize) -> Vec<V3> {
+    let m = l.len();
+    let len: Vec<f64> = (0..m).map(|i| dot(sub(l[(i + 1) % m], l[i]), sub(l[(i + 1) % m], l[i])).sqrt()).collect();
+    let total: f64 = len.iter().sum();
+    let mut out = Vec::with_capacity(n);
+    let (mut i, mut acc) = (0usize, 0.0);
+    for k in 0..n {
+        let t = total * k as f64 / n as f64;
+        while i < m - 1 && acc + len[i] < t {
+            acc += len[i];
+            i += 1;
+        }
+        let r = if len[i] > 0.0 { ((t - acc) / len[i]).clamp(0.0, 1.0) } else { 0.0 };
+        out.push(add(l[i], mul(sub(l[(i + 1) % m], l[i]), r)));
+    }
+    out
+}
+
+fn blend(a: &SketchData, b: &SketchData, first: f64, second: f64) -> Option<Mesh> {
+    let (la, _) = loops_from(&a.curves);
+    let (lb, _) = loops_from(&b.curves);
+    if la.len() != 1 || lb.len() != 1 {
+        return None;
+    }
+    let f = sketch_frame(a.plane, &la)?;
+    let fb = sketch_frame(b.plane, &lb)?;
+    if dot(f.n, fb.n).abs() < 0.999 {
+        return None;
+    }
+    let ccw = |l: &Vec<V3>| -> Vec<V3> {
+        let mut l = l.clone();
+        if area2(&l.iter().map(|&p| f.uv(p)).collect::<Vec<_>>()) < 0.0 {
+            l.reverse();
+        }
+        l
+    };
+    let n = la[0].len().max(lb[0].len()).clamp(12, 96);
+    let ra: Vec<V3> = resample(&ccw(&la[0]), n).into_iter().map(|p| add(p, mul(f.n, first))).collect();
+    let rb0: Vec<V3> = resample(&ccw(&lb[0]), n).into_iter().map(|p| add(p, mul(f.n, second))).collect();
+    // start of the second loop: the rotation closest to the first loop
+    let ua: Vec<[f64; 2]> = ra.iter().map(|&p| f.uv(p)).collect();
+    let ub: Vec<[f64; 2]> = rb0.iter().map(|&p| f.uv(p)).collect();
+    let cost = |k: usize| (0..n).map(|j| {
+        let (p, q) = (ua[j], ub[(j + k) % n]);
+        (p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2)
+    }).sum::<f64>();
+    let k = (0..n).min_by(|&x, &y| cost(x).total_cmp(&cost(y)))?;
+    let rb: Vec<V3> = (0..n).map(|j| rb0[(j + k) % n]).collect();
+    let cap = |l: &[V3]| {
+        let uv: Vec<[f64; 2]> = l.iter().map(|&p| f.uv(p)).collect();
+        let w = dot(sub(l[0], f.o), f.n);
+        let (cp, ct) = cap2d(&[uv]);
+        (cp.iter().map(|c| f.at(c[0], c[1], w)).collect::<Vec<V3>>(), ct)
+    };
+    let (c0, c1) = (cap(&ra), cap(&rb));
+    assemble(&[vec![ra], vec![rb]], false, [Some(c0), Some(c1)])
+}
+
 // ------------------------------------------------------------------ transforms
 
 /// Affine transform: `p' = M·p + or`, the columns of M being the images of X, Y, Z.
@@ -380,11 +712,9 @@ impl Trf {
         let m = &self.m;
         [m[0] * p[0] + m[3] * p[1] + m[6] * p[2], m[1] * p[0] + m[4] * p[1] + m[7] * p[2], m[2] * p[0] + m[5] * p[1] + m[8] * p[2]]
     }
-    /// `self ∘ o`
-    fn then_inner(&self, o: &Trf) -> Trf {
-        let c = |k: usize| self.lin([o.m[3 * k], o.m[3 * k + 1], o.m[3 * k + 2]]);
-        let (a, b, cc) = (c(0), c(1), c(2));
-        Trf { m: [a[0], a[1], a[2], b[0], b[1], b[2], cc[0], cc[1], cc[2]], or: self.apply(o.or) }
+    /// Rotation part made of 0 and ±1 only (axis permutations and flips).
+    fn axis_aligned(&self) -> bool {
+        self.m.iter().all(|x| x.abs() < 1e-6 || (x.abs() - 1.0).abs() < 1e-6)
     }
     fn det(&self) -> f64 {
         let m = &self.m;
@@ -415,13 +745,53 @@ struct Slab {
     planes: Vec<(V3, V3, V3, [f64; 4])>,
 }
 
+/// `m_famElemVisibility.m_flags` of a family form (-1: none)
+fn vis_flags(tr: &Tree) -> i64 {
+    tr.root.obj("m_famElemVisibility").and_then(|o| o.int("m_flags")).unwrap_or(-1)
+}
+
+/// A family form not part of the loaded family: hidden by its `Visible` parameter
+/// (-1006205 = 0 for the type stored), or the sample host of a hosted family template
+/// (the extrusion that the family's voids cut in the family editor).
+fn not_in_family(tr: &Tree, s: &Schema) -> bool {
+    let hidden = tr.root.ptr("m_pParamValueSetInt").and_then(|i| tr.objs.get(i)).is_some_and(|set| {
+        set.list("m_paramSet").iter().any(|p| p.int("m_paramId") == Some(-1006205) && p.int("m_value") == Some(0))
+    });
+    hidden || tr.objs.iter().any(|o| s.name(o.tag) == "AddGeomToHostInFamEnvGStep")
+}
+
 struct Form {
     id: i64,
     fam: i64,
+    vis: i64,
     sketch: i64,
     loops: Vec<Vec<V3>>,
     start: f64,
     end: f64,
+}
+
+/// The other family solids: their sketches are read from the sketch elements (`m_userId`).
+enum Kind {
+    /// Profile sketch revolved about the line of the sketch not in a closed loop.
+    Revolution { sketch: i64, a0: f64, a1: f64 },
+    /// Profile sketch swept along the path sketch.
+    Sweep { profile: i64, path: i64 },
+    /// Two sketches of one form, offset along their normal, joined by ruled faces.
+    Blend { first: f64, second: f64 },
+}
+
+struct Form2 {
+    id: i64,
+    fam: i64,
+    vis: i64,
+    kind: Kind,
+}
+
+/// A sketch: its plane and its curves (feet).
+struct SketchData {
+    user: i64,
+    plane: Option<(V3, V3, V3)>,
+    curves: Vec<Vec<V3>>,
 }
 
 /// Collects the data of the elements with a rebuilt shape, partition by partition.
@@ -431,6 +801,14 @@ pub struct Shapes {
     slabs: Vec<Slab>,
     forms: Vec<Form>,
     sketch_planes: HashMap<i64, (V3, V3, V3)>,
+    sketches: HashMap<i64, SketchData>,
+    forms2: Vec<Form2>,
+    /// project or nested `Family` element → content document GUID (`m_oFamDoc`)
+    fam_guid: HashMap<i64, [u8; 16]>,
+    /// content document GUID → id of its root element (the `m_famId` of its elements)
+    content: HashMap<[u8; 16], i64>,
+    /// project `Family` element → ids of its family document's elements (`m_big2SmallMap2`)
+    fam_small: HashMap<i64, Vec<i64>>,
     /// instance id → (symbol id, own family doc id if nested, transform)
     instances: Vec<(i64, i64, i64, Trf)>,
     /// symbol id → (m_famId, m_familyId)
@@ -505,7 +883,9 @@ fn param(tr: &Tree, id: i64) -> Option<f64> {
 
 impl Shapes {
     /// Element classes read.
-    const CLASSES: [&'static str; 12] = ["SWall", "Floor", "Ceiling", "BuildingPad", "RoofSoffit", "Toposolid", "ExtrusionElem", "FamilyInstance", "FamilySymbol", "VarSketch", "Sketch", "SketchPlane"];
+    const CLASSES: [&'static str; 17] = [
+        "SWall", "Floor", "Ceiling", "BuildingPad", "RoofSoffit", "Toposolid", "ExtrusionElem", "RevolutionElem", "SweepElem", "BlendElem", "Family", "FamilyInstance", "FamilySymbol", "VarSketch", "Sketch", "SketchPlane", "Path3d",
+    ];
 
     /// Element classes read, by tag.
     pub fn wants(s: &Schema) -> Vec<bool> {
@@ -535,6 +915,44 @@ impl Shapes {
     pub fn partition(&mut self, s: &Schema, d: &[u8], w: usize) {
         let want = Self::wants(s);
         elements(s, d, w, &|t| want[t as usize], |_, t, _, tr| self.take(s, t, &tr));
+    }
+
+    /// `/Global/ContentDocuments`: one segment per family document stored in the project
+    /// (`ContentMarker`, `ContentKey` GUID, size), whose root element id (the `m_famId` of the
+    /// document's elements) follows the `NOBLE_SecondaryDataStorage` tag:
+    /// `[tag] [root id] [-1] 01 00 00 00`.
+    pub fn content_docs(&mut self, s: &Schema, d: &[u8]) {
+        let (Some(cm), Some(ck), Some(ns)) = (s.tag_of("ContentMarker"), s.tag_of("ContentKey"), s.tag_of("NOBLE_SecondaryDataStorage")) else { return };
+        let mut head = cm.to_le_bytes().to_vec();
+        head.extend([0xff; 4]);
+        head.extend(ck.to_le_bytes());
+        head.extend([0xff; 4]);
+        let starts: Vec<usize> = d.windows(head.len()).enumerate().filter(|(_, w)| *w == &head[..]).map(|(i, _)| i).collect();
+        let tag = ns.to_le_bytes();
+        for (n, &p) in starts.iter().enumerate() {
+            let end = starts.get(n + 1).copied().unwrap_or(d.len());
+            if p + 28 > end {
+                continue;
+            }
+            let guid: [u8; 16] = d[p + 12..p + 28].try_into().unwrap();
+            let seg = &d[p + 28..end];
+            let root = seg.windows(2).enumerate().filter(|(_, w)| *w == tag).find_map(|(k, _)| {
+                [8usize, 4].into_iter().find_map(|w| {
+                    let a = k + 2;
+                    let b = seg.get(a..a + 2 * w + 4)?;
+                    if !b[w..2 * w].iter().all(|&x| x == 0xff) || b[2 * w..] != [1, 0, 0, 0] {
+                        return None;
+                    }
+                    let mut v = [0u8; 8];
+                    v[..w].copy_from_slice(&b[..w]);
+                    let id = i64::from_le_bytes(v);
+                    (id > 0 && id < 1 << 40).then_some(id)
+                })
+            });
+            if let Some(r) = root {
+                self.content.insert(guid, r);
+            }
+        }
     }
 
     fn mep_curve(&mut self, s: &Schema, cls: &str, tr: &Tree) {
@@ -599,7 +1017,7 @@ impl Shapes {
                 }
             }
             "ExtrusionElem" => {
-                if tr.root.int("m_cutting").unwrap_or(0) != 0 {
+                if tr.root.int("m_cutting").unwrap_or(0) != 0 || not_in_family(tr, s) {
                     return;
                 }
                 let Some(h) = tr.objs.iter().find(|o| s.name(o.tag) == "ExtrusionElemExtrusionHelper") else { return };
@@ -609,12 +1027,84 @@ impl Shapes {
                 }
                 let start = param(&tr, -1001800).unwrap_or(0.0);
                 let end = param(&tr, -1001801).unwrap_or(1.0);
-                self.forms.push(Form { id, fam: tr.root.int("m_famId").unwrap_or(-1), sketch: h.int("m_sketchId").unwrap_or(-1), loops, start, end });
+                self.forms.push(Form { id, fam: tr.root.int("m_famId").unwrap_or(-1), vis: vis_flags(tr), sketch: h.int("m_sketchId").unwrap_or(-1), loops, start, end });
             }
             "VarSketch" | "Sketch" => {
+                let mut plane = None;
                 if let Some(p) = tr.root.ptr("m_pPlane").and_then(|i| tr.objs.get(i)) {
                     if let (Some(o), Some(x), Some(y)) = (v3(p.fs("m_origin")), v3(p.fs("m_xVec")), v3(p.fs("m_yVec"))) {
                         self.sketch_planes.insert(id, (o, x, y));
+                        plane = Some((o, x, y));
+                    }
+                }
+                let user = tr.root.int("m_userId").unwrap_or(-1);
+                if user > 0 {
+                    let curves = tr.root.ptrs("m_absorbedCurves").iter().filter_map(|&i| tr.objs.get(i)).map(|c| curve_points(c, s)).filter(|p| p.len() >= 2).collect();
+                    self.sketches.insert(id, SketchData { user, plane, curves });
+                }
+            }
+            "Path3d" => {
+                // 3D sweep path: open or closed curve loops, kept like a path sketch
+                let user = tr.root.int("m_userId").unwrap_or(-1);
+                let curves: Vec<Vec<V3>> = tr
+                    .root
+                    .ptrs("m_curveLoops")
+                    .iter()
+                    .filter_map(|&i| tr.objs.get(i))
+                    .flat_map(|l| l.ptrs("m_curves"))
+                    .filter_map(|i| tr.objs.get(i))
+                    .map(|c| curve_points(c, s))
+                    .filter(|p| p.len() >= 2)
+                    .collect();
+                if user > 0 && !curves.is_empty() {
+                    self.sketches.insert(id, SketchData { user, plane: None, curves });
+                }
+            }
+            "RevolutionElem" | "SweepElem" | "BlendElem" => {
+                if tr.root.int("m_cutting").unwrap_or(0) != 0 || not_in_family(tr, s) {
+                    return;
+                }
+                let fam = tr.root.int("m_famId").unwrap_or(-1);
+                let kind = match cls {
+                    "RevolutionElem" => Kind::Revolution { sketch: tr.root.int("m_sketchId").unwrap_or(-1), a0: param(tr, -1001802).unwrap_or(0.0), a1: param(tr, -1001803).unwrap_or(std::f64::consts::TAU) },
+                    "SweepElem" => {
+                        let Some(pd) = tr.root.obj("m_profileData").or_else(|| tr.root.ptr("m_profileData").and_then(|i| tr.objs.get(i))) else { return };
+                        Kind::Sweep { profile: pd.int("m_profileSketchId").unwrap_or(-1), path: tr.root.int("m_pathSketchId").filter(|&v| v > 0).or_else(|| tr.root.int("m_path3dId")).unwrap_or(-1) }
+                    }
+                    _ => Kind::Blend { first: param(tr, -1001804).unwrap_or(0.0), second: param(tr, -1001805).unwrap_or(1.0) },
+                };
+                self.forms2.push(Form2 { id, fam, vis: vis_flags(tr), kind });
+            }
+            "Family" => {
+                let guid = tr.root.ptr("m_oFamDoc").and_then(|i| tr.objs.get(i)).and_then(|o| {
+                    let g = o.get("m_contentDocGUID")?;
+                    let g = match g {
+                        G::O(x) => x.get("m_guid")?,
+                        _ => g,
+                    };
+                    match g {
+                        G::Raw(b) if b.len() == 16 => Some(<[u8; 16]>::try_from(&b[..]).unwrap()),
+                        _ => None,
+                    }
+                });
+                if let Some(g) = guid {
+                    self.fam_guid.insert(id, g);
+                }
+                // project id → family document id pairs: the document's elements
+                if let Some(o) = tr.root.ptr("m_oFamDoc").and_then(|i| tr.objs.get(i)) {
+                    let small: Vec<i64> = o
+                        .list("m_big2SmallMap2")
+                        .iter()
+                        .filter_map(|p| match p.get("first")? {
+                            G::I(v) => Some(*v),
+                            G::O(x) => x.fields.iter().find_map(|(_, g)| if let G::I(v) = g { Some(*v) } else { None }),
+                            _ => None,
+                        })
+                        .filter(|&v| v > 0)
+                        .take(256)
+                        .collect();
+                    if !small.is_empty() {
+                        self.fam_small.insert(id, small);
                     }
                 }
             }
@@ -635,6 +1125,7 @@ impl Shapes {
     /// openings cut in the walls and to check the placed family solids.
     pub fn finish(self, boxes: &HashMap<i64, ([f64; 3], [f64; 3])>, family_doc: bool) -> HashMap<i64, Mesh> {
         let mut out: HashMap<i64, Mesh> = HashMap::new();
+        let t0 = std::time::Instant::now();
         if std::env::var_os("RVT_SHAPE_DEBUG").is_some() {
             eprintln!("walls {} slabs {} forms {} sketches {} instances {} symbols {}", self.walls.len(), self.slabs.len(), self.forms.len(), self.sketch_planes.len(), self.instances.len(), self.symbols.len());
         }
@@ -653,25 +1144,95 @@ impl Shapes {
                 out.insert(sl.id, m);
             }
         }
+        if std::env::var_os("RVT_SHAPE_DEBUG").is_some() {
+            let mut h: HashMap<i64, usize> = HashMap::new();
+            for v in self.forms.iter().map(|f| f.vis).chain(self.forms2.iter().map(|f| f.vis)) {
+                *h.entry(v).or_default() += 1;
+            }
+            let mut h: Vec<_> = h.into_iter().collect();
+            h.sort_by_key(|x| std::cmp::Reverse(x.1));
+            eprintln!("form visibility flags {:?}", &h[..h.len().min(16)].iter().map(|(v, n)| format!("{v:#x}:{n}")).collect::<Vec<_>>());
+        }
         // family solids, in their family's coordinates
-        let mut by_fam: HashMap<i64, Mesh> = HashMap::new();
-        for f in &self.forms {
+        let mut by_fam: HashMap<i64, Vec<Mesh>> = HashMap::new();
+        for f in self.forms.iter() {
             if let Some(m) = self.form(f) {
                 if family_doc {
                     // the family file itself: its solids as they are
                     out.insert(f.id, m);
                 } else {
-                    by_fam.entry(f.fam).or_default().append(&m);
+                    by_fam.entry(f.fam).or_default().push(m);
+                }
+            }
+        }
+        for f in self.forms2.iter() {
+            let m = match f.kind {
+                Kind::Revolution { sketch, a0, a1 } => self.sketches.get(&sketch).and_then(|sk| revolution(sk, a0, a1)),
+                Kind::Sweep { profile, path } => match (self.sketches.get(&profile), self.sketches.get(&path)) {
+                    (Some(a), Some(b)) => sweep(a, b),
+                    _ => None,
+                },
+                Kind::Blend { first, second } => {
+                    let mut sk: Vec<(&i64, &SketchData)> = self.sketches.iter().filter(|(_, d)| d.user == f.id).collect();
+                    sk.sort_by_key(|(id, _)| **id);
+                    match sk.as_slice() {
+                        [(_, a), (_, b)] => blend(a, b, first, second),
+                        _ => None,
+                    }
+                }
+            };
+            if let Some(m) = m {
+                if family_doc {
+                    out.insert(f.id, m);
+                } else {
+                    by_fam.entry(f.fam).or_default().push(m);
                 }
             }
         }
         if family_doc {
             return out;
         }
+        if std::env::var_os("RVT_SHAPE_DEBUG").is_some() {
+            eprintln!("forms built in {:?}", t0.elapsed());
+        }
+        // a `Family` element → the root of its family document (ContentDocuments GUID)
+        // (the family document's elements have the root as their `m_famId`)
+        let mut owner: HashMap<i64, i64> = HashMap::new();
+        for (id, (f, _)) in &self.symbols {
+            owner.insert(*id, *f);
+        }
+        for f in &self.forms {
+            owner.insert(f.id, f.fam);
+        }
+        for f in &self.forms2 {
+            owner.insert(f.id, f.fam);
+        }
+        for i in &self.instances {
+            owner.insert(i.0, i.2);
+        }
+        let root_of = |fam: i64| {
+            self.fam_small
+                .get(&fam)
+                .and_then(|v| v.iter().find_map(|s| owner.get(s).copied().filter(|&r| r > 0)))
+                .or_else(|| self.fam_guid.get(&fam).and_then(|g| self.content.get(g)).copied())
+        };
+        if std::env::var_os("RVT_SHAPE_DEBUG").is_some() {
+            let roots = self.fam_guid.keys().filter(|f| root_of(**f).is_some()).count();
+            eprintln!("families {} content docs {} resolved {} solids by doc {} forms2 {}", self.fam_guid.len(), self.content.len(), roots, by_fam.len(), self.forms2.len());
+            let hex = |g: &[u8; 16]| g.iter().map(|b| format!("{b:02x}")).collect::<String>();
+            for (f, g) in self.fam_guid.iter().take(6) {
+                eprintln!("  family {f} guid {} root {:?} solids {}", hex(g), root_of(*f), root_of(*f).is_some_and(|r| by_fam.contains_key(&r)));
+            }
+            for (g, r) in self.content.iter().take(4) {
+                eprintln!("  content {} → {r}", hex(g));
+            }
+            eprintln!("  solids keys {:?}", by_fam.keys().take(12).collect::<Vec<_>>());
+        }
         // instances: family doc of the symbol, nested instances inside family docs
+        let hosts: std::collections::HashSet<i64> = self.instances.iter().map(|i| i.2).filter(|&o| o > 0).collect();
         let fam_of = |sym: i64| -> Option<i64> {
-            let &(a, b) = self.symbols.get(&sym)?;
-            [a, b].into_iter().find(|f| *f > 0 && (by_fam.contains_key(f) || self.instances.iter().any(|i| i.2 == *f)))
+            let &(_, b) = self.symbols.get(&sym)?;
+            [root_of(b), Some(b)].into_iter().flatten().find(|f| *f > 0 && (by_fam.contains_key(f) || hosts.contains(f)))
         };
         let mut nested: HashMap<i64, Vec<(i64, Trf)>> = HashMap::new();
         for &(_, sym, owner, t) in &self.instances {
@@ -681,42 +1242,156 @@ impl Shapes {
                 }
             }
         }
-        fn place(fam: i64, t: &Trf, by_fam: &HashMap<i64, Mesh>, nested: &HashMap<i64, Vec<(i64, Trf)>>, depth: u32, out: &mut Mesh) {
-            if depth > 4 {
+        // a family's solids with its nested families, in the family frame, solid by solid
+        // (memoized: nested families repeat; the size is capped against runaway nesting)
+        const CAP: usize = 400_000;
+        type Parts = std::rc::Rc<Vec<Mesh>>;
+        fn flat(fam: i64, by_fam: &HashMap<i64, Vec<Mesh>>, nested: &HashMap<i64, Vec<(i64, Trf)>>, depth: u32, memo: &mut HashMap<i64, Parts>) -> Parts {
+            if let Some(m) = memo.get(&fam) {
+                return m.clone();
+            }
+            let mut out: Vec<Mesh> = by_fam.get(&fam).cloned().unwrap_or_default();
+            let mut size: usize = out.iter().map(|m| m.pos.len()).sum();
+            if depth < 4 {
+                for (f, ti) in nested.get(&fam).map(|v| v.as_slice()).unwrap_or(&[]) {
+                    if *f == fam || size > CAP {
+                        continue;
+                    }
+                    for m in flat(*f, by_fam, nested, depth + 1, memo).iter() {
+                        let mut q = Mesh::default();
+                        append(&mut q, m, ti);
+                        size += q.pos.len();
+                        out.push(q);
+                    }
+                }
+            }
+            let r = std::rc::Rc::new(out);
+            memo.insert(fam, r.clone());
+            r
+        }
+        fn append(out: &mut Mesh, m: &Mesh, t: &Trf) {
+            if m.tri.is_empty() {
                 return;
             }
-            if let Some(m) = by_fam.get(&fam) {
-                let flip = t.det() < 0.0;
-                let base = out.pos.len() as u32;
-                for p in &m.pos {
-                    let q = t.apply([p[0] as f64 / FEET, p[1] as f64 / FEET, p[2] as f64 / FEET]);
-                    out.pos.push([(q[0] * FEET) as f32, (q[1] * FEET) as f32, (q[2] * FEET) as f32]);
-                }
-                out.tri.extend(m.tri.iter().map(|tr| if flip { [tr[0] + base, tr[2] + base, tr[1] + base] } else { [tr[0] + base, tr[1] + base, tr[2] + base] }));
+            let flip = t.det() < 0.0;
+            let base = out.pos.len() as u32;
+            for p in &m.pos {
+                let q = t.apply([p[0] as f64 / FEET, p[1] as f64 / FEET, p[2] as f64 / FEET]);
+                out.pos.push([(q[0] * FEET) as f32, (q[1] * FEET) as f32, (q[2] * FEET) as f32]);
             }
-            for (f, ti) in nested.get(&fam).map(|v| v.as_slice()).unwrap_or(&[]) {
-                place(*f, &t.then_inner(ti), by_fam, nested, depth + 1, out);
-            }
+            out.tri.extend(m.tri.iter().map(|tr| if flip { [tr[0] + base, tr[2] + base, tr[1] + base] } else { [tr[0] + base, tr[1] + base, tr[2] + base] }));
         }
+        /// World box (metres) of a part's box (metres, family frame) placed by `t` (feet).
+        fn placed_box(b: ([f32; 3], [f32; 3]), t: &Trf) -> ([f64; 3], [f64; 3]) {
+            let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+            for k in 0..8 {
+                let c = [if k & 1 == 0 { b.0[0] } else { b.1[0] }, if k & 2 == 0 { b.0[1] } else { b.1[1] }, if k & 4 == 0 { b.0[2] } else { b.1[2] }];
+                let q = t.apply([c[0] as f64 / FEET, c[1] as f64 / FEET, c[2] as f64 / FEET]);
+                for a in 0..3 {
+                    lo[a] = lo[a].min(q[a] * FEET);
+                    hi[a] = hi[a].max(q[a] * FEET);
+                }
+            }
+            (lo, hi)
+        }
+        let cover = 0.6;
+        let mut memo: HashMap<i64, Parts> = HashMap::new();
+        let mut part_boxes: HashMap<i64, std::rc::Rc<Vec<Option<([f32; 3], [f32; 3])>>>> = HashMap::new();
+        let dbg = std::env::var_os("RVT_SHAPE_DEBUG").is_some();
+        let mut st = [0usize; 6];
         for &(id, sym, owner, t) in &self.instances {
             if owner > 0 {
                 continue;
             }
-            let Some(f) = fam_of(sym) else { continue };
-            let mut m = Mesh::default();
-            place(f, &t, &by_fam, &nested, 0, &mut m);
-            if m.tri.is_empty() {
+            st[0] += 1;
+            let Some(f) = fam_of(sym) else {
+                if dbg {
+                    let sy = self.symbols.get(&sym);
+                    let r = sy.and_then(|&(_, b)| root_of(b));
+                    eprintln!("NOFAM {id} sym {sym} {:?} root {:?} guid {} content-root-known {}", sy, r, sy.is_some_and(|&(_, b)| self.fam_guid.contains_key(&b)), r.is_some_and(|r| by_fam.contains_key(&r) || hosts.contains(&r)));
+                }
+                continue;
+            };
+            st[1] += 1;
+            let parts = flat(f, &by_fam, &nested, 0, &mut memo);
+            if parts.iter().all(|m| m.tri.is_empty()) {
                 continue;
             }
-            // sanity: the solids must lie within the instance's box (else the placement is
-            // not understood: keep the box)
-            if let (Some((lo, hi)), Some((blo, bhi))) = (m.bbox(), boxes.get(&id)) {
-                let tol = 0.05 + 0.1 * (0..3).map(|a| bhi[a] - blo[a]).fold(0.0, f64::max);
-                if (0..3).any(|a| (lo[a] as f64) < blo[a] - tol || (hi[a] as f64) > bhi[a] + tol) {
-                    continue;
+            st[2] += 1;
+            let pb = part_boxes.entry(f).or_insert_with(|| std::rc::Rc::new(parts.iter().map(|m| m.bbox()).collect())).clone();
+            let Some(&(blo, bhi)) = boxes.get(&id) else {
+                let mut m = Mesh::default();
+                for p in parts.iter() {
+                    append(&mut m, p, &t);
+                }
+                out.insert(id, m);
+                continue;
+            };
+            // the solids must lie within the instance's box: the family document holds one
+            // type (its default sizes) and may hold solids hidden in the project (the sample
+            // host of a hosted template, solids hidden by a type parameter): the solids out of
+            // the box are left out, and the instance keeps its box when what remains does not
+            // fill it
+            let tol = 0.05 + 0.1 * (0..3).map(|a| bhi[a] - blo[a]).fold(0.0, f64::max);
+            let inside = |(lo, hi): ([f64; 3], [f64; 3])| (0..3).all(|a| lo[a] >= blo[a] - tol && hi[a] <= bhi[a] + tol);
+            let placed: Vec<Option<([f64; 3], [f64; 3])>> = pb.iter().map(|b| b.map(|b| placed_box(b, &t))).collect();
+            let keep: Vec<usize> = (0..parts.len()).filter(|&k| placed[k].is_some_and(inside)).collect();
+            let (mut ulo, mut uhi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+            for &k in &keep {
+                let (lo, hi) = placed[k].unwrap();
+                for a in 0..3 {
+                    ulo[a] = ulo[a].min(lo[a]);
+                    uhi[a] = uhi[a].max(hi[a]);
                 }
             }
-            out.insert(id, m);
+            let covers = !keep.is_empty() && (0..3).all(|a| {
+                let e = bhi[a] - blo[a];
+                e < 0.1 || uhi[a] - ulo[a] >= cover * e
+            });
+            if covers {
+                let mut m = Mesh::default();
+                for &k in &keep {
+                    append(&mut m, &parts[k], &t);
+                }
+                if keep.len() < parts.len() {
+                    st[3] += 1;
+                }
+                out.insert(id, m);
+                continue;
+            }
+            if dbg {
+                eprintln!("OFFBOX {id} sym {sym} fam {f} aligned {} parts {} in box {} box {blo:?} {bhi:?}", t.axis_aligned(), parts.len(), keep.len());
+            }
+            st[4] += 1;
+            // another type (other sizes): MEP fittings and most parametric families scale
+            // with their nominal size: the solids scaled about the insertion point so that
+            // their box is the instance's
+            if let Some(m) = uniform_fit(&parts, &placed, &t, (blo, bhi)) {
+                st[5] += 1;
+                out.insert(id, m);
+                continue;
+            }
+            // else the solids in the box (else all) stretched onto it, axis by axis, when
+            // the placement keeps the axes
+            if !t.axis_aligned() {
+                continue;
+            }
+            let mut m = Mesh::default();
+            for k in 0..parts.len() {
+                if keep.is_empty() || keep.contains(&k) {
+                    append(&mut m, &parts[k], &t);
+                }
+            }
+            if let Some(b) = m.bbox() {
+                if fit(&mut m, b, (blo, bhi)) {
+                    st[5] += 1;
+                    out.insert(id, m);
+                }
+            }
+        }
+        if dbg {
+            eprintln!("instances placed in {:?}", t0.elapsed());
+            eprintln!("instances top {} family found {} solids {} trimmed {} off box {} fitted {}", st[0], st[1], st[2], st[3], st[4], st[5]);
         }
         out
     }
@@ -867,6 +1542,75 @@ impl Shapes {
         let m = solid(&f, &loops, &[], fm.start, fm.end, None);
         (!m.tri.is_empty()).then_some(m)
     }
+}
+
+/// The parts (family frame, metres) placed by `t` and scaled about the insertion point by the
+/// factor that best matches their world box (`placed`: the unscaled one per part) to `to`;
+/// `None` when no single factor gives that box (within 2 cm + 8 % of its size).
+fn uniform_fit(parts: &[Mesh], placed: &[Option<([f64; 3], [f64; 3])>], t: &Trf, to: ([f64; 3], [f64; 3])) -> Option<Mesh> {
+    let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    for (l, h) in placed.iter().flatten() {
+        for a in 0..3 {
+            lo[a] = lo[a].min(l[a]);
+            hi[a] = hi[a].max(h[a]);
+        }
+    }
+    let o = [t.or[0] * FEET, t.or[1] * FEET, t.or[2] * FEET];
+    // factor per axis from the box size, on the axes with some extent
+    let mut ks: Vec<f64> = (0..3).filter(|&a| hi[a] - lo[a] > 0.01 && to.1[a] - to.0[a] > 0.01).map(|a| (to.1[a] - to.0[a]) / (hi[a] - lo[a])).collect();
+    if ks.is_empty() {
+        return None;
+    }
+    ks.sort_by(f64::total_cmp);
+    let k = ks[ks.len() / 2];
+    if !(0.1..=10.0).contains(&k) || (k - 1.0).abs() < 1e-3 {
+        return None;
+    }
+    let size = (0..3).map(|a| to.1[a] - to.0[a]).fold(0.0, f64::max);
+    let tol = 0.02 + 0.08 * size;
+    for a in 0..3 {
+        let (l, h) = (o[a] + k * (lo[a] - o[a]), o[a] + k * (hi[a] - o[a]));
+        if (l - to.0[a]).abs() > tol || (h - to.1[a]).abs() > tol {
+            return None;
+        }
+    }
+    let flip = t.det() < 0.0;
+    let mut m = Mesh::default();
+    for p in parts {
+        let base = m.pos.len() as u32;
+        for q in &p.pos {
+            let w = t.apply([q[0] as f64 * k / FEET, q[1] as f64 * k / FEET, q[2] as f64 * k / FEET]);
+            m.pos.push([(w[0] * FEET) as f32, (w[1] * FEET) as f32, (w[2] * FEET) as f32]);
+        }
+        m.tri.extend(p.tri.iter().map(|tr| if flip { [tr[0] + base, tr[2] + base, tr[1] + base] } else { [tr[0] + base, tr[1] + base, tr[2] + base] }));
+    }
+    Some(m)
+}
+
+/// Maps the box `from` onto `to`, axis by axis, when the scales stay moderate.
+fn fit(m: &mut Mesh, from: ([f32; 3], [f32; 3]), to: ([f64; 3], [f64; 3])) -> bool {
+    let mut k = [1.0f64; 3];
+    for a in 0..3 {
+        let (s, d) = ((from.1[a] - from.0[a]) as f64, to.1[a] - to.0[a]);
+        if s < 1e-4 {
+            if d > 0.05 {
+                return false;
+            }
+            k[a] = 1.0;
+        } else {
+            k[a] = d / s;
+            if !(0.33..=3.0).contains(&k[a]) {
+                return false;
+            }
+        }
+    }
+    for p in &mut m.pos {
+        for a in 0..3 {
+            let s = (from.1[a] - from.0[a]) as f64;
+            p[a] = if s < 1e-4 { ((to.0[a] + to.1[a]) * 0.5) as f32 } else { (to.0[a] + (p[a] - from.0[a]) as f64 * k[a]) as f32 };
+        }
+    }
+    true
 }
 
 fn slab(sl: &Slab) -> Option<Mesh> {

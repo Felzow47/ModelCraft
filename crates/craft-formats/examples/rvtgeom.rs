@@ -63,7 +63,7 @@ fn short(g: &G) -> String {
         G::Is(v) => format!("I{:?}({})", &v[..v.len().min(12)], v.len()),
         G::Ids(v) => format!("Ids{:?}", &v[..v.len().min(6)]),
         G::O(o) => format!("{{{}}}", o.fields.iter().map(|(n, g)| format!("{n}={}", short(g))).collect::<Vec<_>>().join(",")),
-        G::L(l) => if l.len() <= 6 { format!("L[{}]", l.iter().map(|o| format!("{{{}}}", o.fields.iter().map(|(n, g)| format!("{n}={}", short(g))).collect::<Vec<_>>().join(","))).collect::<Vec<_>>().join(";")) } else { format!("L[{}]", l.len()) },
+        G::L(l) => if l.len() <= std::env::var("RVT_LMAX").ok().and_then(|x| x.parse().ok()).unwrap_or(6) { format!("L[{}]", l.iter().map(|o| format!("{{{}}}", o.fields.iter().map(|(n, g)| format!("{n}={}", short(g))).collect::<Vec<_>>().join(","))).collect::<Vec<_>>().join(";")) } else { format!("L[{}]", l.len()) },
         G::P(p) => format!("P{p:?}"),
         G::Ps(v) => format!("Ps{:?}", &v[..v.len().min(8)]) + &format!("({})", v.len()),
         G::R(r) => format!("R{r}"),

@@ -274,6 +274,30 @@ Validation (échantillons publics + fichier sous NDA, localement) : sur 5 660 fo
 fichier MEP sous NDA, 4 s'écartent de plus de 5 cm de la boîte Revit ; `M_Chair-Desk.rfa` : 4/4.
 Pas encore : murs courbes, toits, lissages / balayages / révolutions, raccords MEP (familles chargées).
 
+### Solides des familles chargées (révolutions, balayages, lissages, familles imbriquées)
+
+- Documents de famille stockés dans le projet : `/Global/ContentDocuments` (segments : balise
+  ContentMarker, GUID ContentKey, puis id racine après la balise NOBLE_SecondaryDataStorage). Les
+  éléments du document ont `m_famId` = racine. `Family.m_oFamDoc` : `m_contentDocGUID`,
+  `m_big2SmallMap2` (ids projet → ids du document : le propriétaire d'un id « first » donne la racine).
+- `FamilySymbol` : (`m_famId`, `m_familyId`) ; symboles imbriqués : `m_famId` = racine du document
+  qui les contient (ne pas s'en servir comme famille : auto-référence).
+- `RevolutionElem` : esquisse `m_sketchId`, angles -1001802 / -1001803. `SweepElem` :
+  `m_profileData.m_profileSketchId` + `m_pathSketchId`, ou `m_path3dId` → `Path3d`
+  (`m_curveLoops` → `CurveLoop.m_curves`, `m_userId` = le balayage) : c'est le cas des coudes MEP.
+  `BlendElem` : deux esquisses dont `m_userId` = le lissage, hauteurs -1001804 / -1001805.
+- Formes ignorées : paramètre entier -1006205 (« Visible ») = 0, ou présence d'un
+  `AddGeomToHostInFamEnvGStep` (hôte d'exemple 8 pi × 8 pi des gabarits hébergés). Les drapeaux 9 / 11
+  de `GeomStepList` ne distinguent pas l'hôte.
+- Placement : par solide ; on garde les solides dont la boîte placée tombe dans la boîte Revit de
+  l'instance s'ils la couvrent (≥ 60 % de chaque côté ≥ 10 cm), sinon mise à l'échelle uniforme autour
+  de l'insertion (rapport médian 0,1 à 10, côtés à 8 % près), sinon étirement par axe (placements
+  alignés sur les axes, 0,33 à 3). Le type peut avoir d'autres cotes que la famille enregistrée :
+  c'est une approximation.
+- Validation (fichier MEP sous NDA) : 9 721 formes (5 660 avant), 513 à plus de 5 cm de la boîte
+  Revit, 9 à plus de 30 cm. Raccords de canalisation 3 177 / 6 140, raccords de gaine 132 / 1 191, accessoires de canalisation
+  398 / 586 ; sprinkleurs et gaines souples : aucun.
+
 
 ## Feuilles (contenu 2D) et cadrage des vues
 
