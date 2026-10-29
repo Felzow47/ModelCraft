@@ -914,6 +914,8 @@ pub struct Shapes {
     sym_size: HashMap<i64, (f64, f64)>,
     /// Meshes of the boundary representations stored by stairs, landings, parts and roofs.
     breps: Vec<(i64, Mesh)>,
+    /// Curved walls: id, location curve points (feet), half thickness, reference planes.
+    curved_walls: Vec<(i64, Vec<V3>, f64, Vec<(V3, V3, V3, [f64; 4])>)>,
     mep: Vec<Mep>,
     /// curve-driven instance (beam, brace) → its location line (start, end), feet
     framing: Vec<(i64, V3, V3)>,
@@ -1050,6 +1052,44 @@ fn append(out: &mut Mesh, m: &Mesh, t: &Trf) {
         out.pos.push([(q[0] * FEET) as f32, (q[1] * FEET) as f32, (q[2] * FEET) as f32]);
     }
     out.tri.extend(m.tri.iter().map(|tr| if flip { [tr[0] + base, tr[2] + base, tr[1] + base] } else { [tr[0] + base, tr[1] + base, tr[2] + base] }));
+}
+
+/// A wall along the polyline `path` (feet, its z ignored): the band `±half` about it in
+/// plan, from `z0` to `z1` (feet). Mesh in metres.
+fn swept_wall(path: &[V3], half: f64, z0: f64, z1: f64) -> Option<Mesh> {
+    let n = path.len();
+    if n < 2 || !(z1 > z0) {
+        return None;
+    }
+    // offset directions at the vertices (mitred)
+    let mut sides: Vec<([f64; 2], [f64; 2])> = Vec::with_capacity(n);
+    for i in 0..n {
+        let a = path[i.saturating_sub(1)];
+        let b = path[(i + 1).min(n - 1)];
+        let t = norm([b[0] - a[0], b[1] - a[1], 0.0])?;
+        let nn = [-t[1], t[0]];
+        let p = [path[i][0], path[i][1]];
+        sides.push(([p[0] - nn[0] * half, p[1] - nn[1] * half], [p[0] + nn[0] * half, p[1] + nn[1] * half]));
+    }
+    let mut m = Mesh::default();
+    let mut push = |q: [f64; 2], z: f64| -> u32 {
+        m.pos.push([(q[0] * FEET) as f32, (q[1] * FEET) as f32, (z * FEET) as f32]);
+        (m.pos.len() - 1) as u32
+    };
+    // per vertex: inner bottom, inner top, outer bottom, outer top
+    let ids: Vec<[u32; 4]> = sides.iter().map(|&(a, b)| [push(a, z0), push(a, z1), push(b, z0), push(b, z1)]).collect();
+    for i in 0..n - 1 {
+        let (p, q) = (ids[i], ids[i + 1]);
+        for (a, b) in [(0, 1), (2, 3), (0, 2), (1, 3)] {
+            m.tri.push([p[a], q[a], q[b]]);
+            m.tri.push([p[a], q[b], p[b]]);
+        }
+    }
+    for e in [ids[0], ids[n - 1]] {
+        m.tri.push([e[0], e[1], e[3]]);
+        m.tri.push([e[0], e[3], e[2]]);
+    }
+    Some(m)
 }
 
 /// The family solids stretched along the family x (about the middle of the solids) to
@@ -1216,7 +1256,17 @@ impl Shapes {
                 let Some(dr) = tr.objs.iter().find(|o| s.name(o.tag) == "VWallDriver") else { return };
                 let Some(c) = dr.ptr("m_pCrv").and_then(|i| tr.objs.get(i)) else { return };
                 if s.name(c.tag) != "GLine" {
-                    return; // curved walls keep their box
+                    // curved wall: its location curve swept by the wall's thickness (twice the
+                    // key reference offset, about the curve) between its bottom and top faces
+                    let path = curve_points(c, s);
+                    let half = match tr.root.get("m_keyRefOffset") {
+                        Some(G::F(k)) if k.is_finite() && *k > 1e-3 && *k < 10.0 => *k,
+                        _ => 0.25,
+                    };
+                    if path.len() >= 2 {
+                        self.curved_walls.push((id, path, half, planes_of(&tr, "m_pRefFaces")));
+                    }
+                    return;
                 }
                 let (Some(o), Some(dv)) = (v3(c.fs("m_origin")), v3(c.fs("m_dirVec"))) else { return };
                 let ends = match c.fs("m_endParams") {
@@ -1397,6 +1447,18 @@ impl Shapes {
         for w in &self.walls {
             if let Some(m) = self.wall(w, boxes) {
                 out.insert(w.id, m);
+            }
+        }
+        for (id, path, half, planes) in &self.curved_walls {
+            // bottom and top: the horizontal reference faces, else the element box
+            let zs: Vec<f64> = planes.iter().filter(|(_, x, y, _)| norm(cross(*x, *y)).is_some_and(|n| n[2].abs() > 0.99)).map(|(o, ..)| o[2]).collect();
+            let (mut z0, mut z1) = (zs.iter().copied().fold(f64::INFINITY, f64::min), zs.iter().copied().fold(f64::NEG_INFINITY, f64::max));
+            if !(z1 - z0 > 1e-3) {
+                let Some((lo, hi)) = boxes.get(id) else { continue };
+                (z0, z1) = (lo[2] / FEET, hi[2] / FEET);
+            }
+            if let Some(m) = swept_wall(path, *half, z0, z1) {
+                out.insert(*id, m);
             }
         }
         for sl in &self.slabs {
@@ -1937,6 +1999,20 @@ pub fn classes() -> &'static [&'static str] {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn curved_wall_band() {
+        // quarter circle of radius 10 ft, 1 ft thick, 10 ft high
+        let path: Vec<[f64; 3]> = (0..=16).map(|k| {
+            let a = std::f64::consts::FRAC_PI_2 * k as f64 / 16.0;
+            [10.0 * a.cos(), 10.0 * a.sin(), 0.0]
+        }).collect();
+        let m = super::swept_wall(&path, 0.5, 0.0, 10.0).unwrap();
+        let (lo, hi) = m.bbox().unwrap();
+        assert!((hi[2] - 3.048).abs() < 1e-4 && lo[2].abs() < 1e-6);
+        assert!((hi[0] - 10.5 * 0.3048).abs() < 1e-3, "{hi:?}");
+        assert_eq!(m.tri.len(), 16 * 8 + 4);
+    }
+
     use super::*;
 
     fn volume(pts: &[V3], tri: &[[u32; 3]]) -> f64 {
