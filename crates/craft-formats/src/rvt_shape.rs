@@ -915,6 +915,10 @@ pub struct Shapes {
     /// Meshes of the boundary representations stored by stairs, landings, parts and roofs.
     breps: Vec<(i64, Mesh)>,
     /// Curved walls: id, location curve points (feet), half thickness, reference planes.
+    /// Rails (top rails, handrails): id, `Path3d` id of their top line.
+    rails: Vec<(i64, i64)>,
+    /// Railings: id, path sketch id, ids of their continuous rails.
+    railings: Vec<(i64, i64, Vec<i64>)>,
     curved_walls: Vec<(i64, Vec<V3>, f64, Vec<(V3, V3, V3, [f64; 4])>)>,
     mep: Vec<Mep>,
     /// curve-driven instance (beam, brace) → its location line (start, end), feet
@@ -1057,8 +1061,15 @@ fn append(out: &mut Mesh, m: &Mesh, t: &Trf) {
 /// A wall along the polyline `path` (feet, its z ignored): the band `±half` about it in
 /// plan, from `z0` to `z1` (feet). Mesh in metres.
 fn swept_wall(path: &[V3], half: f64, z0: f64, z1: f64) -> Option<Mesh> {
+    let flat: Vec<V3> = path.iter().map(|p| [p[0], p[1], 0.0]).collect();
+    swept_band(&flat, half, z0, z1)
+}
+
+/// The band `±half` about the polyline `path` in plan, from `z + dz0` to `z + dz1` at each
+/// point (feet). Mesh in metres.
+fn swept_band(path: &[V3], half: f64, dz0: f64, dz1: f64) -> Option<Mesh> {
     let n = path.len();
-    if n < 2 || !(z1 > z0) {
+    if n < 2 || !(dz1 > dz0) {
         return None;
     }
     // offset directions at the vertices (mitred)
@@ -1066,7 +1077,7 @@ fn swept_wall(path: &[V3], half: f64, z0: f64, z1: f64) -> Option<Mesh> {
     for i in 0..n {
         let a = path[i.saturating_sub(1)];
         let b = path[(i + 1).min(n - 1)];
-        let t = norm([b[0] - a[0], b[1] - a[1], 0.0])?;
+        let Some(t) = norm([b[0] - a[0], b[1] - a[1], 0.0]) else { return None };
         let nn = [-t[1], t[0]];
         let p = [path[i][0], path[i][1]];
         sides.push(([p[0] - nn[0] * half, p[1] - nn[1] * half], [p[0] + nn[0] * half, p[1] + nn[1] * half]));
@@ -1077,7 +1088,7 @@ fn swept_wall(path: &[V3], half: f64, z0: f64, z1: f64) -> Option<Mesh> {
         (m.pos.len() - 1) as u32
     };
     // per vertex: inner bottom, inner top, outer bottom, outer top
-    let ids: Vec<[u32; 4]> = sides.iter().map(|&(a, b)| [push(a, z0), push(a, z1), push(b, z0), push(b, z1)]).collect();
+    let ids: Vec<[u32; 4]> = sides.iter().zip(path).map(|(&(a, b), p)| [push(a, p[2] + dz0), push(a, p[2] + dz1), push(b, p[2] + dz0), push(b, p[2] + dz1)]).collect();
     for i in 0..n - 1 {
         let (p, q) = (ids[i], ids[i + 1]);
         for (a, b) in [(0, 1), (2, 3), (0, 2), (1, 3)] {
@@ -1136,8 +1147,8 @@ fn param(tr: &Tree, id: i64) -> Option<f64> {
 
 impl Shapes {
     /// Element classes read.
-    const CLASSES: [&'static str; 21] = [
-        "StairsRun", "StairsLanding", "PartMaker", "ProfileRoof", "SWall", "Floor", "Ceiling", "BuildingPad", "RoofSoffit", "Toposolid", "ExtrusionElem", "RevolutionElem", "SweepElem", "BlendElem", "Family", "FamilyInstance", "FamilySymbol", "VarSketch", "Sketch", "SketchPlane", "Path3d",
+    const CLASSES: [&'static str; 24] = [
+        "TopRail", "HandRail", "BaseRailing", "StairsRun", "StairsLanding", "PartMaker", "ProfileRoof", "SWall", "Floor", "Ceiling", "BuildingPad", "RoofSoffit", "Toposolid", "ExtrusionElem", "RevolutionElem", "SweepElem", "BlendElem", "Family", "FamilyInstance", "FamilySymbol", "VarSketch", "Sketch", "SketchPlane", "Path3d",
     ];
 
     /// Element classes read, by tag.
@@ -1237,6 +1248,17 @@ impl Shapes {
     fn element(&mut self, s: &Schema, cls: &str, tr: &Tree) {
         let id = tr.id;
         match cls {
+            "TopRail" | "HandRail" => {
+                if let Some(p) = tr.objs.iter().find(|o| s.name(o.tag) == "Path3dRailPathProvider").and_then(|o| o.int("m_path3dId")) {
+                    self.rails.push((id, p));
+                }
+            }
+            "BaseRailing" => {
+                if let Some(sk) = tr.root.int("m_sketchId") {
+                    let rails = tr.root.list("m_continuousRailIds").iter().filter_map(|r| r.int("second")).collect();
+                    self.railings.push((id, sk, rails));
+                }
+            }
             "PartMaker" => {
                 // one part per DPartData: its id and its stored geometry
                 for d in tr.objs.iter().filter(|o| s.name(o.tag) == "DPartData") {
@@ -1461,6 +1483,7 @@ impl Shapes {
                 out.insert(*id, m);
             }
         }
+        self.rails_and_railings(boxes, &mut out);
         for sl in &self.slabs {
             if let Some(m) = slab(sl) {
                 out.insert(sl.id, m);
@@ -1745,6 +1768,79 @@ impl Shapes {
             eprintln!("framing boxes {nf} of {}, curtain boxes {nc} of {}", self.framing.len(), self.curtain.len());
         }
         out
+    }
+
+    /// Rails: a 5 cm square bar hanging under their top line; railings: balusters along
+    /// their top rail (else their path sketch) down to the bottom of their box.
+    fn rails_and_railings(&self, boxes: &HashMap<i64, ([f64; 3], [f64; 3])>, out: &mut HashMap<i64, Mesh>) {
+        let path_of = |id: i64| -> Vec<V3> {
+            let Some(sk) = self.sketches.get(&id) else { return vec![] };
+            let mut pts: Vec<V3> = Vec::new();
+            for c in &sk.curves {
+                for &p in c {
+                    if pts.last().is_none_or(|q| dot(sub(*q, p), sub(*q, p)).sqrt() > 1e-6) {
+                        pts.push(p);
+                    }
+                }
+            }
+            pts
+        };
+        let bar = 0.05 / FEET;
+        let mut rail_path: HashMap<i64, Vec<V3>> = HashMap::new();
+        for &(id, p) in &self.rails {
+            let pts = path_of(p);
+            if let Some(m) = swept_band(&pts, bar / 2.0, -bar, 0.0) {
+                out.insert(id, m);
+                rail_path.insert(id, pts);
+            }
+        }
+        for (id, sk, rails) in &self.railings {
+            let Some(&(blo, bhi)) = boxes.get(id) else { continue };
+            let (zlo, zhi) = (blo[2] / FEET, bhi[2] / FEET);
+            // posts from the top rail's line (less the bar), else from the sketch up to the box top
+            let (top, drop) = match rails.iter().find_map(|r| rail_path.get(r)) {
+                Some(p) => {
+                    let zmin = p.iter().map(|q| q[2]).fold(f64::INFINITY, f64::min);
+                    (p.clone(), (zmin - zlo).clamp(0.3 / FEET, 2.0 / FEET))
+                }
+                None => {
+                    let p = path_of(*sk);
+                    if p.is_empty() {
+                        continue;
+                    }
+                    let base = p.iter().map(|q| q[2]).fold(f64::INFINITY, f64::min).max(zlo);
+                    let h = zhi - base;
+                    if !(h > 0.1) {
+                        continue;
+                    }
+                    (p.iter().map(|q| [q[0], q[1], q[2] - base + zhi]).collect(), h)
+                }
+            };
+            let post = 0.02 / FEET;
+            let step = 0.12 / FEET;
+            let mut m = Mesh::default();
+            for i in 0..top.len().saturating_sub(1) {
+                let (a, b) = (top[i], top[i + 1]);
+                let len = dot(sub(b, a), sub(b, a)).sqrt();
+                let n = (len / step).ceil().max(1.0) as usize;
+                for k in 0..=n {
+                    if k == n && i + 2 < top.len() {
+                        continue; // shared with the next segment
+                    }
+                    let t = k as f64 / n as f64;
+                    let c = add(a, mul(sub(b, a), t));
+                    let pst = [[c[0] - post, c[1], c[2]], [c[0] + post, c[1], c[2]]];
+                    if let Some(q) = swept_band(&pst, post, -drop, -bar.min(drop * 0.5)) {
+                        let base = m.pos.len() as u32;
+                        m.pos.extend(q.pos);
+                        m.tri.extend(q.tri.iter().map(|t| [t[0] + base, t[1] + base, t[2] + base]));
+                    }
+                }
+            }
+            if !m.tri.is_empty() {
+                out.insert(*id, m);
+            }
+        }
     }
 
     fn wall(&self, w: &Wall, boxes: &HashMap<i64, ([f64; 3], [f64; 3])>) -> Option<Mesh> {

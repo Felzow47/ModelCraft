@@ -33,6 +33,11 @@ fn main() {
         }
     }
     println!("shapes off their box by >5 cm: {bad} (>30 cm: {big})");
+    if let Ok(ids) = std::env::var("BOX_IDS") {
+        for id in ids.split(',').filter_map(|x| x.parse::<i64>().ok()) {
+            if let Some(b) = boxes.iter().find(|b| b.id == id) { println!("  box {id} cat {} {:?} {:?} shaped {}", b.category, b.min, b.max, meshes.contains_key(&id)); }
+        }
+    }
     if let Ok(p) = std::env::var("CATS_OUT") {
         let mut f = std::fs::File::create(p).unwrap();
         for b in &boxes { writeln!(f, "{} {} {}", b.id, b.category, craft_formats::rvt_model::category_in(b.category as i64, family).is_some() as u8).unwrap(); }
