@@ -9,10 +9,11 @@
 //! | .3ds | [`tds`] |
 //! | .3dxml | [`xml3d`] (tessellated 3DRep) |
 //! | .step / .stp / .iges / .igs | [`occt`] (OpenCascade, feature `occt`) |
-//! | .easm | best effort through `sw_format` |
+//! | .easm / .eprt | [`easm`] + [`hsf`] (HOOPS Stream File, clean-room) |
 //! | .x_t / .x_b | not supported (Parasolid has no open reader) |
 
 pub mod easm;
+pub mod hsf;
 pub mod obj;
 pub mod rvt;
 pub mod rvt_browser;
@@ -84,7 +85,7 @@ pub fn formats() -> Vec<FormatInfo> {
         FormatInfo { exts: &["blend"], name: "Blender", support: asm_partial, note: "Anciens .blend (2.7x) seulement, via assimp. Blender 2.8 et plus : Fichier › Exporter › Wavefront (.obj, avec .mtl), glTF 2.0 ou FBX." },
         FormatInfo { exts: &["x", "lwo", "lws", "ac", "ase", "ms3d", "cob", "smd", "md2", "md3", "md5mesh", "b3d", "nff", "xgl", "zgl", "ogex", "irrmesh", "irr"], name: "Autres formats 3D", support: asm_partial, note: "DirectX .x, LightWave, AC3D, ASE, MilkShape, Quake… (via assimp)." },
         FormatInfo { exts: &["3dxml"], name: "3D XML", support: Support::Partial, note: "Représentations maillées 3DXML (pas de B-rep CATIA)." },
-        FormatInfo { exts: &["easm", "eprt"], name: "eDrawings", support: Support::Partial, note: "Aperçu et maillages lisibles uniquement." },
+        FormatInfo { exts: &["easm", "eprt"], name: "eDrawings", support: Support::Full, note: "Lecteur HSF intégré (sans eDrawings) : maillages, couleurs, positions et arbre des pièces." },
         FormatInfo { exts: &["rvt", "rfa", "rte", "rft"], name: "Autodesk Revit", support: Support::Partial, note: "Boîtes 3D des éléments par catégorie (Revit 2018 et plus), vignette et informations du projet ; pas encore la forme exacte." },
         FormatInfo { exts: &["x_t", "x_b"], name: "Parasolid", support: Support::None, note: "Format B-rep propriétaire ; exportez en STEP depuis SolidWorks." },
         FormatInfo { exts: &["dwg"], name: "AutoCAD DWG", support: Support::None, note: "Pas de lecteur libre compatible (LibreDWG est sous GPL) ; exportez en DXF, STEP ou IFC." },

@@ -41,3 +41,13 @@ eDrawings, SolidWorks or Autodesk either.
 | Undo / redo | `ViewState` stack in `document.rs` (positions, explode, opacities, hiding) |
 | Animated explode | `assembly.rs`: one fixed radial direction per part, never reversed |
 | Installer | `installer/gen_iss.py` → `installer/modelcraft.iss` (Inno Setup) |
+
+## HOOPS Stream Format (eDrawings)
+
+- **Source**: Tech Soft 3D's public HOOPS Visualize documentation of the HSF file format
+  (`docs.techsoft3d.com`, "HSF file format": architecture, opcode index, one page per opcode,
+  polyhedron attributes).
+- **Used for**: the opcode table and operand layouts read by `crates/craft-formats/src/hsf.rs`.
+  Details the pages leave open were settled by looking at the bytes of an eDrawings sample
+  (face-list length counting its bits byte, the two-pass null shell / refinement layout, the
+  rendering-options lock tail). No HOOPS SDK code or binary was read or disassembled.

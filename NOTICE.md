@@ -8,6 +8,10 @@ No ArtCraft logo is used: the ModelCraft logo (`assets/logo/`) is an original cr
 **No eDrawings, SolidWorks or Revit code** was used, disassembled or copied.
 The Revit reader (`crates/craft-formats/src/rvt*.rs`) is an independent implementation that reads
 the OLE container with the `cfb` library (MIT).
+The eDrawings reader (`crates/craft-formats/src/{easm,hsf}.rs`) is a clean-room implementation of
+the HOOPS Stream Format written only from Tech Soft 3D's publicly published HSF documentation
+(opcode list and operand layouts); no HOOPS, eDrawings or SolidWorks library, source or binary was
+used, disassembled or redistributed, and no eDrawings install is needed at run time.
 
 ## Reused code
 

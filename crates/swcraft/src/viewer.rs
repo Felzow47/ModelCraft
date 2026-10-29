@@ -2608,6 +2608,11 @@ fn prop_value(k: &str, v: &str) -> String {
             [np, mb] => format!("{np} partition(s), {mb} MB (proprietary Autodesk format)"),
             _ => v.to_string(),
         },
+        // "{n} ({r} affinés, {k} répétés)"
+        "Maillages HSF" if v.contains("affinés") => match nums(v).as_slice() {
+            [n, r, k] => format!("{n} ({r} refined, {k} repeated)"),
+            _ => v.to_string(),
+        },
         _ => crate::i18n::tr_str(v),
     }
 }
