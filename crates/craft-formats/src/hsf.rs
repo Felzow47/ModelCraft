@@ -251,6 +251,10 @@ struct Parser<'a> {
     repeats: Vec<(i32, i32, [f32; 12])>,
     /// Stream version x100 (`V19.10` -> 1910), 0 when unknown.
     version: u32,
+    /// `TKE_Pause` records seen (the model is complete after the last refinement pass).
+    pauses: usize,
+    /// Set when the trailing tables after the model were reached.
+    done: bool,
 }
 
 /// Parse an uncompressed HSF stream (the bytes that follow `TKE_Start_Compression`, inflated,
@@ -261,7 +265,7 @@ pub fn parse(data: &[u8]) -> Model {
 
 /// [`parse`] for a stream of a known version (x100, as in [`version_number`]).
 pub fn parse_version(data: &[u8], version: u32) -> Model {
-    let mut p = Parser { r: R { d: data, p: 0 }, m: Model::default(), stack: Vec::new(), tags: Vec::new(), last: Tag::Other, repeats: Vec::new(), version };
+    let mut p = Parser { r: R { d: data, p: 0 }, m: Model::default(), stack: Vec::new(), tags: Vec::new(), last: Tag::Other, repeats: Vec::new(), version, pauses: 0, done: false };
     let root = p.m.seg("/");
     p.stack.push(root);
     if let Err(e) = p.run() {
@@ -339,7 +343,7 @@ impl<'a> Parser<'a> {
             }
             self.m.recent.push((at, op));
             self.opcode(op).map_err(|e| format!("opcode 0x{op:02x} à l'octet {at} : {e}"))?;
-            if op == 0x00 {
+            if op == 0x00 || self.done {
                 break;
             }
         }
@@ -350,7 +354,8 @@ impl<'a> Parser<'a> {
         let r = &mut self.r;
         let mut last = Tag::Other;
         match op {
-            0x00 | 0x01 => {} // termination, pause
+            0x00 => {} // termination
+            0x01 => self.pauses += 1,
             b'z' => {}        // stop compression (the inflated data simply ends)
             b';' => {
                 // comment: up to end of line
@@ -389,11 +394,21 @@ impl<'a> Parser<'a> {
                     r.p += 1;
                     k += 1;
                 }
+                if r.d.get(r.p) != Some(&b']') && self.pauses > 0 {
+                    // trailing index tables written after the paused passes (eDrawings 2015+):
+                    // the model itself is complete
+                    self.done = true;
+                    return Ok(());
+                }
                 if r.u8()? != b']' {
                     return Err("fin de données utilisateur introuvable".into());
                 }
             }
             b']' => {}
+            b'?' => {
+                // conditions: a one-byte length and the condition string
+                r.name8()?;
+            }
             b'I' => r.skip(4)?, // file info flags
             b'B' | b'b' => {
                 // bounding info: type, then a cuboid (6 floats) or a sphere (4 floats)
@@ -548,6 +563,14 @@ impl<'a> Parser<'a> {
             b'0' | b'v' | b'K' | b'k' => r.skip(4)?,
             b'|' => r.skip(12)?,
             b' ' => r.skip(4)?,
+            0x16 => {
+                // unicode user options: a count of 16-bit characters, then the characters
+                let mut n = r.u16()? as usize;
+                if n == 0xFFFF {
+                    n = r.len()?;
+                }
+                r.skip(n.checked_mul(2).ok_or("options utilisateur trop longues")?)?;
+            }
             b'U' => {
                 let mut n = r.u16()? as usize;
                 if n == 0xFFFF {
@@ -817,6 +840,27 @@ fn optionals(r: &mut R, _npts: usize) -> Res<()> {
                 let n = r.len()?;
                 r.skip(n)?;
             }
+            // entity attributes: a list of attribute records (user options), up to a termination
+            0x63 => loop {
+                match r.u8()? {
+                    0x00 => break,
+                    b'U' => {
+                        let mut n = r.u16()? as usize;
+                        if n == 0xFFFF {
+                            n = r.len()?;
+                        }
+                        r.skip(n)?;
+                    }
+                    0x16 => {
+                        let mut n = r.u16()? as usize;
+                        if n == 0xFFFF {
+                            n = r.len()?;
+                        }
+                        r.skip(n.checked_mul(2).ok_or("options utilisateur trop longues")?)?;
+                    }
+                    o => return Err(format!("attribut d'entité 0x{o:02x} non pris en charge")),
+                }
+            },
             o => return Err(format!("attribut de maillage 0x{o:02x} non pris en charge")),
         }
     }
@@ -911,6 +955,12 @@ fn image(r: &mut R, version: u32) -> Res<()> {
     Ok(())
 }
 
+/// Geometry types whose colour lock carries per-channel masks (`TKO_Geometry_Bits`): face, edge,
+/// line, marker, text, window, face/window contrast, back, vertex, edge/line/marker/vertex
+/// contrast, cut edge, simple reflection, cut face and text contrast. Image, ambient, light and
+/// front carry none.
+const COLOR_LOCK_TYPES: u32 = 0x0000_003F | 0x0000_0C00 | 0x0000_6000 | 0x000F_0000 | 0x0070_0000 | 0x0100_0000;
+
 fn rendering_options(r: &mut R) -> Res<()> {
     // masks first (extended words included), then the values
     let m = r.i32()? as u32;
@@ -922,7 +972,7 @@ fn rendering_options(r: &mut R) -> Res<()> {
     if m & 0x8000_0000 != 0 {
         r.i32()?;
     }
-    const KNOWN0: u32 = 0x0000_1000 | 0x0000_2000 | 0x0010_0000 | 0x0100_0000 | 0x8000_0000;
+    const KNOWN0: u32 = 0x0000_1000 | 0x0000_2000 | 0x0001_0000 | 0x0010_0000 | 0x0100_0000 | 0x8000_0000;
     const KNOWN1: u32 = 0x0000_0010;
     if m & !KNOWN0 != 0 || m2 & !KNOWN1 != 0 {
         return Err(format!("options de rendu 0x{m:08x}/0x{m2:08x} non prises en charge"));
@@ -934,27 +984,40 @@ fn rendering_options(r: &mut R) -> Res<()> {
         r.u8()?; // transparent hidden surface removal algorithm
     }
     if m & 0x0010_0000 != 0 {
-        // attribute locks; with the colour lock, colour lock masks and per-channel masks follow
+        // attribute lock mask and value; only the colour and visibility locks carry sub-masks
         let lm = r.i32()?;
         r.i32()?;
-        if lm & !0x04 != 0 {
-            return Err(format!("verrous d'attributs 0x{lm:x} non pris en charge"));
-        }
         if lm & 0x04 != 0 {
+            // colour lock: geometry mask and value, then a channel mask and a channel value
+            // for each lockable geometry type in the mask
+            let cm = r.i32()? as u32;
             r.i32()?;
-            r.i32()?;
-            for _ in 0..36 {
+            for _ in 0..2 * (cm & COLOR_LOCK_TYPES).count_ones() {
                 if r.u8()? & 0x80 != 0 {
                     r.u8()?;
                 }
             }
         }
+        if lm & 0x0800_0000 != 0 {
+            r.skip(8)?; // visibility lock: geometry mask and value
+        }
     }
     if m & 0x0100_0000 != 0 {
-        // hidden line options: a flag byte (only payload-free flags seen so far)
-        let h = r.u8()?;
-        if h & !0x20 != 0 {
-            return Err(format!("options de lignes cachées 0x{h:02x} non prises en charge"));
+        // hidden line options: flag bits; only the HSR algorithm carries a payload here
+        // (a byte, extended by 16 bits when 0x80 is set, and by a last byte when 0x8000 is set)
+        let mut h = r.u8()? as u32;
+        if h & 0x80 != 0 {
+            h |= (r.u16()? as u32) << 8;
+            if h & 0x8000 != 0 {
+                h |= (r.u8()? as u32) << 24;
+            }
+        }
+        const FLAGS: u32 = 0x01 | 0x02 | 0x20 | 0x40 | 0x80 | 0x0100 | 0x0200 | 0x8000 | 0x04_0000 | 0x08_0000 | 0x8000_0000;
+        if h & !(FLAGS | 0x10_0000) != 0 {
+            return Err(format!("options de lignes cachées 0x{h:06x} non prises en charge"));
+        }
+        if h & 0x10_0000 != 0 {
+            r.u8()?; // hidden line HSR algorithm
         }
     }
     if m2 & 0x0000_0010 != 0 {
@@ -1135,5 +1198,53 @@ mod tests {
         assert_eq!(m.shells[seg.shells[0]].as_ref().unwrap().tris.len(), 2);
         assert_eq!(version_number(b";; HSF V19.10 \n"), 1910);
         assert_eq!(version_number(b";; HSF V18.00 \n"), 1800);
+    }
+    /// Records first met in Disney 2015/2018 eDrawings exports: unicode user options, conditions,
+    /// colour and visibility locks, extended hidden line options with an HSR algorithm, a shell
+    /// carrying entity attributes, and the index tables that follow the paused passes.
+    #[test]
+    fn v19_locks_and_attributes() {
+        let mut s = Vec::new();
+        s.extend_from_slice(&[b'(', 1, b'a']);
+        // unicode user options "ab", conditions "c1"
+        s.extend_from_slice(&[0x16, 2, 0, b'a', 0, b'b', 0, b'?', 2, b'c', b'1']);
+        // rendering options: display lists, attribute lock (colour + visibility), hidden lines
+        s.push(b'R');
+        for v in [0x8111_0000u32, 0x10, 0x0111_0000, 0x10] {
+            s.extend_from_slice(&v.to_le_bytes());
+        }
+        s.extend_from_slice(&0x0800_0004i32.to_le_bytes());
+        s.extend_from_slice(&0x0800_0004i32.to_le_bytes());
+        // colour lock on face, image (no channels) and back: two channel pairs
+        s.extend_from_slice(&0x2041i32.to_le_bytes());
+        s.extend_from_slice(&0x2041i32.to_le_bytes());
+        s.extend_from_slice(&[0xff, 0x01, 0xff, 0x01, 0x01, 0x01]);
+        s.extend_from_slice(&0x037f_ff7fi32.to_le_bytes());
+        s.extend_from_slice(&0x037f_ff7fi32.to_le_bytes());
+        s.extend_from_slice(&[0xa0, 0x80, 0x10, 0x00, 0x00]);
+        s.extend_from_slice(&0f32.to_le_bytes());
+        s.extend_from_slice(&0.1f32.to_le_bytes());
+        // first-pass shell (one triangle) with entity attributes
+        s.extend_from_slice(&[b'S', 0x18, 0]);
+        s.extend_from_slice(&3i32.to_le_bytes());
+        for c in [0f32, 0., 0., 1., 0., 0., 0., 1., 0.] {
+            s.extend_from_slice(&c.to_le_bytes());
+        }
+        s.push(1);
+        s.extend_from_slice(&5i32.to_le_bytes());
+        s.extend_from_slice(&[8, 3, 0, 1, 2]);
+        s.extend_from_slice(&[0x63, b'U', 3, 0, b'x', b'=', b'1', 0x00, 0x00]);
+        s.extend_from_slice(&[b')', 0x01]);
+        // trailing tables: user data whose payload is not closed by ']'
+        s.push(b'[');
+        s.extend_from_slice(&2i32.to_le_bytes());
+        s.extend_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        let m = parse_version(&s, 1910);
+        assert!(m.error.is_none(), "{:?}", m.error);
+        let seg = m.segment("/a").unwrap();
+        assert_eq!(m.shells[seg.shells[0]].as_ref().unwrap().tris.len(), 1);
+        for k in 0..s.len() - 1 {
+            let _ = parse_version(&s[..k], 1910);
+        }
     }
 }
