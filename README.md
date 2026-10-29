@@ -297,13 +297,28 @@ OCCT_INC=/path/occt/include/opencascade OCCT_LIB=/path/occt-mingw/win64/gcc/lib 
 (`.cargo/config.toml` sets the mingw linker and the static CRT; the icon and version info are
 embedded with `windres`.)
 
-**Windows installer** ([Inno Setup](https://jrsoftware.org/isinfo.php) 6, free): after the Windows
-build and copying both `.exe` into `dist/`,
+`scripts/build-release.sh` does all of it: it builds the three native libraries once into `deps/`
+(`scripts/build-deps.sh`), then both executables with every format into `dist/`. From Windows,
+through Docker:
+```
+docker build -t modelcraft-cross -f scripts/Dockerfile.cross scripts
+docker run --rm -v "%CD%:/src" -v mc-deps:/src/deps -v mc-target:/src/target -w /src modelcraft-cross bash scripts/build-release.sh deps
+```
+
+**Windows installer** ([Inno Setup](https://jrsoftware.org/isinfo.php) 6, free) and **portable zip**:
+after the Windows build has put both `.exe` into `dist/`,
 ```
 python3 installer/gen_iss.py            # writes installer/modelcraft.iss (extensions from platform.rs, version from Cargo.toml)
 iscc installer\modelcraft.iss           # Windows; on Linux: wine "C:\InnoSetup6\ISCC.exe" ...
+python3 scripts/package.py              # portable zip
 ```
-produces `dist/ModelCraft-Setup-<version>.exe`.
+produces `dist/ModelCraft-Setup-<version>.exe` and `dist/ModelCraft-<version>-portable.zip`.
+
+**GitHub Actions** (`.github/workflows/ci.yml`): every push runs the tests on Linux and Windows,
+then the full Windows build (native libraries cached), the installer and the portable zip, kept
+as workflow artifacts. A push to `main` also publishes the release `v<version>` with both files;
+bump `version` in `Cargo.toml` for a new release, otherwise the release of the current version is
+replaced by the new build.
 
 Diagnostic tool: `cargo run --release -p sw-format --example swinfo -- file.SLDASM [--streams] [--obj out.obj]`.
 

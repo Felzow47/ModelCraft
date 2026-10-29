@@ -1,0 +1,117 @@
+# Every push and pull request: tests on Linux and Windows. Then the full Windows build (every
+# format: OpenCascade, assimp, web-ifc cross-compiled with mingw), the installer and the portable
+# zip. On a push to main the release v<version> (version from Cargo.toml) is published with both:
+# a new version creates a new release, the same version replaces the release with the new build.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    tags-ignore: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux packages
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libxkbcommon-dev
+      - name: Build
+        run: cargo build --workspace --release --all-targets
+      - name: Tests
+        run: cargo test --workspace --release
+
+  build:
+    name: Windows build (all formats)
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-gnu
+      - name: Toolchain
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64 ninja-build cmake
+      - name: Native libraries cache
+        uses: actions/cache@v4
+        with:
+          path: deps
+          key: deps-${{ hashFiles('scripts/build-deps.sh') }}
+      - name: Build
+        run: scripts/build-release.sh deps
+      - uses: actions/upload-artifact@v4
+        with:
+          name: exe
+          path: dist/*.exe
+
+  package:
+    name: Installer and portable zip
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: exe
+          path: dist
+      - name: Installer (Inno Setup)
+        run: |
+          python installer/gen_iss.py
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\modelcraft.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Portable zip
+        run: python scripts/package.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: |
+            dist/ModelCraft-Setup-*.exe
+            dist/ModelCraft-*-portable.zip
+
+  release:
+    name: GitHub release
+    needs: package
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: dist
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ver=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          tag="v$ver"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release delete "$tag" --yes --cleanup-tag
+          fi
+          gh release create "$tag" dist/* --target "$GITHUB_SHA" --title "ModelCraft $ver" \
+            --notes "ModelCraft $ver, build of ${GITHUB_SHA::7}.
+
+          - **ModelCraft-Setup-$ver.exe**: installer (no administrator rights needed).
+          - **ModelCraft-$ver-portable.zip**: portable version, unzip and run modelcraft.exe."

@@ -360,14 +360,18 @@ fn about(app: &mut App, ctx: &egui::Context) {
             ui.add_space(8.0);
             ui.vertical(|ui| {
                 widgets::wordmark(ui, 26.0);
-                ui.label(widgets::mono_caps(&format!("V{}", crate::branding::VERSION), 11.0, t.accent_text));
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 14.0;
+                    ui.label(widgets::mono_caps(&format!("V{}", crate::branding::VERSION), 11.0, t.accent_text));
+                    ui.label(egui::RichText::new(tr("par {a}").replace("{a}", crate::branding::AUTHOR)).font(theme::mono(11.0)).color(t.text_faint));
+                });
                 ui.label(egui::RichText::new(tr("Visionneuse 3D native pour SolidWorks, STEP, IGES, IFC, FBX, glTF, STL, OBJ, 3MF, 3DS, 3DXML et bien d'autres.")).color(t.text_muted));
             });
         });
         ui.add_space(12.0);
         widgets::section_title(ui, tr("Crédits"));
         for line in [
-            tr("Interface inspirée de la suite ArtCraft ; jetons de design et widgets adaptés de PdfCraft (MIT OR Apache-2.0, © ArtCraft Team et contributeurs PdfCraft). Projet indépendant, non affilié."),
+            tr("Interface inspirée de la suite ArtCraft. Projet indépendant, non affilié."),
             tr("Icônes Lucide (ISC) · Polices Inter et JetBrains Mono (OFL)."),
             tr("STEP/IGES : Open CASCADE Technology 7.8 (LGPL-2.1 avec exception)."),
             tr("Lecteur SolidWorks écrit de zéro, sans code d'eDrawings."),

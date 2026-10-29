@@ -1,0 +1,9 @@
+# Linux -> Windows cross-build image, the same toolchain as the GitHub workflow:
+#   docker build -t modelcraft-cross -f scripts/Dockerfile.cross scripts
+#   docker run --rm -v "$PWD:/src" -w /src modelcraft-cross scripts/build-release.sh
+FROM ubuntu:24.04
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        build-essential cmake ninja-build git ca-certificates curl mingw-w64 python3 \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --target x86_64-pc-windows-gnu
+ENV PATH=/root/.cargo/bin:$PATH

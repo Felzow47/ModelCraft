@@ -78,8 +78,7 @@ fn header(_app: &mut App, ui: &mut egui::Ui, t: &Tokens) {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 14.0;
                     ui.label(widgets::mono_caps(&format!("V{}", crate::branding::VERSION), 11.0, t.accent_text));
-                    ui.label(widgets::mono_caps(tr("Hors ligne"), 11.0, t.text_faint));
-                    ui.label(widgets::mono_caps(tr("Natif · Rust"), 11.0, t.text_faint));
+                    ui.label(egui::RichText::new(tr("par {a}").replace("{a}", crate::branding::AUTHOR)).font(theme::mono(11.0)).color(t.text_faint));
                 });
             });
         });

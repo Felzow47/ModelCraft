@@ -5,6 +5,7 @@ pub const NAME_HEAD: &str = "Model";
 pub const NAME_TAIL: &str = "Craft";
 pub const NAME: &str = "ModelCraft";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const AUTHOR: &str = "Felzow47";
 /// Folder name under %APPDATA% / $XDG_CONFIG_HOME.
 pub const CONFIG_DIR: &str = "ModelCraft";
 /// ProgID prefix for Windows file associations.

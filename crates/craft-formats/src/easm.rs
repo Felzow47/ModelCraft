@@ -8,7 +8,7 @@
 
 use crate::hsf::{self, Model};
 use crate::{component, empty_scene, mat_mul, Loaded, IDENTITY};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::Path;
 use std::time::Instant;
@@ -133,6 +133,9 @@ struct Builder<'a> {
     lib: HashMap<(usize, bool), Vec<(usize, bool)>>,
     triangles: usize,
     skipped_configs: usize,
+    /// Top-level segments holding include targets (`/include library`, `/model_0_include`…):
+    /// libraries of shared bodies, drawn only where a part includes them.
+    libraries: HashSet<usize>,
 }
 
 /// A mesh placed by the walk, waiting for its component.
@@ -156,6 +159,11 @@ fn node_kind(name: &str) -> Option<bool> {
     } else {
         None
     }
+}
+
+/// Configuration segments are named `configN`.
+fn is_config(name: &str) -> bool {
+    name.strip_prefix("config").is_some_and(|r| !r.is_empty() && r.bytes().all(|b| b.is_ascii_digit()))
 }
 
 impl<'a> Builder<'a> {
@@ -218,16 +226,18 @@ impl<'a> Builder<'a> {
         let s = &m.segments[seg];
         // `/ole` holds embedded OLE objects (pictures pasted into the document) drawn as
         // textured quads in sheet space, not model geometry
-        if s.path == "/include library" || s.path == "/ole" || depth > 64 {
+        if self.libraries.contains(&seg) || s.path == "/ole" || depth > 64 {
             return;
         }
-        let vis = s.face_visible.unwrap_or(vis);
+        let name = seg_name(&s.path);
+        // the parent walks only the active configuration; its own hidden flag (set on every
+        // configuration when none is active) is ignored
+        let vis = if is_config(name) { vis } else { s.face_visible.unwrap_or(vis) };
         let color = s.face_color.or(color);
         let world = match &s.matrix {
             Some(m) => mat_mul(&world, &to_cm(m)),
             None => world,
         };
-        let name = seg_name(&s.path);
         let kind = node_kind(name);
         let mut local = Vec::new();
         let (me, sink_here): (Option<usize>, &mut Vec<Placed>) = match kind {
@@ -278,16 +288,14 @@ impl<'a> Builder<'a> {
             }
         }
         // several SolidWorks configurations (`config0`, `config1`…) hold alternative versions of
-        // the same model: show the first one only
-        let mut seen_config = false;
+        // the same model: show the active one only, the one left visible (the others are hidden),
+        // or the first one when none is
+        let configs: Vec<usize> = s.children.iter().copied().filter(|&c| is_config(seg_name(&m.segments[c].path))).collect();
+        let active = configs.iter().copied().find(|&c| m.segments[c].face_visible != Some(false)).or(configs.first().copied());
+        self.skipped_configs += configs.len().saturating_sub(1);
         for &c in &s.children {
-            let n = seg_name(&m.segments[c].path);
-            if n.strip_prefix("config").is_some_and(|r| !r.is_empty() && r.bytes().all(|b| b.is_ascii_digit())) {
-                if seen_config {
-                    self.skipped_configs += 1;
-                    continue;
-                }
-                seen_config = true;
+            if configs.contains(&c) && Some(c) != active {
+                continue;
             }
             self.walk(c, world, vis, color, me, depth + 1, sink_here, scene);
         }
@@ -318,7 +326,15 @@ pub fn build_scene(m: &Model, scene: &mut Loaded) {
     let Some(&root) = m.by_path.get("/") else {
         return;
     };
-    let mut b = Builder { m, lib: HashMap::new(), triangles: 0, skipped_configs: 0 };
+    let libraries = m
+        .segments
+        .iter()
+        .flat_map(|s| &s.includes)
+        .filter_map(|(inc, _)| inc.split('/').nth(1).and_then(|top| m.by_path.get(&format!("/{top}"))).copied())
+        .chain(m.by_path.get("/include library").copied())
+        .filter(|&i| i != root)
+        .collect();
+    let mut b = Builder { m, lib: HashMap::new(), triangles: 0, skipped_configs: 0, libraries };
     let mut top = Vec::new();
     b.walk(root, IDENTITY, true, None, None, 0, &mut top, scene);
     // geometry outside any part node (single-part .eprt files)
@@ -332,7 +348,7 @@ pub fn build_scene(m: &Model, scene: &mut Loaded) {
         scene.components.push(c);
     }
     if b.skipped_configs > 0 {
-        scene.warnings.push(format!("{} autre(s) configuration(s) enregistrée(s) dans le fichier : seule la première est affichée.", b.skipped_configs));
+        scene.warnings.push(format!("{} autre(s) configuration(s) enregistrée(s) dans le fichier : seule la configuration active est affichée.", b.skipped_configs));
     }
     scene.kind = if scene.components.iter().any(|c| c.is_assembly) { DocKind::Assembly } else { DocKind::Part };
     let st = &m.stats;
@@ -344,6 +360,41 @@ pub fn build_scene(m: &Model, scene: &mut Loaded) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Configurations hidden except the active one, and a body library outside
+    /// `/include library` (`/model_0_include`, as in the Disney 2015 exports).
+    #[test]
+    fn active_configuration_and_body_library() {
+        let mut m = Model::default();
+        let tri = hsf::Shell { points: vec![[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]], tris: vec![[0, 1, 2]] };
+        let mut add = |path: &str, f: &dyn Fn(&mut hsf::Segment)| {
+            let i = m.segments.len();
+            let mut s = hsf::Segment { path: path.into(), ..Default::default() };
+            f(&mut s);
+            m.segments.push(s);
+            m.by_path.insert(path.into(), i);
+            if let Some(k) = path.rfind('/').filter(|_| path != "/") {
+                let parent = if k == 0 { "/" } else { &path[..k] };
+                if let Some(&p) = m.by_path.get(parent) {
+                    m.segments[p].children.push(i);
+                }
+            }
+        };
+        add("/", &|_| {});
+        add("/config1", &|s| s.face_visible = Some(false));
+        add("/config1/assempart1", &|s| s.shells = vec![0]);
+        add("/config0", &|_| {});
+        add("/config0/assempart2", &|s| s.includes = vec![("/model_0_include/shared/body1".into(), false)]);
+        add("/model_0_include", &|_| {});
+        add("/model_0_include/shared", &|_| {});
+        add("/model_0_include/shared/body1", &|s| s.shells = vec![0]);
+        m.shells.push(Some(tri));
+        let mut s = empty_scene(Path::new("t.easm"), "eDrawings");
+        build_scene(&m, &mut s);
+        let names: Vec<&str> = s.components.iter().filter(|c| c.mesh.is_some()).map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["assempart2"]);
+        assert_eq!(s.warnings.len(), 1);
+    }
 
     /// Real eDrawings assembly (not in the repository): EASM_SAMPLE=/path/to/file.easm, default
     /// /workspace/sw/samples2/edw1.EASM; skipped when absent.

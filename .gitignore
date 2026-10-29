@@ -49,3 +49,5 @@
 
 # Screenshots (test models under NDA) - never version them
 /screenshots/
+/deps
+/dist/*.zip
