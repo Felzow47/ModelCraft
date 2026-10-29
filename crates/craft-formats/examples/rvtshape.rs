@@ -40,7 +40,7 @@ fn main() {
     }
     if let Ok(p) = std::env::var("CATS_OUT") {
         let mut f = std::fs::File::create(p).unwrap();
-        for b in &boxes { writeln!(f, "{} {} {}", b.id, b.category, craft_formats::rvt_model::category_in(b.category as i64, family).is_some() as u8).unwrap(); }
+        for b in &boxes { writeln!(f, "{} {} {} {}", b.id, b.category, craft_formats::rvt_model::category_in(b.category as i64, family).is_some() as u8, meshes.contains_key(&b.id) as u8).unwrap(); }
     }
     let mut left: HashMap<i64, (usize, usize)> = HashMap::new();
     for b in &boxes {

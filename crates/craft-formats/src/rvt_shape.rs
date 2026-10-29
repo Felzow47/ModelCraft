@@ -920,6 +920,12 @@ pub struct Shapes {
     system_bars: HashMap<(i64, i64, i64), (i64, Vec<Vec<V3>>)>,
     /// Bars in systems: id, system id, layer, index.
     bars_in_system: Vec<(i64, i64, i64, i64)>,
+    /// Wall footing segments: id, profile loop and straight path (feet).
+    footings: Vec<(i64, Vec<V3>, Vec<V3>)>,
+    /// Isolated footing types: the outline (feet, family frame) of a rectangular footing.
+    footing_outline: HashMap<i64, (V3, V3)>,
+    /// Instances' own stored geometry (masses, in-place copies), by instance id.
+    own_geom: Vec<(i64, Mesh)>,
     /// Bar diameters (feet) by bar type.
     bar_diam: HashMap<i64, f64>,
     /// Stair runs and landings: id, id of their stairs.
@@ -1094,6 +1100,62 @@ fn thicken_down(m: &mut Mesh, z0: f32) {
             }
         }
     }
+}
+
+/// Closed planar profile (feet) swept along a straight path: a prism (metres).
+fn prism(prof: &[V3], path: &[V3]) -> Option<Mesh> {
+    let [a, b] = path else { return None };
+    let d = sub(*b, *a);
+    let mut prof = prof.to_vec();
+    if prof.len() > 3 && dot(sub(prof[0], *prof.last()?), sub(prof[0], *prof.last()?)) < 1e-10 {
+        prof.pop();
+    }
+    if prof.len() < 3 {
+        return None;
+    }
+    let f = sketch_frame(None, std::slice::from_ref(&prof))?;
+    if dot(f.n, d).abs() < 1e-6 {
+        return None;
+    }
+    let mut l2: Vec<[f64; 2]> = prof.iter().map(|&p| f.uv(p)).collect();
+    if (area2(&l2) > 0.0) != (dot(f.n, d) > 0.0) {
+        prof.reverse();
+        l2.reverse();
+    }
+    let (c2, mut ct) = cap2d(&[l2]);
+    // caps counter-clockwise about the advance direction
+    let ccw = |t: &[u32; 3]| {
+        let (a, b, c) = (c2[t[0] as usize], c2[t[1] as usize], c2[t[2] as usize]);
+        (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]) > 0.0
+    };
+    let fwd = dot(f.n, d) > 0.0;
+    for t in &mut ct {
+        if ccw(t) != fwd {
+            t.swap(1, 2);
+        }
+    }
+    let c0: Vec<V3> = c2.iter().map(|q| f.at(q[0], q[1], 0.0)).collect();
+    let c1: Vec<V3> = c0.iter().map(|&p| add(p, d)).collect();
+    let far: Vec<V3> = prof.iter().map(|&p| add(p, d)).collect();
+    assemble(&[vec![prof], vec![far]], false, [Some((c0, ct.clone())), Some((c1, ct))])
+}
+
+/// Axis-aligned cuboid (metres) between `lo` and `hi` (feet).
+fn cuboid(lo: V3, hi: V3) -> Mesh {
+    let mut pos = Vec::new();
+    for k in 0..8 {
+        let p = [if k & 1 == 0 { lo[0] } else { hi[0] }, if k & 2 == 0 { lo[1] } else { hi[1] }, if k & 4 == 0 { lo[2] } else { hi[2] }];
+        pos.push([(p[0] * FEET) as f32, (p[1] * FEET) as f32, (p[2] * FEET) as f32]);
+    }
+    let q = |a: u32, b: u32, c: u32, d: u32| [[a, b, c], [a, c, d]];
+    let tri = [q(0, 2, 3, 1), q(4, 5, 7, 6), q(0, 1, 5, 4), q(2, 6, 7, 3), q(0, 4, 6, 2), q(1, 3, 7, 5)].concat();
+    Mesh { pos, tri }
+}
+
+/// Whether the box of `m` is within `tol` metres of `b`.
+fn near_box(m: &Mesh, b: Option<&([f64; 3], [f64; 3])>, tol: f64) -> bool {
+    let (Some((lo, hi)), Some((blo, bhi))) = (m.bbox(), b) else { return b.is_none() };
+    (0..3).all(|k| (lo[k] as f64 - blo[k]).abs() <= tol && (hi[k] as f64 - bhi[k]).abs() <= tol)
 }
 
 /// Appends the points of a curve to a polyline, skipping the shared end point and
@@ -1378,8 +1440,8 @@ fn param(tr: &Tree, id: i64) -> Option<f64> {
 
 impl Shapes {
     /// Element classes read.
-    const CLASSES: [&'static str; 30] = [
-        "Rebar", "RebarInSystem", "RebarSystem", "RebarBarType", "SiteSurface", "Roof", "TopRail", "HandRail", "BaseRailing", "StairsRun", "StairsLanding", "PartMaker", "ProfileRoof", "SWall", "Floor", "Ceiling", "BuildingPad", "RoofSoffit", "Toposolid", "ExtrusionElem", "RevolutionElem", "SweepElem", "BlendElem", "Family", "FamilyInstance", "FamilySymbol", "VarSketch", "Sketch", "SketchPlane", "Path3d",
+    const CLASSES: [&'static str; 31] = [
+        "ContFooting", "Rebar", "RebarInSystem", "RebarSystem", "RebarBarType", "SiteSurface", "Roof", "TopRail", "HandRail", "BaseRailing", "StairsRun", "StairsLanding", "PartMaker", "ProfileRoof", "SWall", "Floor", "Ceiling", "BuildingPad", "RoofSoffit", "Toposolid", "ExtrusionElem", "RevolutionElem", "SweepElem", "BlendElem", "Family", "FamilyInstance", "FamilySymbol", "VarSketch", "Sketch", "SketchPlane", "Path3d",
     ];
 
     /// Element classes read, by tag.
@@ -1479,6 +1541,17 @@ impl Shapes {
     fn element(&mut self, s: &Schema, cls: &str, tr: &Tree) {
         let id = tr.id;
         match cls {
+            "ContFooting" => {
+                // each segment: its profile loop swept along its straight driver line
+                for seg in tr.objs.iter().filter(|o| s.name(o.tag) == "ContFootingSegment") {
+                    let (Some(pl), Some(dc)) = (seg.ptr("m_pProfile").and_then(|k| tr.objs.get(k)), seg.ptr("m_pDriverCurve").and_then(|k| tr.objs.get(k))) else { continue };
+                    let path = curve_points(dc, s);
+                    let prof = loop_points(pl, tr, s);
+                    if path.len() == 2 && prof.len() >= 3 {
+                        self.footings.push((id, prof, path));
+                    }
+                }
+            }
             "RebarBarType" => {
                 if let Some(G::F(d)) = tr.root.get("m_barModelDiameter") {
                     if d.is_finite() && *d > 0.0 {
@@ -1773,6 +1846,12 @@ impl Shapes {
                 let Some(t) = ii.obj("m_Trf").and_then(Trf::from) else { return };
                 let sym = ii.int("m_symbolId").unwrap_or(-1);
                 self.instances.push((id, sym, tr.root.int("m_famId").unwrap_or(-1), t));
+                // geometry stored in the instance itself (masses, copied geometry)
+                if let Some(g) = tr.objs.iter().position(|o| s.name(o.tag) == "Geometry" && !o.ptrs("m_pFaces").is_empty()) {
+                    if let Some(m) = brep_of(s, tr, g) {
+                        self.own_geom.push((id, m));
+                    }
+                }
                 if tr.objs.iter().any(|o| matches!(s.name(o.tag), "MullionFamRef" | "CurtainCellFamRef")) {
                     self.curtain.push((id, t.clone()));
                 }
@@ -1803,6 +1882,14 @@ impl Shapes {
                     // FAMILY_WIDTH_PARAM, FAMILY_HEIGHT_PARAM
                     if let (Some(w), Some(h)) = (get(-1001301), get(-1001300)) {
                         self.sym_size.insert(id, (w, h));
+                    }
+                    // a rectangular footing (STRUCTURAL_FOUNDATION_WIDTH and _LENGTH): its
+                    // outline is its solid when the outline has those sizes
+                    if let (Some(w), Some(l), Some([x0, y0, z0, x1, y1, z1])) = (get(-1001568), get(-1001569), tr.root.obj("m_outline").and_then(|o| o.fs("m_minmax"))) {
+                        let ok = |a: f64, b: f64| (a - b).abs() < 0.01;
+                        if (ok(x1 - x0, w) && ok(y1 - y0, l) || ok(x1 - x0, l) && ok(y1 - y0, w)) && z1 - z0 > 0.01 {
+                            self.footing_outline.insert(id, ([*x0, *y0, *z0], [*x1, *y1, *z1]));
+                        }
                     }
                 }
             }
@@ -2143,6 +2230,49 @@ impl Shapes {
         if dbg {
             eprintln!("instances placed in {:?}", t0.elapsed());
             eprintln!("instances top {} family found {} solids {} trimmed {} off box {} fitted {}", st[0], st[1], st[2], st[3], st[4], st[5]);
+        }
+        // wall footings: the profile swept along the driver line; the driver stops at the
+        // wall's ends, the footing at its joins, so an axis-aligned sweep is extended or
+        // trimmed to the footing's box along its axis
+        for (id, prof, path) in &self.footings {
+            let (mut prof, mut path) = (prof.clone(), path.clone());
+            if let (Some(d), Some(&(blo, bhi))) = (norm(sub(path[1], path[0])), boxes.get(id)) {
+                if let Some(k) = (0..3).find(|&k| d[k].abs() > 0.9999) {
+                    let (lo, hi) = (blo[k] / FEET, bhi[k] / FEET);
+                    let (s0, s1) = if d[k] > 0.0 { (lo, hi) } else { (hi, lo) };
+                    let shift = s0 - path[0][k];
+                    for p in &mut prof {
+                        p[k] += shift;
+                    }
+                    path[0][k] = s0;
+                    path[1][k] = s1;
+                }
+            }
+            if let Some(m) = prism(&prof, &path) {
+                let e = out.entry(*id).or_default();
+                let b = e.pos.len() as u32;
+                e.pos.extend(m.pos);
+                e.tri.extend(m.tri.iter().map(|t| [t[0] + b, t[1] + b, t[2] + b]));
+            }
+        }
+        // rectangular isolated footings with no family solids: their type's outline
+        for &(id, sym, owner, t) in &self.instances {
+            if owner > 0 || out.contains_key(&id) {
+                continue;
+            }
+            if let Some(&(lo, hi)) = self.footing_outline.get(&sym) {
+                let mut m = Mesh::default();
+                append(&mut m, &cuboid(lo, hi), &t);
+                if near_box(&m, boxes.get(&id), 0.05) {
+                    out.insert(id, m);
+                }
+            }
+        }
+        // instances holding their own geometry (masses)
+        for (id, m) in &self.own_geom {
+            if !out.contains_key(id) && near_box(m, boxes.get(id), 0.3) {
+                out.insert(*id, m.clone());
+            }
         }
         let mut nf = 0;
         for (id, a, b) in &self.framing {
@@ -2497,6 +2627,19 @@ pub fn classes() -> &'static [&'static str] {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn prism_box() {
+        let prof = vec![[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 0.0, 1.0], [0.0, 0.0, 1.0]];
+        let m = prism(&prof, &[[0.0, 0.0, 0.0], [0.0, 5.0, 0.0]]).unwrap();
+        let vol: f64 = m.tri.iter().map(|t| {
+            let p = |k: u32| m.pos[k as usize].map(|x| x as f64 / FEET);
+            dot(p(t[0]), cross(p(t[1]), p(t[2]))) / 6.0
+        }).sum();
+        assert!((vol - 10.0).abs() < 1e-3, "{vol} {} {:?}", m.tri.len(), m.pos);
+        let c = cuboid([0.0; 3], [1.0, 2.0, 3.0]);
+        assert_eq!(c.tri.len(), 12);
+    }
+
     #[test]
     fn delaunay_grid() {
         let p: Vec<[f64; 2]> = (0..25).map(|k| [(k % 5) as f64, (k / 5) as f64 + 0.01 * (k % 3) as f64]).collect();
