@@ -699,6 +699,10 @@ pub struct Trf {
 }
 
 impl Trf {
+    /// Rotation-scale part (columns: images of x, y, z) and origin.
+    pub(crate) fn new(m: [f64; 9], or: V3) -> Trf {
+        Trf { m, or }
+    }
     pub(crate) fn from(o: &Obj) -> Option<Trf> {
         let m = o.fs("m_3x3")?;
         let or = v3(o.fs("m_or"))?;

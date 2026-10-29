@@ -18,7 +18,7 @@ use crate::rvt_browser::Schema;
 use crate::rvt_geom::{Obj, Tree, G};
 use crate::rvt_shape::{curve_points, Mesh, Trf};
 use std::collections::HashMap;
-use sw_format::{Image2d, Rgba, Sheet2d, Text2d, ViewFrame, Viewport2d};
+use sw_format::{Fill2d, Image2d, Rgba, Sheet2d, Stroke2d, Text2d, ViewFrame, Viewport2d};
 
 const FEET: f64 = 0.3048;
 type V3 = [f64; 3];
@@ -387,6 +387,8 @@ pub struct Sheets {
     level_z: HashMap<i64, f64>,
     /// 3D section boxes (`ModelClipBox` switched on), by viewer element id
     section_boxes: HashMap<i64, Crop>,
+    /// view annotations (detail lines, filled regions, dimensions, tags)
+    ann: crate::rvt_annot::Annots,
 }
 
 const CLASSES: [&str; 12] = [
@@ -425,7 +427,7 @@ fn strings(tr: &Tree) -> HashMap<i64, String> {
 impl Sheets {
     pub fn wants(s: &Schema) -> Vec<bool> {
         let mut want = vec![false; 65536];
-        for c in CLASSES {
+        for c in CLASSES.iter().chain(crate::rvt_annot::CLASSES.iter()) {
             if let Some(t) = s.tag_of(c) {
                 want[t as usize] = true;
             }
@@ -442,6 +444,7 @@ impl Sheets {
         let r = &tr.root;
         let owner = r.int("m_ownerDBViewId").unwrap_or(-1);
         let cls = s.name(t);
+        self.ann.take(s, t, tr, || strings(tr));
         match cls {
             "FamilySymbol" => {
                 let curves: Vec<Vec<V3>> = r.ptrs("m_nonBRepGeomPtrs").iter().filter_map(|&i| tr.objs.get(i)).map(|c| curve_points(c, s)).filter(|p| p.len() >= 2).collect();
@@ -779,24 +782,6 @@ impl Sheets {
             x[2] = x[2].max(p[0]);
             x[3] = x[3].max(p[1]);
         };
-        let push_text = |out: &mut Sheet2d, t: &RawText, tf: Option<&Trf>, text: String| {
-            if text.trim().is_empty() {
-                return;
-            }
-            let (o, b) = match tf {
-                Some(tf) => (tf.apply(t.orig), tf.lin(t.base)),
-                None => (t.orig, t.base),
-            };
-            let l = (b[0] * b[0] + b[1] * b[1]).sqrt().max(1e-9);
-            let k = tf.map(|tf| (tf.lin([1.0, 0.0, 0.0])[0].powi(2) + tf.lin([1.0, 0.0, 0.0])[1].powi(2)).sqrt()).unwrap_or(1.0);
-            let h = (t.flags & 3) as u8;
-            let v = match (t.flags >> 6) & 7 {
-                2 => 1,
-                4 => 2,
-                _ => 0,
-            };
-            out.texts.push(Text2d { pos: pt([o[0], o[1]]), dir: [(b[0] / l) as f32, (b[1] / l) as f32], height: m(t.height * k / LINE_BOX / text.lines().count().max(1) as f64), halign: h.min(2), valign: v, text });
-        };
         // families on the sheet (title block first: the largest)
         let mut insts: Vec<&(i64, i64, Trf)> = self.instances.iter().filter(|i| i.0 == id).collect();
         let area = |i: &&(i64, i64, Trf)| self.symbols.get(&i.1).and_then(|s| s.outline).map(|o| (o[2] - o[0]) * (o[3] - o[1])).unwrap_or(0.0);
@@ -818,7 +803,7 @@ impl Sheets {
                 out.lines.push(c.iter().map(|p| tf.apply(*p)).map(|q| pt([q[0], q[1]])).collect());
             }
             for t in &sy.texts {
-                push_text(&mut out, t, Some(tf), t.text.clone());
+                push_text(&mut out, t, Some(tf), trf_scale(tf), t.text.clone());
             }
             for t in &sy.tags {
                 let mut s = String::new();
@@ -832,7 +817,7 @@ impl Sheets {
                     }
                     s += &format!("{pre}{v}{suf}");
                 }
-                push_text(&mut out, t, Some(tf), s);
+                push_text(&mut out, t, Some(tf), trf_scale(tf), s);
             }
             for (pos, tb) in &sy.tables {
                 // in a title block the schedule grows upwards from its position
@@ -840,8 +825,12 @@ impl Sheets {
             }
         }
         for (_, t) in self.texts.iter().filter(|t| t.0 == id) {
-            push_text(&mut out, t, None, t.text.clone());
+            push_text(&mut out, t, None, 1.0, t.text.clone());
         }
+        // annotations drawn on the sheet itself (detail lines, filled regions…)
+        let mut d = crate::rvt_annot::Drawn::default();
+        self.ann.draw(id, &|p| [p[0], p[1]], 1.0, &mut d);
+        put_drawn(&mut out, &d, &|p| p);
         for (_, o, sch) in self.sched_inst.iter().filter(|s| s.0 == id) {
             if let Some(tb) = self.tables.get(sch) {
                 self.draw_table(&mut out, tb, *o, false);
@@ -954,7 +943,9 @@ impl Sheets {
             let d = sub(p, o);
             [dot(d, bx), dot(d, by)]
         };
-        for (lo, hi, list) in edges.items.iter() {
+        // drafting views draw no model, only their own lines
+        let drafting = view.class.contains("Drafting");
+        for (lo, hi, list) in edges.items.iter().filter(|_| !drafting) {
             if keep.is_some_and(|k| k.misses(ft(*lo), ft(*hi))) {
                 continue;
             }
@@ -979,13 +970,14 @@ impl Sheets {
                 break;
             }
         }
+        // the view's annotations (not cut by the crop)
+        let mut ann = crate::rvt_annot::Drawn::default();
+        self.ann.draw(vp.view, &proj, vp.scale, &mut ann);
         if uv_box.is_none() {
             // no crop: the extents of what is seen
             let mut e = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
-            for s in &segs {
-                for p in s {
-                    e = [e[0].min(p[0]), e[1].min(p[1]), e[2].max(p[0]), e[3].max(p[1])];
-                }
+            for p in segs.iter().flatten().chain(ann.strokes.iter().flat_map(|s| s.0.iter())) {
+                e = [e[0].min(p[0]), e[1].min(p[1]), e[2].max(p[0]), e[3].max(p[1])];
             }
             if !e[0].is_finite() {
                 return None;
@@ -998,7 +990,7 @@ impl Sheets {
         let (cu, cv) = if crop.is_some() { (0.0, 0.0) } else { ((ub[0] + ub[2]) * 0.5, (ub[1] + ub[3]) * 0.5) };
         let k = vp.scale;
         if std::env::var_os("SHEET_DEBUG").is_some() {
-            eprintln!("  view {} {:?} crop {:?} ub {:?} offset {:?} label {:?} len {} k {}", vp.view, view.name, crop.map(|c| (c.orig, c.off, c.active)), ub, vp.offset, vp.label, vp.label_len, k);
+            eprintln!("  view {} {:?} {} crop {:?} ub {:?} offset {:?} label {:?} len {} k {}", vp.view, view.name, view.class, crop.map(|c| (c.orig, c.off, c.active)), ub, vp.offset, vp.label, vp.label_len, k);
         }
         let to_paper = |p: P2| [vp.offset[0] + (p[0] - cu) * k, vp.offset[1] + (p[1] - cv) * k];
         let m = |x: f64| (x * FEET) as f32;
@@ -1008,9 +1000,84 @@ impl Sheets {
                 out.fine.push([[m(a[0]), m(a[1])], [m(b[0]), m(b[1])]]);
             }
         }
+        put_drawn(out, &ann, &to_paper);
+        // model → paper, for the view's texts and tags
+        let mp = Trf::new([k * bx[0], k * by[0], 0.0, k * bx[1], k * by[1], 0.0, k * bx[2], k * by[2], 0.0], [vp.offset[0] - k * (dot(o, bx) + cu), vp.offset[1] - k * (dot(o, by) + cv), 0.0]);
+        for (_, t) in self.texts.iter().filter(|t| t.0 == vp.view) {
+            push_text(out, t, Some(&mp), 1.0, t.text.clone());
+        }
+        for tg in self.ann.tags.iter().filter(|t| t.owner == vp.view) {
+            let Some(sy) = self.symbols.get(&tg.symbol) else { continue };
+            let h = mp.apply(tg.head);
+            let (c, s) = (tg.angle.cos(), tg.angle.sin());
+            let tf = Trf::new([c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0], [h[0], h[1], 0.0]);
+            let w = m(self.ann.pen(1));
+            for cv in &sy.curves {
+                out.strokes.push(Stroke2d { pts: cv.iter().map(|p| tf.apply(*p)).map(|q| [m(q[0]), m(q[1])]).collect(), width: w, color: [0; 3] });
+            }
+            for t in &sy.texts {
+                push_text(out, t, Some(&tf), 1.0, t.text.clone());
+            }
+            // labels: the tagged element's text parameters, else its type's
+            let ty = self.ann.inst_type.get(&tg.target);
+            for t in &sy.tags {
+                let vals: Vec<String> = t.params.iter().filter_map(|(p, pre, suf, _)| {
+                    let v = self.ann.strs.get(&tg.target).and_then(|x| x.get(p)).or_else(|| ty.and_then(|y| self.ann.strs.get(y)).and_then(|x| x.get(p)))?;
+                    (!v.is_empty()).then(|| format!("{pre}{v}{suf}"))
+                }).collect();
+                push_text(out, t, Some(&tf), 1.0, vals.join(" "));
+            }
+        }
         let a = to_paper([ub[0], ub[1]]);
         let b = to_paper([ub[2], ub[3]]);
         Some([a[0], a[1], b[0], b[1]])
+    }
+}
+
+/// Length scale of a transform in its plane.
+fn trf_scale(tf: &Trf) -> f64 {
+    let x = tf.lin([1.0, 0.0, 0.0]);
+    (x[0] * x[0] + x[1] * x[1]).sqrt()
+}
+
+/// A text placed by `tf` (paper feet out), its height scaled by `hk`.
+fn push_text(out: &mut Sheet2d, t: &RawText, tf: Option<&Trf>, hk: f64, text: String) {
+    if text.trim().is_empty() {
+        return;
+    }
+    let m = |x: f64| (x * FEET) as f32;
+    let (o, b) = match tf {
+        Some(tf) => (tf.apply(t.orig), tf.lin(t.base)),
+        None => (t.orig, t.base),
+    };
+    let l = (b[0] * b[0] + b[1] * b[1]).sqrt().max(1e-9);
+    let h = (t.flags & 3) as u8;
+    let v = match (t.flags >> 6) & 7 {
+        2 => 1,
+        4 => 2,
+        _ => 0,
+    };
+    out.texts.push(Text2d { pos: [m(o[0]), m(o[1])], dir: [(b[0] / l) as f32, (b[1] / l) as f32], height: m(t.height * hk / LINE_BOX / text.lines().count().max(1) as f64), halign: h.min(2), valign: v, text });
+}
+
+/// Annotation geometry (`Drawn`, view plane) put on the paper by `to_paper`.
+fn put_drawn(out: &mut Sheet2d, d: &crate::rvt_annot::Drawn, to_paper: &dyn Fn(P2) -> P2) {
+    let m = |x: f64| (x * FEET) as f32;
+    let pt = |p: P2| {
+        let q = to_paper(p);
+        [m(q[0]), m(q[1])]
+    };
+    for (pts, w, c) in &d.strokes {
+        out.strokes.push(Stroke2d { pts: pts.iter().map(|p| pt(*p)).collect(), width: m(*w), color: *c });
+    }
+    for (tris, c) in &d.fills {
+        out.fills.push(Fill2d { tris: tris.iter().map(|t| [pt(t[0]), pt(t[1]), pt(t[2])]).collect(), color: *c });
+    }
+    for (p, dir, h, text) in &d.texts {
+        let (a, b) = (to_paper(*p), to_paper([p[0] + dir[0], p[1] + dir[1]]));
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let l = (dx * dx + dy * dy).sqrt().max(1e-12);
+        out.texts.push(Text2d { pos: [m(a[0]), m(a[1])], dir: [(dx / l) as f32, (dy / l) as f32], height: m(*h), halign: 1, valign: 2, text: text.clone() });
     }
 }
 

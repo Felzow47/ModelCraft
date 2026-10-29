@@ -19,6 +19,7 @@ pub mod rvt_browser;
 pub mod rvt_geom;
 pub mod rvt_model;
 pub mod rvt_shape;
+pub mod rvt_annot;
 pub mod rvt_sheet;
 pub mod stl;
 pub mod tds;

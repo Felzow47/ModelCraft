@@ -329,6 +329,35 @@ Lu par `crates/craft-formats/src/rvt_sheet.rs`, dans la même passe que le navig
   illimité) appliquée par le shader (masquage + fermeture des faces coupées) et par la sélection,
   et utilisée pour couper les arêtes des vues placées sur les feuilles (Liang-Barsky 3D). Images des rendus : `ImageInstance` → `ImageSymbol` (`m_widthInFeet`, `m_heightInFeet`)
   → `ImageHolder.m_pRasterImage.m_compressedImage` (PNG / JPEG / BMP / GIF).
+- Annotations des vues (`rvt_annot.rs`, éléments du projet `m_famId = -1` dont
+  `m_ownerDBViewId` est la vue ou la feuille) :
+  - lignes de détail : `CurveElem` (`m_detail = 1`), courbe `m_pCurveDriver` →
+    `CurveElemDriver.m_pCrv` (`GLine`, `GArc`… en pieds, coordonnées du modèle) ; style
+    `m_categoryId` → `GStyleElem.m_pGStyle` (`m_penNumber`, `m_color` rouge dans l'octet bas,
+    `m_linePatternId` : -3000010 trait plein, -1 « lignes invisibles », sinon `LinePatternElem` →
+    `LinePattern.m_segs` : `m_type` 0 trait, 1 espace, 2 point, `m_data` longueur papier en pieds).
+    Les styles utilisateur sont des sous-catégories de -2000051 (`CategoryElem.m_parentCategoryId`).
+  - plumes : `PenWidthTableElem` (id 2) → `PenWidthTable.m_draftPenInfo.m_pens` (16 épaisseurs
+    papier en pieds, annotations) ; `m_modelPenInfo` par échelle (`m_invertedScale`) pour le modèle.
+  - régions remplies : `FilledRegion` (`m_sketchId`, `m_attrId` → `FilledRegionAttributes.
+    m_fillPatternElemId` → `FillPatternElem.m_pFillPattern`) ; contour = les `CurveElem` dont
+    `SketchMembership.m_groupId` = `m_sketchId` (données `FilledRegionCurveData`, souvent en lignes
+    invisibles). `FillPattern` : `m_name`, `m_scale`, `m_fpTarget` (0 dessin, tailles papier),
+    `m_gridsArr` → `FillGrid` (`m_angle` rad, `m_origin`, `m_deltas` = [décalage le long, espacement],
+    `m_segs` traits / espaces) ; sans grille = remplissage plein. Hachures découpées pair-impair.
+  - cotes linéaires : `LinearDimString` (`m_refPnts` liste xyz à plat, ligne de cote = l'objet
+    `GLine` de l'arbre `m_origin` / `m_dirVec`, `m_ArrSegInfo[].m_origin` position du texte de
+    chaque segment, `m_values[0].m_value` valeur en pieds) ; longueur recalculée par projection
+    des points sur la ligne. Unité : `UnitsElem`, entrée `autodesk.spec.aec:length-1.0.0` →
+    `m_unitTypeId.m_typeId` (`autodesk.unit.unit:millimeters-1.0.1`…) et `m_accuracy`.
+  - étiquettes : `IndependentTag` (`m_symbolId`, `m_oTagOrientationCell` → `TagOrientationCell.
+    m_headLocation` (modèle), `m_rotationAngle` ; élément étiqueté `TaggedElem.m_taggedId.
+    m_linkInstOrHostId`), `RoomTag` (`m_point`, `m_symbolId`, `m_taggedRoomElemId.
+    m_linkInstOrHostId`). Le symbole est une `FamilySymbol` 2D (tailles papier) dont les
+    `m_tagNoteData` nomment les paramètres : pièce -1006900 nom, -1006901 numéro (chaînes de
+    `RoomElem`), -1006902 surface (calculée, non stockée).
+  - vues de dessin : classe `DBViewAnonDrafting`, zone cadrée par défaut (±100, inactive) : pas
+    de modèle, cadre = étendue des annotations.
 - Direction des vues (`DBView`) : `m_viewDir` vers l'observateur (comme `View.ViewDirection` de
   l'API), `m_vertDir` haut de l'écran, `m_horzDir` droite ; vérifié sur les élévations Nord (+y) /
   Sud (-y) et les plans (+z). `Scene.view_frames` : direction, haut et boîte de la zone cadrée ×

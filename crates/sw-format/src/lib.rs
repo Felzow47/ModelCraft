@@ -224,6 +224,26 @@ pub struct Sheet2d {
     pub texts: Vec<Text2d>,
     pub images: Vec<Image2d>,
     pub views: Vec<Viewport2d>,
+    /// View and sheet annotations drawn with their line style: detail lines, filled region
+    /// boundaries and hatch lines, dimensions, tags (dash patterns already cut).
+    pub strokes: Vec<Stroke2d>,
+    /// Filled regions with a solid fill (triangles).
+    pub fills: Vec<Fill2d>,
+}
+
+/// A polyline with its weight (`width`, paper metres) and colour.
+#[derive(Debug, Clone, Default)]
+pub struct Stroke2d {
+    pub pts: Vec<[f32; 2]>,
+    pub width: f32,
+    pub color: [u8; 3],
+}
+
+/// A filled area (triangles, paper metres) and its colour.
+#[derive(Debug, Clone, Default)]
+pub struct Fill2d {
+    pub tris: Vec<[[f32; 2]; 3]>,
+    pub color: [u8; 3],
 }
 
 /// A text on a sheet: `pos` is the anchor given by `halign` (0 left, 1 centre, 2 right) and

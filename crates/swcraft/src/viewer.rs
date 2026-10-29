@@ -2075,6 +2075,25 @@ fn sheet_2d(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, r: &sw_format::Br
             }
         }
     }
+    // filled regions (solid fills) under the lines
+    for f in &sh.fills {
+        let col = Color32::from_rgb(f.color[0], f.color[1], f.color[2]);
+        let mut mesh = egui::Mesh::default();
+        for t in &f.tris {
+            let q = [to(t[0]), to(t[1]), to(t[2])];
+            if !vis.intersects(Rect::from_points(&q)) {
+                continue;
+            }
+            let i = mesh.vertices.len() as u32;
+            for v in q {
+                mesh.colored_vertex(v, col);
+            }
+            mesh.add_triangle(i, i + 1, i + 2);
+        }
+        if !mesh.is_empty() {
+            p.add(egui::Shape::mesh(mesh));
+        }
+    }
     // model edges of the placed views, thin
     let fine = Stroke::new((s * 0.00018).clamp(0.5, 1.2), thin);
     for seg in &sh.fine {
@@ -2082,6 +2101,15 @@ fn sheet_2d(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, r: &sw_format::Br
         if vis.intersects(Rect::from_two_pos(a, b)) {
             p.line_segment([a, b], fine);
         }
+    }
+    // annotations with their line weight and colour (detail lines, hatches, dimensions, tags)
+    for st in &sh.strokes {
+        let pts: Vec<egui::Pos2> = st.pts.iter().map(|q| to(*q)).collect();
+        if pts.len() < 2 || !pts.windows(2).any(|w| vis.intersects(Rect::from_two_pos(w[0], w[1]))) {
+            continue;
+        }
+        let w = (st.width * s).clamp(0.5, 16.0);
+        p.add(egui::Shape::line(pts, Stroke::new(w, Color32::from_rgb(st.color[0], st.color[1], st.color[2]))));
     }
     let bold = Stroke::new((s * 0.00035).clamp(0.8, 2.0), ink);
     for l in &sh.lines {

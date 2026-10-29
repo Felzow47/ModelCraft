@@ -17,7 +17,7 @@ fn main() {
             continue;
         }
         let name = s.browser.iter().find(|r| r.id == sh.id).map(|r| r.label.clone()).unwrap_or_default();
-        eprintln!("{} {:?}: {} lines, {} fine, {} texts, {} images, {} views, extent {:?}", sh.id, name, sh.lines.len(), sh.fine.len(), sh.texts.len(), sh.images.len(), sh.views.len(), sh.extent);
+        eprintln!("{} {:?}: {} lines, {} fine, {} texts, {} images, {} views, {} strokes, {} fills, extent {:?}", sh.id, name, sh.lines.len(), sh.fine.len(), sh.texts.len(), sh.images.len(), sh.views.len(), sh.strokes.len(), sh.fills.len(), sh.extent);
         if std::env::var_os("SHEET_TEXTS").is_some() {
             for t in &sh.texts {
                 eprintln!("   {:?} h{:.4} a{}{} {:?}", t.pos, t.height, t.halign, t.valign, t.text);
@@ -35,6 +35,16 @@ fn main() {
         for s in &sh.fine {
             let (a, b) = (tx(s[0]), tx(s[1]));
             svg += &format!("<line x1='{:.2}' y1='{:.2}' x2='{:.2}' y2='{:.2}' stroke='#444' stroke-width='0.12'/>", a.0, a.1, b.0, b.1);
+        }
+        for f in &sh.fills {
+            for t in &f.tris {
+                let (a, b, c) = (tx(t[0]), tx(t[1]), tx(t[2]));
+                svg += &format!("<polygon points='{:.2},{:.2} {:.2},{:.2} {:.2},{:.2}' fill='rgb({},{},{})' stroke='none'/>", a.0, a.1, b.0, b.1, c.0, c.1, f.color[0], f.color[1], f.color[2]);
+            }
+        }
+        for st in &sh.strokes {
+            let pts: Vec<String> = st.pts.iter().map(|p| { let (x, y) = tx(*p); format!("{x:.2},{y:.2}") }).collect();
+            svg += &format!("<polyline points='{}' fill='none' stroke='rgb({},{},{})' stroke-width='{:.3}'/>", pts.join(" "), st.color[0], st.color[1], st.color[2], (st.width * k).max(0.05));
         }
         for v in &sh.views {
             let (a, b) = (tx([v.rect[0], v.rect[3]]), tx([v.rect[2], v.rect[1]]));

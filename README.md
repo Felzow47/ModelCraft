@@ -318,8 +318,13 @@ moteur : `WGPU_BACKEND=dx12|vulkan|gl`.
   **contenu 2D lu dans le fichier** (cartouche : traits, textes et étiquettes remplies avec les
   paramètres de la feuille et du projet, tableau des révisions ; vues placées avec leur titre et les
   **arêtes** des éléments qu'elles voient, découpées par la zone cadrée ; textes ; images des rendus).
-  Pas encore : masquage des arêtes cachées, hachures, cotes, étiquettes et symboles des vues placées,
-  styles de ligne. Une vue de plan, coupe, élévation ou 3D s'ouvre avec **sa direction et son
+  Les **annotations des vues** sont dessinées avec leur style : lignes de détail (épaisseur de plume,
+  couleur, motif de ligne), régions remplies (remplissage plein ou **hachures** du motif), **cotes**
+  linéaires (lignes d'attache, repères, valeurs dans l'unité du projet), textes et **étiquettes**
+  (pièces : nom et numéro ; étiquettes d'éléments : paramètres texte stockés) ; les vues de dessin
+  n'affichent que leurs annotations. Pas encore : masquage des arêtes cachées, épaisseurs par
+  catégorie des éléments du modèle, cotes angulaires / radiales / altimétriques, composants de
+  détail, valeurs calculées des étiquettes (surface…). Une vue de plan, coupe, élévation ou 3D s'ouvre avec **sa direction et son
   orientation** (plans pivotés compris) et, quand sa zone cadrée est active, **cadrée dessus**. Ce que
   la vue ne montre pas est **masqué comme dans Revit** : plage de vue des plans (plan de coupe,
   profondeur, niveaux au-dessus / en dessous, plans de plafond regardant vers le haut), zone cadrée,
