@@ -3,8 +3,8 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 static CURRENT: Mutex<Option<PathBuf>> = Mutex::new(None);
 /// Pre-rendered "current file" line for the native fault handler (no allocation needed there).
@@ -22,9 +22,7 @@ pub fn set_current_file(p: Option<&Path>) {
         *c = p.map(Path::to_path_buf);
     }
     if let Ok(mut l) = CURRENT_LINE.lock() {
-        *l = p
-            .map(|p| format!("fichier en cours : {}\r\n", p.display()))
-            .unwrap_or_default();
+        *l = p.map(|p| format!("fichier en cours : {}\r\n", p.display())).unwrap_or_default();
     }
 }
 
@@ -44,10 +42,7 @@ pub fn panic_text(e: &(dyn std::any::Any + Send)) -> String {
 
 /// UTC timestamp "YYYY-MM-DD HH:MM:SS UTC" without external crates.
 fn now_utc() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0) as i64;
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;
     let (days, rem) = (secs.div_euclid(86400), secs.rem_euclid(86400));
     // civil-from-days (Howard Hinnant)
     let z = days + 719_468;
@@ -59,12 +54,7 @@ fn now_utc() -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
-    format!(
-        "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02} UTC",
-        rem / 3600,
-        rem / 60 % 60,
-        rem % 60
-    )
+    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02} UTC", rem / 3600, rem / 60 % 60, rem % 60)
 }
 
 /// crash.log opened at start-up, for the allocation-failure path (which must not allocate).
@@ -103,10 +93,7 @@ unsafe impl std::alloc::GlobalAlloc for LoggingAlloc {
 
 #[cold]
 fn alloc_failed(size: usize) {
-    if sw_format::ctl::FALLIBLE
-        .try_with(|f| f.get())
-        .unwrap_or(false)
-    {
+    if sw_format::ctl::FALLIBLE.try_with(|f| f.get()).unwrap_or(false) {
         return; // handled by the caller (try_reserve)
     }
     let Some(mut f) = RAW_LOG.get() else { return };
@@ -124,12 +111,8 @@ fn alloc_failed(size: usize) {
         &buf[i..]
     }
     let mut b = [0u8; 24];
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let _ =
-        f.write_all("==== mémoire insuffisante (arrêt du programme) - horodatage unix ".as_bytes());
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let _ = f.write_all("==== mémoire insuffisante (arrêt du programme) - horodatage unix ".as_bytes());
     let _ = f.write_all(num(&mut b, secs));
     let _ = f.write_all("\r\nallocation refusée : ".as_bytes());
     let _ = f.write_all(num(&mut b, size as u64));
@@ -146,11 +129,7 @@ pub fn append(text: &str) {
     if let Some(d) = p.parent() {
         let _ = std::fs::create_dir_all(d);
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&p)
-    {
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
         let _ = f.write_all(text.as_bytes());
         let _ = f.flush();
     }
@@ -162,26 +141,17 @@ pub fn install() {
         if let Some(d) = p.parent() {
             let _ = std::fs::create_dir_all(d);
         }
-        if let Ok(f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&p)
-        {
+        if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
             let _ = RAW_LOG.set(f);
         }
     }
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let msg = panic_text(info.payload());
-        let loc = info
-            .location()
-            .map(|l| format!("{}:{}", l.file(), l.line()))
-            .unwrap_or_default();
+        let loc = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
         let thread = std::thread::current().name().unwrap_or("?").to_string();
         let bt = std::backtrace::Backtrace::force_capture();
-        let file = current_file()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "-".into());
+        let file = current_file().map(|p| p.display().to_string()).unwrap_or_else(|| "-".into());
         append(&format!(
             "==== {} - {} {} - panic\r\nthread: {thread}\r\nmessage: {msg}\r\nlieu: {loc}\r\nfichier en cours : {file}\r\n{bt}\r\n\r\n",
             now_utc(),
@@ -197,13 +167,7 @@ pub fn install() {
 /// wgpu errors are logged instead of panicking (the default handler aborts the app).
 pub fn gpu_error(msg: String) {
     log::error!("GPU: {msg}");
-    append(&format!(
-        "==== {} - erreur GPU\r\n{msg}\r\nfichier en cours : {}\r\n\r\n",
-        now_utc(),
-        current_file()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| "-".into())
-    ));
+    append(&format!("==== {} - erreur GPU\r\n{msg}\r\nfichier en cours : {}\r\n\r\n", now_utc(), current_file().map(|p| p.display().to_string()).unwrap_or_else(|| "-".into())));
     if let Ok(mut l) = GPU_LAST.lock() {
         *l = msg;
     }
@@ -212,18 +176,13 @@ pub fn gpu_error(msg: String) {
 
 /// Number of GPU errors so far, and the last message.
 pub fn gpu_errors() -> (u64, String) {
-    (
-        GPU_ERRORS.load(Ordering::SeqCst),
-        GPU_LAST.lock().map(|l| l.clone()).unwrap_or_default(),
-    )
+    (GPU_ERRORS.load(Ordering::SeqCst), GPU_LAST.lock().map(|l| l.clone()).unwrap_or_default())
 }
 
 #[cfg(windows)]
 mod win {
     use windows_sys::Win32::Foundation::{EXCEPTION_ACCESS_VIOLATION, EXCEPTION_STACK_OVERFLOW};
-    use windows_sys::Win32::System::Diagnostics::Debug::{
-        SetUnhandledExceptionFilter, EXCEPTION_POINTERS,
-    };
+    use windows_sys::Win32::System::Diagnostics::Debug::{SetUnhandledExceptionFilter, EXCEPTION_POINTERS};
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 
     unsafe extern "system" fn filter(info: *const EXCEPTION_POINTERS) -> i32 {
@@ -242,10 +201,7 @@ mod win {
             EXCEPTION_STACK_OVERFLOW => "dépassement de pile",
             _ => "exception native",
         };
-        let file = super::CURRENT_LINE
-            .try_lock()
-            .map(|l| l.clone())
-            .unwrap_or_default();
+        let file = super::CURRENT_LINE.try_lock().map(|l| l.clone()).unwrap_or_default();
         let thread = std::thread::current().name().unwrap_or("?").to_string();
         super::append(&format!(
             "==== {} - {} {} - plantage natif\r\ncode: 0x{code:08X} ({what})\r\nadresse: 0x{addr:X} (exe+0x{off:X})\r\nthread: {thread}\r\n{file}\r\n",

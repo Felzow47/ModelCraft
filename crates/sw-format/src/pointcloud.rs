@@ -81,9 +81,7 @@ pub fn splats(c: &Cloud, max_points: usize) -> TriMesh {
         }
     }
     let ext = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
-    let diag = (ext[0] * ext[0] + ext[1] * ext[1] + ext[2] * ext[2])
-        .sqrt()
-        .max(1e-6);
+    let diag = (ext[0] * ext[0] + ext[1] * ext[1] + ext[2] * ext[2]).sqrt().max(1e-6);
     // surface-ish spacing between kept points; a splat covers about one spacing
     let h = (diag / (keep as f32).sqrt() * 0.6).clamp(diag * 1e-5, diag * 0.01);
     let mut m = TriMesh::new_empty();
@@ -99,16 +97,8 @@ pub fn splats(c: &Cloud, max_points: usize) -> TriMesh {
         let p = c.points[(s as u64 * n as u64 / keep as u64) as usize];
         for (u, v, nrm) in &axes {
             let base = m.positions.len() as u32;
-            let a = [
-                p[0] - 0.5 * u[0] - 0.29 * v[0],
-                p[1] - 0.5 * u[1] - 0.29 * v[1],
-                p[2] - 0.5 * u[2] - 0.29 * v[2],
-            ];
-            let b = [
-                p[0] + 0.5 * u[0] - 0.29 * v[0],
-                p[1] + 0.5 * u[1] - 0.29 * v[1],
-                p[2] + 0.5 * u[2] - 0.29 * v[2],
-            ];
+            let a = [p[0] - 0.5 * u[0] - 0.29 * v[0], p[1] - 0.5 * u[1] - 0.29 * v[1], p[2] - 0.5 * u[2] - 0.29 * v[2]];
+            let b = [p[0] + 0.5 * u[0] - 0.29 * v[0], p[1] + 0.5 * u[1] - 0.29 * v[1], p[2] + 0.5 * u[2] - 0.29 * v[2]];
             let t = [p[0] + 0.58 * v[0], p[1] + 0.58 * v[1], p[2] + 0.58 * v[2]];
             m.positions.extend_from_slice(&[a, b, t]);
             m.normals.extend_from_slice(&[*nrm, *nrm, *nrm]);

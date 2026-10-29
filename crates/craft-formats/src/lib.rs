@@ -12,33 +12,31 @@
 //! | .easm | best effort through `sw_format` |
 //! | .x_t / .x_b | not supported (Parasolid has no open reader) |
 
-#[cfg(feature = "assimp")]
-pub mod assimp;
 pub mod easm;
 pub mod obj;
-#[cfg(feature = "occt")]
-pub mod occt;
-pub mod off;
 pub mod rvt;
-pub mod rvt_annot;
 pub mod rvt_browser;
 pub mod rvt_geom;
-pub(crate) mod rvt_hlr;
 pub mod rvt_model;
 pub mod rvt_shape;
+pub mod rvt_annot;
 pub mod rvt_sheet;
+pub(crate) mod rvt_hlr;
 pub mod stl;
 pub mod tds;
-pub mod vrml;
+pub mod xml3d;
+#[cfg(feature = "occt")]
+pub mod occt;
+#[cfg(feature = "assimp")]
+pub mod assimp;
 #[cfg(feature = "ifc")]
 pub mod webifc;
-pub mod xml3d;
+pub mod vrml;
+pub mod off;
 
 use std::path::Path;
 use std::time::Instant;
-use sw_format::{
-    ContainerKind, DocKind, LoadOptions, MeshSource, Scene, SceneComponent, SceneMesh, Timings,
-};
+use sw_format::{ContainerKind, DocKind, LoadOptions, MeshSource, Scene, SceneComponent, SceneMesh, Timings};
 
 pub type Loaded = Scene;
 
@@ -59,26 +57,10 @@ pub struct FormatInfo {
 }
 
 pub fn formats() -> Vec<FormatInfo> {
-    let step = if cfg!(feature = "occt") {
-        Support::Full
-    } else {
-        Support::None
-    };
-    let asm = if cfg!(feature = "assimp") {
-        Support::Full
-    } else {
-        Support::None
-    };
-    let ifc = if cfg!(any(feature = "ifc", feature = "assimp")) {
-        Support::Full
-    } else {
-        Support::None
-    };
-    let asm_partial = if cfg!(feature = "assimp") {
-        Support::Partial
-    } else {
-        Support::None
-    };
+    let step = if cfg!(feature = "occt") { Support::Full } else { Support::None };
+    let asm = if cfg!(feature = "assimp") { Support::Full } else { Support::None };
+    let ifc = if cfg!(any(feature = "ifc", feature = "assimp")) { Support::Full } else { Support::None };
+    let asm_partial = if cfg!(feature = "assimp") { Support::Partial } else { Support::None };
     vec![
         FormatInfo { exts: &["sldprt"], name: "SolidWorks pièce", support: Support::Full, note: "Géométrie d'affichage enregistrée par SolidWorks, couleurs comprises." },
         FormatInfo { exts: &["sldasm"], name: "SolidWorks assemblage", support: Support::Full, note: "Arbre et positions ; les pièces sont lues à côté de l'assemblage." },
@@ -113,26 +95,16 @@ pub fn formats() -> Vec<FormatInfo> {
 
 /// Every extension the viewer opens (lowercase, no dot).
 pub fn open_extensions() -> Vec<&'static str> {
-    formats()
-        .into_iter()
-        .filter(|f| {
-            f.support != Support::None || matches!(f.exts[0], "x_t" | "dwg" | "skp" | "3dm")
-        })
-        .flat_map(|f| f.exts.iter().copied())
-        .collect()
+    formats().into_iter().filter(|f| f.support != Support::None || matches!(f.exts[0], "x_t" | "dwg" | "skp" | "3dm")).flat_map(|f| f.exts.iter().copied()).collect()
 }
 
 pub fn ext_of(path: &Path) -> String {
-    path.extension()
-        .map(|e| e.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default()
+    path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default()
 }
 
 pub fn is_supported(path: &Path) -> bool {
     let e = ext_of(path);
-    formats()
-        .iter()
-        .any(|f| f.support != Support::None && f.exts.contains(&e.as_str()))
+    formats().iter().any(|f| f.support != Support::None && f.exts.contains(&e.as_str()))
 }
 
 /// Options shared by all readers.
@@ -151,23 +123,13 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Options {
-            edges: true,
-            resolve_external: true,
-            preview: true,
-            quality: 0.5,
-            progress: None,
-            cancel: None,
-        }
+        Options { edges: true, resolve_external: true, preview: true, quality: 0.5, progress: None, cancel: None }
     }
 }
 
 impl Options {
     pub fn ctl(&self) -> sw_format::Ctl {
-        sw_format::Ctl {
-            progress: self.progress.clone(),
-            cancel: self.cancel.clone(),
-        }
+        sw_format::Ctl { progress: self.progress.clone(), cancel: self.cancel.clone() }
     }
 }
 
@@ -184,9 +146,7 @@ fn read_file(path: &Path, opts: &Options, mem_factor: f64) -> Result<Vec<u8>, St
     sw_format::ctl::reserve(&mut v, len as usize, "lecture").map_err(|e| e.to_string())?;
     let mut buf = vec![0u8; 8 << 20];
     loop {
-        let n = f
-            .read(&mut buf)
-            .map_err(|e| format!("lecture impossible : {e}"))?;
+        let n = f.read(&mut buf).map_err(|e| format!("lecture impossible : {e}"))?;
         if n == 0 {
             break;
         }
@@ -195,10 +155,7 @@ fn read_file(path: &Path, opts: &Options, mem_factor: f64) -> Result<Vec<u8>, St
             sw_format::ctl::reserve(&mut v, extra, "lecture").map_err(|e| e.to_string())?;
         }
         v.extend_from_slice(&buf[..n]);
-        ctl.report(
-            0.01 + 0.3 * (v.len() as f32 / len.max(1) as f32).min(1.0),
-            "Lecture du fichier…",
-        );
+        ctl.report(0.01 + 0.3 * (v.len() as f32 / len.max(1) as f32).min(1.0), "Lecture du fichier…");
         ctl.bytes(v.len() as u64, len);
         ctl.check().map_err(|e| e.to_string())?;
     }
@@ -253,28 +210,13 @@ pub fn load_any(path: &Path, opts: &Options) -> Result<Scene, String> {
 }
 
 /// Wrap one triangle soup into a scene (positions are multiplied by `scale` to get metres).
-pub fn single_mesh_scene(
-    path: &Path,
-    format: &'static str,
-    pos: &[[f32; 3]],
-    tris: &[[u32; 3]],
-    color: Option<[f32; 4]>,
-    scale: f32,
-) -> Scene {
+pub fn single_mesh_scene(path: &Path, format: &'static str, pos: &[[f32; 3]], tris: &[[u32; 3]], color: Option<[f32; 4]>, scale: f32) -> Scene {
     let t = Instant::now();
-    let scaled: Vec<[f32; 3]> = pos
-        .iter()
-        .map(|p| [p[0] * scale, p[1] * scale, p[2] * scale])
-        .collect();
+    let scaled: Vec<[f32; 3]> = pos.iter().map(|p| [p[0] * scale, p[1] * scale, p[2] * scale]).collect();
     let mesh = sw_format::mesh::build_from_triangles(&scaled, tris, 30.0, true);
     let name = stem(path);
     let mut s = empty_scene(path, format);
-    s.meshes.push(SceneMesh {
-        name: name.clone(),
-        mesh,
-        source: MeshSource::Embedded,
-        color,
-    });
+    s.meshes.push(SceneMesh { name: name.clone(), mesh, source: MeshSource::Embedded, color });
     s.components.push(component(&name, 0, None, false, Some(0)));
     s.timings.mesh = t.elapsed();
     s.up_z = true;
@@ -300,13 +242,7 @@ pub fn empty_scene(path: &Path, format: &'static str) -> Scene {
     }
 }
 
-pub fn component(
-    name: &str,
-    depth: usize,
-    parent: Option<usize>,
-    is_assembly: bool,
-    mesh: Option<usize>,
-) -> SceneComponent {
+pub fn component(name: &str, depth: usize, parent: Option<usize>, is_assembly: bool, mesh: Option<usize>) -> SceneComponent {
     SceneComponent {
         name: name.to_string(),
         path: String::new(),
@@ -321,14 +257,10 @@ pub fn component(
     }
 }
 
-pub const IDENTITY: [f32; 16] = [
-    1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
-];
+pub const IDENTITY: [f32; 16] = [1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.];
 
 pub fn stem(path: &Path) -> String {
-    path.file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default()
+    path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
 /// Column-major 4x4 multiply (a × b).
@@ -348,7 +280,6 @@ pub fn finish_tree(s: &mut Scene) {
         // keep Model; the tree shows the objects
     }
     if s.meshes.is_empty() {
-        s.warnings
-            .push("Aucune géométrie affichable trouvée dans le fichier".into());
+        s.warnings.push("Aucune géométrie affichable trouvée dans le fichier".into());
     }
 }

@@ -74,17 +74,10 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, startup: StartupOptions) -> App {
         let rs = cc.wgpu_render_state.clone().expect("wgpu backend required");
         // never let a GPU validation / out-of-memory error abort the app: log it and carry on
-        rs.device
-            .on_uncaptured_error(std::sync::Arc::new(|e: eframe::wgpu::Error| {
-                crate::crash::gpu_error(e.to_string())
-            }));
+        rs.device.on_uncaptured_error(std::sync::Arc::new(|e: eframe::wgpu::Error| crate::crash::gpu_error(e.to_string())));
         egui_extras::install_image_loaders(&cc.egui_ctx);
         cc.egui_ctx.set_fonts(theme::font_definitions());
-        let mut settings = if startup.ephemeral {
-            Settings::default()
-        } else {
-            Settings::load()
-        };
+        let mut settings = if startup.ephemeral { Settings::default() } else { Settings::load() };
         if startup.no_edges {
             settings.edges = false;
         }
@@ -131,9 +124,7 @@ impl App {
         match startup.show.as_deref() {
             Some("settings") => app.dialog = Some(Dialog::Settings(SettingsCat::General)),
             Some("settings-display") => app.dialog = Some(Dialog::Settings(SettingsCat::Display)),
-            Some("settings-navigation") => {
-                app.dialog = Some(Dialog::Settings(SettingsCat::Navigation))
-            }
+            Some("settings-navigation") => app.dialog = Some(Dialog::Settings(SettingsCat::Navigation)),
             Some("settings-measure") => app.dialog = Some(Dialog::Settings(SettingsCat::Measure)),
             Some("about") => app.dialog = Some(Dialog::About),
             Some("shortcuts") => app.dialog = Some(Dialog::Shortcuts),
@@ -152,11 +143,7 @@ impl App {
     }
 
     pub fn load_options(&self) -> craft_formats::Options {
-        craft_formats::Options {
-            edges: true,
-            quality: self.settings.quality.tessellation(),
-            ..Default::default()
-        }
+        craft_formats::Options { edges: true, quality: self.settings.quality.tessellation(), ..Default::default() }
     }
 
     pub fn open(&mut self, path: &Path, ctx: &egui::Context) {
@@ -180,25 +167,17 @@ impl App {
         let exts = craft_formats::open_extensions();
         let mut all: Vec<String> = exts.iter().map(|e| e.to_string()).collect();
         all.extend(exts.iter().map(|e| e.to_uppercase()));
-        let mut d = rfd::FileDialog::new()
-            .set_title(tr("Ouvrir un modèle 3D"))
-            .add_filter(tr("Modèles 3D"), &all);
+        let mut d = rfd::FileDialog::new().set_title(tr("Ouvrir un modèle 3D")).add_filter(tr("Modèles 3D"), &all);
         for f in craft_formats::formats() {
             if f.support == craft_formats::Support::None && f.exts[0] != "x_t" {
                 continue;
             }
             let mut e: Vec<String> = f.exts.iter().map(|e| e.to_string()).collect();
             e.extend(f.exts.iter().map(|x| x.to_uppercase()));
-            d = d.add_filter(
-                format!("{} (*.{})", tr_format_name(f.name), f.exts.join(", *.")),
-                &e,
-            );
+            d = d.add_filter(format!("{} (*.{})", tr_format_name(f.name), f.exts.join(", *.")), &e);
         }
         d = d.add_filter(tr("Tous les fichiers"), &["*"]);
-        if let Some(dir) = self
-            .doc()
-            .and_then(|d| d.path.parent().map(|p| p.to_path_buf()))
-        {
+        if let Some(dir) = self.doc().and_then(|d| d.path.parent().map(|p| p.to_path_buf())) {
             d = d.set_directory(dir);
         }
         if let Some(files) = d.pick_files() {
@@ -279,18 +258,8 @@ impl App {
             }
             "file.screenshot" => {
                 if let Some(d) = self.doc() {
-                    let name = format!(
-                        "{}.png",
-                        d.path
-                            .file_stem()
-                            .map(|s| s.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| "capture".into())
-                    );
-                    if let Some(out) = rfd::FileDialog::new()
-                        .set_file_name(name)
-                        .add_filter("PNG", &["png"])
-                        .save_file()
-                    {
+                    let name = format!("{}.png", d.path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "capture".into()));
+                    if let Some(out) = rfd::FileDialog::new().set_file_name(name).add_filter("PNG", &["png"]).save_file() {
                         self.pending_png = Some(out);
                         self.request_shot(ctx);
                     }
@@ -351,16 +320,9 @@ impl App {
             }
             "edit.undo" | "edit.redo" => {
                 let undo = id == "edit.undo";
-                if let Some(ok) = self
-                    .doc_mut()
-                    .map(|d| if undo { d.undo() } else { d.redo() })
-                {
+                if let Some(ok) = self.doc_mut().map(|d| if undo { d.undo() } else { d.redo() }) {
                     if !ok {
-                        self.toast(if undo {
-                            tr("Rien à annuler")
-                        } else {
-                            tr("Rien à rétablir")
-                        });
+                        self.toast(if undo { tr("Rien à annuler") } else { tr("Rien à rétablir") });
                     }
                 }
             }
@@ -373,9 +335,7 @@ impl App {
                 if let Some(d) = self.doc_mut() {
                     d.cam_goal = None;
                     let up = d.camera.up();
-                    d.camera.rot = (glam::Quat::from_axis_angle(up, std::f32::consts::PI)
-                        * d.camera.rot)
-                        .normalize();
+                    d.camera.rot = (glam::Quat::from_axis_angle(up, std::f32::consts::PI) * d.camera.rot).normalize();
                 }
             }
             "view.orbit_left" | "view.orbit_right" | "view.orbit_up" | "view.orbit_down" => {
@@ -415,9 +375,7 @@ impl App {
                     d.drag = None;
                 }
                 if m == P::Cursor {
-                    self.toast(tr(
-                        "Curseur 3D : Alt+clic ou Alt+glisser sur le modèle pour déplacer le pivot",
-                    ));
+                    self.toast(tr("Curseur 3D : Alt+clic ou Alt+glisser sur le modèle pour déplacer le pivot"));
                 }
             }
             "pivot.cursor_to_sel" => {
@@ -441,9 +399,7 @@ impl App {
                     d.checkpoint();
                 }
                 let dev = self.rs.device.clone();
-                let faces = self
-                    .doc_mut()
-                    .is_some_and(|d| !d.asm.can_explode() && d.split_into_faces(&dev, ctx));
+                let faces = self.doc_mut().is_some_and(|d| !d.asm.can_explode() && d.split_into_faces(&dev, ctx));
                 if faces {
                     self.toast(tr("Pièce d'un seul corps : éclatement par faces"));
                 }
@@ -512,10 +468,7 @@ impl App {
                 }
             }
             "edit.copy_dims" => {
-                if let Some(t) = self
-                    .doc()
-                    .and_then(|d| viewer::dims_text(d, &self.settings))
-                {
+                if let Some(t) = self.doc().and_then(|d| viewer::dims_text(d, &self.settings)) {
                     ctx.copy_text(t.clone());
                     self.toast(trf("Copié : {t}", &[("t", &t)]));
                 }
@@ -525,8 +478,7 @@ impl App {
                     d.needs_fit = true
                 }
             }
-            "view.iso" | "view.front" | "view.top" | "view.right" | "view.back" | "view.bottom"
-            | "view.left" => {
+            "view.iso" | "view.front" | "view.top" | "view.right" | "view.back" | "view.bottom" | "view.left" => {
                 let (y, p) = view_angles(&id[5..]);
                 if let Some(d) = self.doc_mut() {
                     d.cam_goal = Some((y.to_radians(), p.to_radians()));
@@ -597,11 +549,7 @@ impl App {
             }
             "view.theme" => {
                 let dark = Tokens::get(ctx).dark();
-                st.theme = if dark {
-                    theme::ThemePreference::Light
-                } else {
-                    theme::ThemePreference::Dark
-                };
+                st.theme = if dark { theme::ThemePreference::Light } else { theme::ThemePreference::Dark };
                 self.settings_dirty = true;
             }
             "view.fullscreen" => {
@@ -624,14 +572,9 @@ impl App {
                     _ => Tool::Select,
                 };
                 if let Some(d) = self.doc_mut() {
-                    d.measure.tool = if d.measure.tool == tool {
-                        Tool::Select
-                    } else {
-                        tool
-                    };
+                    d.measure.tool = if d.measure.tool == tool { Tool::Select } else { tool };
                     d.measure.pending = None;
-                    d.measure.message = (d.measure.tool != Tool::Select)
-                        .then(|| viewer::tool_hint(d.measure.tool).to_string());
+                    d.measure.message = (d.measure.tool != Tool::Select).then(|| viewer::tool_hint(d.measure.tool).to_string());
                 }
             }
             "tool.clear" => {
@@ -672,9 +615,7 @@ impl App {
     }
 
     fn apply_theme(&mut self, ctx: &egui::Context) {
-        let sys = ctx
-            .input(|i| i.raw.system_theme)
-            .map(|t| t == egui::Theme::Dark);
+        let sys = ctx.input(|i| i.raw.system_theme).map(|t| t == egui::Theme::Dark);
         let kind = self.settings.theme.resolve(sys, ThemeKind::Dark);
         let want = (kind, self.settings.accent);
         if self.applied != Some(want) {
@@ -710,13 +651,7 @@ impl App {
     }
 
     fn handle_drops(&mut self, ctx: &egui::Context) {
-        let dropped: Vec<PathBuf> = ctx.input(|i| {
-            i.raw
-                .dropped_files
-                .iter()
-                .map(|f| f.path().to_path_buf())
-                .collect()
-        });
+        let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
         for p in dropped {
             if p.is_dir() {
                 self.settings.pin(&p);
@@ -731,21 +666,17 @@ impl App {
     fn request_shot(&self, ctx: &egui::Context) {
         let slot = self.shot_slot.clone();
         let c = ctx.clone();
-        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(
-            egui::ScreenshotCallback::new(move |img| {
-                *slot.lock().unwrap() = Some(img);
-                c.request_repaint();
-            }),
-        ));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::ScreenshotCallback::new(move |img| {
+            *slot.lock().unwrap() = Some(img);
+            c.request_repaint();
+        })));
     }
 
     fn handle_screenshots(&mut self, ctx: &egui::Context) {
         if self.pending_png.is_none() {
             return;
         }
-        let Some(img) = self.shot_slot.lock().unwrap().take() else {
-            return;
-        };
+        let Some(img) = self.shot_slot.lock().unwrap().take() else { return };
         let out = self.pending_png.take().unwrap();
         let crop = ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new("viewport-rect")));
         let img = match crop {
@@ -753,18 +684,13 @@ impl App {
             None => (*img).clone(),
         };
         match save_color_image(&img, &out) {
-            Ok(()) => self.toast(trf(
-                "Capture enregistrée : {p}",
-                &[("p", &out.display().to_string())],
-            )),
+            Ok(()) => self.toast(trf("Capture enregistrée : {p}", &[("p", &out.display().to_string())])),
             Err(e) => self.toast(trf("Échec de la capture : {e}", &[("e", &e)])),
         }
     }
 
     fn screenshot_logic(&mut self, ctx: &egui::Context) {
-        let Some(out) = self.startup.screenshot.clone() else {
-            return;
-        };
+        let Some(out) = self.startup.screenshot.clone() else { return };
         if self.shot_done.load(Ordering::SeqCst) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
@@ -807,18 +733,13 @@ impl App {
             self.settings.show_tree = false;
             self.settings.show_info = false;
         }
-        if matches!(
-            show.as_str(),
-            "move" | "rotate" | "pivot" | "framesel" | "facemove" | "faceframe" | "roll"
-        ) {
+        if matches!(show.as_str(), "move" | "rotate" | "pivot" | "framesel" | "facemove" | "faceframe" | "roll") {
             // the selection card shows the author's original file path: keep it out of shots
             self.settings.show_info = false;
         }
         if show == "pivot" {
             // a toast together with the Pivot bar: both must stay visible
-            self.toast(tr(
-                "Curseur 3D : Alt+clic ou Alt+glisser sur le modèle pour déplacer le pivot",
-            ));
+            self.toast(tr("Curseur 3D : Alt+clic ou Alt+glisser sur le modèle pour déplacer le pivot"));
         }
         let dev = self.rs.device.clone();
         let st = self.settings.clone();
@@ -840,11 +761,7 @@ impl App {
             v if v.starts_with("view:") => {
                 // a Revit project: open the browser row whose label contains the text
                 let want = &v[5..];
-                if let Some(row) = d.scene.as_ref().and_then(|s| {
-                    s.browser
-                        .iter()
-                        .position(|r| r.id > 0 && r.label.contains(want))
-                }) {
+                if let Some(row) = d.scene.as_ref().and_then(|s| s.browser.iter().position(|r| r.id > 0 && r.label.contains(want))) {
                     d.activate_view(row, false);
                 }
             }
@@ -857,10 +774,7 @@ impl App {
             "faceframe" => {
                 // Numpad . on a face of a single body: frame that face only
                 let pick = d.scene.as_ref().and_then(|s| {
-                    let ci = s.components.iter().position(|c| {
-                        c.mesh
-                            .is_some_and(|m| s.meshes[m].mesh.face_start.len() >= 2)
-                    })?;
+                    let ci = s.components.iter().position(|c| c.mesh.is_some_and(|m| s.meshes[m].mesh.face_start.len() >= 2))?;
                     let mi = s.components[ci].mesh?;
                     let m = &s.meshes[mi].mesh;
                     let w = d.display[ci];
@@ -873,12 +787,7 @@ impl App {
                 });
                 if let Some((ci, mi, f, tri)) = pick {
                     d.select(Some(ci));
-                    d.face_sel = Some(crate::document::FaceSel {
-                        comp: ci,
-                        mesh: mi,
-                        face: Some(f),
-                        tri,
-                    });
+                    d.face_sel = Some(crate::document::FaceSel { comp: ci, mesh: mi, face: Some(f), tri });
                     d.highlight_dirty = true;
                     d.fit(d.aspect.max(0.1));
                     d.needs_fit = false;
@@ -888,10 +797,7 @@ impl App {
             "facemove" => {
                 // Move tool on one face of a single body: the face is detached and pulled out
                 let pick = d.scene.as_ref().and_then(|s| {
-                    let ci = s.components.iter().position(|c| {
-                        c.mesh
-                            .is_some_and(|m| s.meshes[m].mesh.face_start.len() >= 2)
-                    })?;
+                    let ci = s.components.iter().position(|c| c.mesh.is_some_and(|m| s.meshes[m].mesh.face_start.len() >= 2))?;
                     let mi = s.components[ci].mesh?;
                     let m = &s.meshes[mi].mesh;
                     let w = d.display[ci];
@@ -905,12 +811,7 @@ impl App {
                 });
                 if let Some((ci, mi, f, tri, n)) = pick {
                     d.select(Some(ci));
-                    d.face_sel = Some(crate::document::FaceSel {
-                        comp: ci,
-                        mesh: mi,
-                        face: Some(f),
-                        tri,
-                    });
+                    d.face_sel = Some(crate::document::FaceSel { comp: ci, mesh: mi, face: Some(f), tri });
                     d.gizmo = true;
                     if d.detach_selected_face(&dev, ctx) {
                         if let (Some(i), Some((lo, hi))) = (d.selected, d.bbox()) {
@@ -934,17 +835,12 @@ impl App {
             }
             "rotate" => {
                 if let Some(s) = &d.scene {
-                    let i = (1..s.components.len())
-                        .filter(|&i| s.components[i].mesh.is_some())
-                        .last()
-                        .unwrap_or(0);
+                    let i = (1..s.components.len()).filter(|&i| s.components[i].mesh.is_some()).last().unwrap_or(0);
                     d.select(Some(i));
                     d.gizmo = true;
                     d.gizmo_rotate = true;
                     if let Some(c) = d.component_center(i) {
-                        let r = glam::Mat4::from_translation(c)
-                            * glam::Mat4::from_rotation_y(35f32.to_radians())
-                            * glam::Mat4::from_translation(-c);
+                        let r = glam::Mat4::from_translation(c) * glam::Mat4::from_rotation_y(35f32.to_radians()) * glam::Mat4::from_translation(-c);
                         d.move_component(i, r);
                     }
                 }
@@ -957,23 +853,12 @@ impl App {
                         let m = &s.meshes[s.components[i].mesh.unwrap()].mesh;
                         (Vec3::from(m.bbox_max) - Vec3::from(m.bbox_min)).length()
                     };
-                    let cand: Vec<usize> = (0..s.components.len())
-                        .filter(|&i| {
-                            s.components[i]
-                                .mesh
-                                .is_some_and(|m| !s.meshes[m].mesh.is_empty())
-                        })
-                        .collect();
+                    let cand: Vec<usize> = (0..s.components.len()).filter(|&i| s.components[i].mesh.is_some_and(|m| !s.meshes[m].mesh.is_empty())).collect();
                     let big = cand.iter().map(|&i| sz(i)).fold(0f32, f32::max);
                     let i = cand
                         .iter()
                         .copied()
-                        .min_by(|&a, &b| {
-                            (sz(a) - big / 6.0)
-                                .abs()
-                                .partial_cmp(&(sz(b) - big / 6.0).abs())
-                                .unwrap_or(std::cmp::Ordering::Equal)
-                        })
+                        .min_by(|&a, &b| (sz(a) - big / 6.0).abs().partial_cmp(&(sz(b) - big / 6.0).abs()).unwrap_or(std::cmp::Ordering::Equal))
                         .unwrap_or(0);
                     d.select(Some(i));
                     d.needs_fit = false;
@@ -987,9 +872,7 @@ impl App {
             }
             "ctx" | "tree" => {
                 if let Some(s) = &d.scene {
-                    let i = (1..s.components.len())
-                        .find(|&i| s.components[i].mesh.is_some())
-                        .unwrap_or(0);
+                    let i = (1..s.components.len()).find(|&i| s.components[i].mesh.is_some()).unwrap_or(0);
                     d.select(Some(i));
                 }
             }
@@ -999,8 +882,7 @@ impl App {
             "bbox" => d.show_bbox = true,
             "flip" => {
                 // free orbit: dragged 200° vertically, past the pole (upside-down view)
-                d.camera
-                    .orbit(glam::Vec2::new(60.0, 200f32.to_radians() / 0.008), false);
+                d.camera.orbit(glam::Vec2::new(60.0, 200f32.to_radians() / 0.008), false);
             }
             "explode-panel" => {
                 d.explode_panel = true;
@@ -1013,13 +895,7 @@ impl App {
             "selopacity" => {
                 // select the biggest part and lower the selection opacity, like the info panel slider
                 if let Some(s) = &d.scene {
-                    let i = (0..s.components.len())
-                        .filter(|&i| s.components[i].mesh.is_some())
-                        .max_by_key(|&i| {
-                            s.meshes[s.components[i].mesh.unwrap()]
-                                .mesh
-                                .triangle_count()
-                        });
+                    let i = (0..s.components.len()).filter(|&i| s.components[i].mesh.is_some()).max_by_key(|&i| s.meshes[s.components[i].mesh.unwrap()].mesh.triangle_count());
                     d.select(i);
                     let sel = d.selected;
                     d.set_opacity(sel, 0.3);
@@ -1041,16 +917,11 @@ impl App {
                                 let m = &s.meshes[s.components[i].mesh.unwrap()].mesh;
                                 (Vec3::from(m.bbox_max) - Vec3::from(m.bbox_min)).length()
                             };
-                            sz(a)
-                                .partial_cmp(&sz(b))
-                                .unwrap_or(std::cmp::Ordering::Equal)
+                            sz(a).partial_cmp(&sz(b)).unwrap_or(std::cmp::Ordering::Equal)
                         });
                     if let Some(i) = big {
                         if show == "others" {
-                            let small = (0..s.components.len())
-                                .filter(|&k| s.components[k].mesh.is_some() && k != i)
-                                .last()
-                                .unwrap_or(i);
+                            let small = (0..s.components.len()).filter(|&k| s.components[k].mesh.is_some() && k != i).last().unwrap_or(i);
                             d.select(Some(small));
                             d.asm.others_transparent = true;
                             d.instances_dirty = true;
@@ -1062,23 +933,13 @@ impl App {
             }
             "move" => {
                 if let Some(s) = &d.scene {
-                    let i = (1..s.components.len())
-                        .filter(|&i| s.components[i].mesh.is_some())
-                        .last()
-                        .unwrap_or(0);
+                    let i = (1..s.components.len()).filter(|&i| s.components[i].mesh.is_some()).last().unwrap_or(0);
                     d.select(Some(i));
                     d.gizmo = true;
                     d.gizmo_rotate = false;
-                    let r = d
-                        .stats
-                        .bbox
-                        .map(|(lo, hi)| (hi - lo).length())
-                        .unwrap_or(1.0);
+                    let r = d.stats.bbox.map(|(lo, hi)| (hi - lo).length()).unwrap_or(1.0);
                     // pull the part out of its housing, towards the viewer
-                    d.move_component(
-                        i,
-                        glam::Mat4::from_translation(Vec3::new(r * 0.06, 0.0, r * 0.12)),
-                    );
+                    d.move_component(i, glam::Mat4::from_translation(Vec3::new(r * 0.06, 0.0, r * 0.12)));
                 }
             }
             _ => {}
@@ -1120,14 +981,7 @@ pub fn save_color_image(img: &egui::ColorImage, out: &Path) -> Result<(), String
     for c in &img.pixels {
         buf.extend_from_slice(&c.to_srgba_unmultiplied());
     }
-    image::save_buffer(
-        out,
-        &buf,
-        w as u32,
-        h as u32,
-        image::ExtendedColorType::Rgba8,
-    )
-    .map_err(|e| e.to_string())
+    image::save_buffer(out, &buf, w as u32, h as u32, image::ExtendedColorType::Rgba8).map_err(|e| e.to_string())
 }
 
 impl eframe::App for App {
@@ -1176,21 +1030,12 @@ impl eframe::App for App {
         let face_detach = self.settings.face_detach;
         if !face_detach {
             // detaching off: the gizmo moves the whole part, drop the face highlight
-            if let Some(d) = self
-                .doc_mut()
-                .filter(|d| d.gizmo && d.face_sel.is_some() && d.drag.is_none())
-            {
+            if let Some(d) = self.doc_mut().filter(|d| d.gizmo && d.face_sel.is_some() && d.drag.is_none()) {
                 d.face_sel = None;
                 d.highlight_dirty = true;
             }
         }
-        let detached = face_detach
-            && self.doc_mut().is_some_and(|d| {
-                d.gizmo
-                    && d.face_sel.is_some_and(|f| f.face.is_some())
-                    && d.drag.is_none()
-                    && d.detach_selected_face(&dev, &ctx)
-            });
+        let detached = face_detach && self.doc_mut().is_some_and(|d| d.gizmo && d.face_sel.is_some_and(|f| f.face.is_some()) && d.drag.is_none() && d.detach_selected_face(&dev, &ctx));
         if detached {
             self.toast(tr("Face détachée : elle se déplace seule, le reste de la pièce ne bouge pas (affichage uniquement)"));
             ctx.request_repaint();

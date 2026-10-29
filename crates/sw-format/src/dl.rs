@@ -48,11 +48,7 @@ impl DlBlock {
 
 /// Lower-case file name of a Windows or Unix path.
 pub fn file_key(path: &str) -> String {
-    path.rsplit(['\\', '/'])
-        .next()
-        .unwrap_or(path)
-        .trim()
-        .to_lowercase()
+    path.rsplit(['\\', '/']).next().unwrap_or(path).trim().to_lowercase()
 }
 
 #[derive(Debug, Clone, Default)]
@@ -71,8 +67,7 @@ impl DisplayList {
 
 #[inline]
 fn u32_at(d: &[u8], o: usize) -> Option<u32> {
-    d.get(o..o + 4)
-        .map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+    d.get(o..o + 4).map(|s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
 }
 
 /// Generic array header at `o`: returns (elem_size, count, data_start, data_end).
@@ -121,10 +116,7 @@ fn cstring_at(d: &[u8], o: usize) -> Option<(String, usize)> {
         return None;
     }
     let bytes = d.get(p..p + 2 * len)?;
-    let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-        .collect();
+    let units: Vec<u16> = bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
     Some((String::from_utf16_lossy(&units), p + 2 * len))
 }
 
@@ -149,13 +141,8 @@ fn face_at(d: &[u8], i: usize) -> Option<(FacePatch, usize)> {
     let max_k = nv.min(1 << 20);
     let mut strips = None;
     for k in 1..=max_k {
-        let Some(s) = i.checked_sub(16 + 4 * k) else {
-            break;
-        };
-        if u32_at(d, s) == Some(4)
-            && u32_at(d, s + 8) == Some(2)
-            && u32_at(d, s + 12) == Some(k as u32)
-        {
+        let Some(s) = i.checked_sub(16 + 4 * k) else { break };
+        if u32_at(d, s) == Some(4) && u32_at(d, s + 8) == Some(2) && u32_at(d, s + 12) == Some(k as u32) {
             let mut sum = 0usize;
             let mut v = Vec::with_capacity(k);
             for j in 0..k {
@@ -172,21 +159,10 @@ fn face_at(d: &[u8], i: usize) -> Option<(FacePatch, usize)> {
     let strips = strips?;
     let positions = read_f3(d, ps, nv);
     let normals = read_f3(d, ns, nn);
-    if positions
-        .iter()
-        .any(|p| !p.iter().all(|x| x.is_finite() && x.abs() < 1.0e5))
-    {
+    if positions.iter().any(|p| !p.iter().all(|x| x.is_finite() && x.abs() < 1.0e5)) {
         return None;
     }
-    Some((
-        FacePatch {
-            positions,
-            normals,
-            strips,
-            offset: i,
-        },
-        ne,
-    ))
+    Some((FacePatch { positions, normals, strips, offset: i }, ne))
 }
 
 /// Decode all face tessellations in a DisplayLists stream.
@@ -198,8 +174,7 @@ pub fn decode(d: &[u8]) -> DisplayList {
 pub fn decode_ctl(d: &[u8], ctl: &crate::Ctl, range: (f32, f32)) -> crate::Result<DisplayList> {
     let stage = "Analyse du maillage…";
     let mut blocks: Vec<DlBlock> = Vec::new();
-    let mut index: std::collections::HashMap<Option<String>, usize> =
-        std::collections::HashMap::new();
+    let mut index: std::collections::HashMap<Option<String>, usize> = std::collections::HashMap::new();
     let mut dec = Decoder::default();
     let len = d.len().max(1);
     let mut visit = |path: Option<&str>, face: FacePatch| -> crate::Result<()> {
@@ -209,10 +184,7 @@ pub fn decode_ctl(d: &[u8], ctl: &crate::Ctl, range: (f32, f32)) -> crate::Resul
             Some(&k) => k,
             None => {
                 index.insert(key, blocks.len());
-                blocks.push(DlBlock {
-                    path: path.map(str::to_string),
-                    faces: Vec::new(),
-                });
+                blocks.push(DlBlock { path: path.map(str::to_string), faces: Vec::new() });
                 blocks.len() - 1
             }
         };
@@ -220,10 +192,7 @@ pub fn decode_ctl(d: &[u8], ctl: &crate::Ctl, range: (f32, f32)) -> crate::Resul
         Ok(())
     };
     let mut prog = |pos: usize| -> crate::Result<()> {
-        ctl.report(
-            range.0 + (range.1 - range.0) * (pos as f32 / len as f32),
-            stage,
-        );
+        ctl.report(range.0 + (range.1 - range.0) * (pos as f32 / len as f32), stage);
         ctl.check()
     };
     dec.run(d, 0, true, &mut visit, &mut prog)?;
@@ -254,17 +223,13 @@ enum Extent {
 
 /// Is the face record at `i` entirely inside `d`?
 fn face_extent(d: &[u8], i: usize) -> Extent {
-    let Some(h) = d.get(i..i + 16) else {
-        return Extent::NeedMore;
-    };
+    let Some(h) = d.get(i..i + 16) else { return Extent::NeedMore };
     let n = u32::from_le_bytes(h[12..16].try_into().unwrap()) as usize;
     if n > 50_000_000 {
         return Extent::Invalid;
     }
     let pe = i + 16 + 12 * n;
-    let Some(h) = d.get(pe..pe + 16) else {
-        return Extent::NeedMore;
-    };
+    let Some(h) = d.get(pe..pe + 16) else { return Extent::NeedMore };
     let es = u32::from_le_bytes(h[0..4].try_into().unwrap());
     let two = u32::from_le_bytes(h[8..12].try_into().unwrap());
     let nn = u32::from_le_bytes(h[12..16].try_into().unwrap()) as usize;
@@ -301,22 +266,14 @@ impl Decoder {
             // next candidates (global offsets); None = not in this buffer
             if self.next_m.is_none_or(|m| m < self.mpos) {
                 let from = self.mpos.max(base);
-                self.next_m = if from < end {
-                    marker.find(&d[from - base..]).map(|r| from + r)
-                } else {
-                    None
-                };
+                self.next_m = if from < end { marker.find(&d[from - base..]).map(|r| from + r) } else { None };
                 if self.next_m.is_none() {
                     self.mpos = self.mpos.max(end.saturating_sub(2));
                 }
             }
             if self.next_f.is_none_or(|f| f < self.fpos) {
                 let from = self.fpos.max(base);
-                self.next_f = if from < end {
-                    finder.find(&d[from - base..]).map(|r| from + r)
-                } else {
-                    None
-                };
+                self.next_f = if from < end { finder.find(&d[from - base..]).map(|r| from + r) } else { None };
                 if self.next_f.is_none() {
                     self.fpos = self.fpos.max(end.saturating_sub(11));
                 }
@@ -380,18 +337,8 @@ pub struct StreamDecoder<'a> {
 }
 
 impl<'a> StreamDecoder<'a> {
-    pub fn new(
-        ctl: &'a crate::Ctl,
-        visit: &'a mut dyn FnMut(Option<&str>, FacePatch) -> crate::Result<()>,
-    ) -> Self {
-        StreamDecoder {
-            dec: Decoder::default(),
-            buf: Vec::new(),
-            base: 0,
-            keep: 0,
-            visit,
-            ctl,
-        }
+    pub fn new(ctl: &'a crate::Ctl, visit: &'a mut dyn FnMut(Option<&str>, FacePatch) -> crate::Result<()>) -> Self {
+        StreamDecoder { dec: Decoder::default(), buf: Vec::new(), base: 0, keep: 0, visit, ctl }
     }
 
     pub fn feed(&mut self, chunk: &[u8]) -> crate::Result<()> {
@@ -404,18 +351,13 @@ impl<'a> StreamDecoder<'a> {
         crate::ctl::reserve(&mut self.buf, chunk.len(), "analyse du maillage")?;
         self.buf.extend_from_slice(chunk);
         let ctl = self.ctl;
-        self.keep = self
-            .dec
-            .run(&self.buf, self.base, false, self.visit, &mut |_| {
-                ctl.check()
-            })?;
+        self.keep = self.dec.run(&self.buf, self.base, false, self.visit, &mut |_| ctl.check())?;
         Ok(())
     }
 
     pub fn finish(mut self) -> crate::Result<()> {
         let ctl = self.ctl;
-        self.dec
-            .run(&self.buf, self.base, true, self.visit, &mut |_| ctl.check())?;
+        self.dec.run(&self.buf, self.base, true, self.visit, &mut |_| ctl.check())?;
         Ok(())
     }
 

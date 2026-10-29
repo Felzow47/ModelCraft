@@ -17,10 +17,7 @@ use sw_format::{Rgba, Scene};
 
 const MAX_SMALL: u64 = 32 << 20;
 
-fn read_capped<F: Read + std::io::Seek>(
-    cf: &mut cfb::CompoundFile<F>,
-    name: &str,
-) -> Option<Vec<u8>> {
+fn read_capped<F: Read + std::io::Seek>(cf: &mut cfb::CompoundFile<F>, name: &str) -> Option<Vec<u8>> {
     let len = cf.entry(name).ok()?.len();
     if len > MAX_SMALL {
         return None;
@@ -34,12 +31,7 @@ fn read_capped<F: Read + std::io::Seek>(
 /// UTF-16LE text of `BasicFileInfo` (tries both byte alignments).
 fn utf16_text(b: &[u8]) -> String {
     let dec = |off: usize| -> String {
-        let u: Vec<u16> = b
-            .get(off..)
-            .unwrap_or(&[])
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .collect();
+        let u: Vec<u16> = b.get(off..).unwrap_or(&[]).chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
         String::from_utf16_lossy(&u)
     };
     // From 2019 the `Key: value` block sits at an odd offset after a binary header that holds
@@ -65,18 +57,10 @@ pub fn basic_file_info(b: &[u8]) -> Vec<(String, String)> {
         let line: String = line.chars().filter(|c| !c.is_control()).collect();
         if let Some((k, v)) = line.split_once(": ") {
             // the first key can be glued to binary header bytes: keep its trailing words
-            let k = k
-                .rsplit(|c: char| !(c.is_ascii_alphanumeric() || " '_-".contains(c)))
-                .next()
-                .unwrap_or("")
-                .trim();
+            let k = k.rsplit(|c: char| !(c.is_ascii_alphanumeric() || " '_-".contains(c))).next().unwrap_or("").trim();
             // a value running over the binary header (bytes read one off) is not a value
             let garbled = v.chars().any(|c| ('\u{2c00}'..='\u{9fff}').contains(&c));
-            if !garbled
-                && !k.is_empty()
-                && k.len() < 80
-                && k.chars().all(|c| c.is_alphanumeric() || " '_-".contains(c))
-            {
+            if !garbled && !k.is_empty() && k.len() < 80 && k.chars().all(|c| c.is_alphanumeric() || " '_-".contains(c)) {
                 out.push((k.to_string(), v.trim().to_string()));
             }
         }
@@ -84,11 +68,7 @@ pub fn basic_file_info(b: &[u8]) -> Vec<(String, String)> {
     // Before 2019 the build is also stored in a binary header; keep a fallback.
     if !out.iter().any(|(k, _)| k == "Revit Build") {
         if let Some(i) = text.find("Autodesk Revit") {
-            let s: String = text[i..]
-                .chars()
-                .take_while(|c| !c.is_control() && *c != '\u{fffd}')
-                .take(80)
-                .collect();
+            let s: String = text[i..].chars().take_while(|c| !c.is_control() && *c != '\u{fffd}').take(80).collect();
             out.push(("Revit Build".into(), s));
         }
     }
@@ -106,10 +86,7 @@ fn part_atom_xml(b: &[u8]) -> Option<String> {
         let data = b.get(start..(start + cs).min(b.len()))?;
         let raw = if method == 8 {
             let mut v = Vec::new();
-            flate2::read::DeflateDecoder::new(data)
-                .take(MAX_SMALL)
-                .read_to_end(&mut v)
-                .ok()?;
+            flate2::read::DeflateDecoder::new(data).take(MAX_SMALL).read_to_end(&mut v).ok()?;
             v
         } else {
             data.to_vec()
@@ -124,53 +101,30 @@ fn part_atom_xml(b: &[u8]) -> Option<String> {
 /// Title, dates and parameters from a PartAtom document.
 pub fn part_atom(xml: &str) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    let Ok(doc) = roxmltree::Document::parse(xml) else {
-        return out;
-    };
+    let Ok(doc) = roxmltree::Document::parse(xml) else { return out };
     let root = doc.root_element();
     for c in root.children().filter(|n| n.is_element()) {
         match c.tag_name().name() {
             "title" => out.push(("Titre".into(), c.text().unwrap_or("").trim().to_string())),
-            "updated" => out.push((
-                "Mis à jour".into(),
-                c.text()
-                    .unwrap_or("")
-                    .trim()
-                    .replace('T', " ")
-                    .replace('Z', " UTC"),
-            )),
+            "updated" => out.push(("Mis à jour".into(), c.text().unwrap_or("").trim().replace('T', " ").replace('Z', " UTC"))),
             _ => {}
         }
     }
-    if let Some(v) = doc
-        .descendants()
-        .find(|n| n.tag_name().name() == "product-version")
-        .and_then(|n| n.text())
-    {
+    if let Some(v) = doc.descendants().find(|n| n.tag_name().name() == "product-version").and_then(|n| n.text()) {
         out.push(("Version du produit".into(), v.trim().to_string()));
     }
-    if let Some(cat) = doc
-        .descendants()
-        .find(|n| n.tag_name().name() == "category")
-        .and_then(|n| n.descendants().find(|d| d.tag_name().name() == "term"))
-        .and_then(|n| n.text())
-    {
+    if let Some(cat) = doc.descendants().find(|n| n.tag_name().name() == "category").and_then(|n| n.descendants().find(|d| d.tag_name().name() == "term")).and_then(|n| n.text()) {
         out.push(("Catégorie".into(), cat.trim().to_string()));
     }
     // parameters: leaf elements of the feature groups
     let mut n = 0;
     for g in doc.descendants().filter(|n| n.tag_name().name() == "group") {
-        for p in g.children().filter(|n| {
-            n.is_element() && n.tag_name().name() != "title" && n.tag_name().name() != "group"
-        }) {
+        for p in g.children().filter(|n| n.is_element() && n.tag_name().name() != "title" && n.tag_name().name() != "group") {
             let v = p.text().unwrap_or("").trim();
             if v.is_empty() {
                 continue;
             }
-            let k = p
-                .attribute("displayName")
-                .map(str::to_string)
-                .unwrap_or_else(|| p.tag_name().name().replace('_', " "));
+            let k = p.attribute("displayName").map(str::to_string).unwrap_or_else(|| p.tag_name().name().replace('_', " "));
             out.push((k, v.to_string()));
             n += 1;
             if n >= 60 {
@@ -184,14 +138,8 @@ pub fn part_atom(xml: &str) -> Vec<(String, String)> {
 /// PNG thumbnail inside `RevitPreview4.0`.
 pub fn preview(b: &[u8]) -> Option<Rgba> {
     let i = memchr_png(b)?;
-    let img = image::load_from_memory_with_format(&b[i..], image::ImageFormat::Png)
-        .ok()?
-        .to_rgba8();
-    Some(Rgba {
-        width: img.width(),
-        height: img.height(),
-        pixels: img.into_raw(),
-    })
+    let img = image::load_from_memory_with_format(&b[i..], image::ImageFormat::Png).ok()?.to_rgba8();
+    Some(Rgba { width: img.width(), height: img.height(), pixels: img.into_raw() })
 }
 
 fn memchr_png(b: &[u8]) -> Option<usize> {
@@ -218,20 +166,12 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
     let ctl = opts.ctl();
     ctl.report(0.05, "Ouverture du conteneur…");
     let f = std::fs::File::open(path).map_err(|e| format!("lecture impossible : {e}"))?;
-    let mut cf = cfb::CompoundFile::open(f)
-        .map_err(|_| "fichier Revit illisible (conteneur OLE invalide)".to_string())?;
+    let mut cf = cfb::CompoundFile::open(f).map_err(|_| "fichier Revit illisible (conteneur OLE invalide)".to_string())?;
     let mut s = empty_scene(path, "Revit");
     let mut names: Vec<(String, u64)> = Vec::new();
     for e in cf.walk() {
         if e.is_stream() {
-            names.push((
-                e.path()
-                    .to_string_lossy()
-                    .replace('\\', "/")
-                    .trim_start_matches('/')
-                    .to_string(),
-                e.len(),
-            ));
+            names.push((e.path().to_string_lossy().replace('\\', "/").trim_start_matches('/').to_string(), e.len()));
         }
     }
     s.stream_count = names.len();
@@ -244,20 +184,14 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
         let bfi = basic_file_info(&b);
         if let Some((_, build)) = bfi.iter().find(|(k, _)| k == "Revit Build") {
             if let Some(i) = build.find("Revit ") {
-                let year: String = build[i + 6..]
-                    .chars()
-                    .take_while(|c| c.is_ascii_digit())
-                    .collect();
+                let year: String = build[i + 6..].chars().take_while(|c| c.is_ascii_digit()).collect();
                 if !year.is_empty() {
                     props.push(("Revit".into(), year));
                 }
             }
         }
         if let Some((_, f)) = bfi.iter().find(|(k, _)| k == "Format") {
-            if f.len() == 4
-                && f.chars().all(|c| c.is_ascii_digit())
-                && !props.iter().any(|(k, _)| k == "Revit")
-            {
+            if f.len() == 4 && f.chars().all(|c| c.is_ascii_digit()) && !props.iter().any(|(k, _)| k == "Revit") {
                 props.push(("Revit".into(), f.clone()));
             }
         }
@@ -283,17 +217,8 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
     if opts.preview {
         s.preview = read_capped(&mut cf, "/RevitPreview4.0").and_then(|b| preview(&b));
     }
-    let (np, sz) = names
-        .iter()
-        .filter(|(n, _)| n.starts_with("Partitions/"))
-        .fold((0, 0u64), |a, (_, l)| (a.0 + 1, a.1 + l));
-    props.push((
-        "Données du modèle".into(),
-        format!(
-            "{np} partition(s), {:.1} Mo (format Autodesk propriétaire)",
-            sz as f64 / 1048576.0
-        ),
-    ));
+    let (np, sz) = names.iter().filter(|(n, _)| n.starts_with("Partitions/")).fold((0, 0u64), |a, (_, l)| (a.0 + 1, a.1 + l));
+    props.push(("Données du modèle".into(), format!("{np} partition(s), {:.1} Mo (format Autodesk propriétaire)", sz as f64 / 1048576.0)));
     ctl.check().map_err(|e| e.to_string())?;
     ctl.report(0.7, "Éléments du modèle…");
     let t0 = std::time::Instant::now();
@@ -310,57 +235,25 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
     let t1 = std::time::Instant::now();
     if !family {
         let mut each = |sc: &crate::rvt_browser::Schema, d: &[u8], w: usize| {
-            let (a, b) = (
-                crate::rvt_shape::Shapes::wants(sc),
-                crate::rvt_sheet::Sheets::wants(sc),
-            );
-            crate::rvt_geom::elements(
-                sc,
-                d,
-                w,
-                &|t| a[t as usize] || b[t as usize],
-                |_, t, _, tr| {
-                    if a[t as usize] {
-                        shapes.take(sc, t, &tr);
-                    }
-                    if b[t as usize] {
-                        sheets.take(sc, t, &tr);
-                    }
-                },
-            );
+            let (a, b) = (crate::rvt_shape::Shapes::wants(sc), crate::rvt_sheet::Sheets::wants(sc));
+            crate::rvt_geom::elements(sc, d, w, &|t| a[t as usize] || b[t as usize], |_, t, _, tr| {
+                if a[t as usize] {
+                    shapes.take(sc, t, &tr);
+                }
+                if b[t as usize] {
+                    sheets.take(sc, t, &tr);
+                }
+            });
         };
-        if let Some(m) =
-            crate::rvt_browser::read_model_with(&mut cf, &names, MAX_PARTITION, &mut each)
-        {
+        if let Some(m) = crate::rvt_browser::read_model_with(&mut cf, &names, MAX_PARTITION, &mut each) {
             s.browser = crate::rvt_browser::build(&m);
-            let rows: std::collections::HashSet<i64> = s
-                .browser
-                .iter()
-                .filter(|r| r.kind == sw_format::BrowserKind::Sheet && r.id > 0)
-                .map(|r| r.id)
-                .collect();
-            sheet_ids = m
-                .views
-                .iter()
-                .filter(|v| rows.contains(&v.id))
-                .map(|v| (v.id, v.sheet_number.clone(), v.name.clone()))
-                .collect();
+            let rows: std::collections::HashSet<i64> = s.browser.iter().filter(|r| r.kind == sw_format::BrowserKind::Sheet && r.id > 0).map(|r| r.id).collect();
+            sheet_ids = m.views.iter().filter(|v| rows.contains(&v.id)).map(|v| (v.id, v.sheet_number.clone(), v.name.clone())).collect();
         }
-    } else if let Some(f) =
-        rvt_model::read_stream(&mut cf, "/Formats/Latest", 64 << 20, 64 << 20, |_| true)
-            .filter(|f| f.verified > 0)
-    {
+    } else if let Some(f) = rvt_model::read_stream(&mut cf, "/Formats/Latest", 64 << 20, 64 << 20, |_| true).filter(|f| f.verified > 0) {
         let sc = crate::rvt_browser::Schema::parse(&f.data);
         for (n, _) in names.iter().filter(|(n, _)| n.starts_with("Partitions/")) {
-            let Some(inf) = rvt_model::read_stream(
-                &mut cf,
-                &format!("/{n}"),
-                MAX_PARTITION,
-                rvt_model::MAX_INFLATED,
-                |_| true,
-            ) else {
-                continue;
-            };
+            let Some(inf) = rvt_model::read_stream(&mut cf, &format!("/{n}"), MAX_PARTITION, rvt_model::MAX_INFLATED, |_| true) else { continue };
             let w = rvt_model::walk_chain(&inf.data).id_width;
             shapes.partition(&sc, &inf.data, if w == 0 { 4 } else { w });
         }
@@ -368,28 +261,15 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
     // family documents stored in the project: GUID → root element (loaded family solids)
     if !family {
         if let (Some(f), Some(cd)) = (
-            rvt_model::read_stream(&mut cf, "/Formats/Latest", 64 << 20, 64 << 20, |_| true)
-                .filter(|f| f.verified > 0),
-            rvt_model::read_stream(
-                &mut cf,
-                "/Global/ContentDocuments",
-                MAX_PARTITION,
-                rvt_model::MAX_INFLATED,
-                |_| true,
-            ),
+            rvt_model::read_stream(&mut cf, "/Formats/Latest", 64 << 20, 64 << 20, |_| true).filter(|f| f.verified > 0),
+            rvt_model::read_stream(&mut cf, "/Global/ContentDocuments", MAX_PARTITION, rvt_model::MAX_INFLATED, |_| true),
         ) {
             shapes.content_docs(&crate::rvt_browser::Schema::parse(&f.data), &cd.data);
         }
     }
     ctl.check().map_err(|e| e.to_string())?;
     let mut meshes = match &boxes {
-        Ok(b) => shapes.finish(
-            &b.iter()
-                .filter(|b| b.id != 0)
-                .map(|b| (b.id, (b.min, b.max)))
-                .collect(),
-            family,
-        ),
+        Ok(b) => shapes.finish(&b.iter().filter(|b| b.id != 0).map(|b| (b.id, (b.min, b.max))).collect(), family),
         Err(_) => Default::default(),
     };
     if let Ok(b) = &boxes {
@@ -408,44 +288,25 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
         if let Ok(b) = &boxes {
             // diagnostic: elements per category still drawn as boxes, with one example id
             let mut by: std::collections::BTreeMap<i64, (usize, usize, i64)> = Default::default();
-            for b in b
-                .iter()
-                .filter(|b| rvt_model::category_in(b.category, false).is_some())
-            {
+            for b in b.iter().filter(|b| rvt_model::category_in(b.category, false).is_some()) {
                 let e = by.entry(b.category).or_default();
                 e.0 += 1;
                 if meshes.get(&b.id).is_none() {
                     e.1 += 1;
                     e.2 = b.id;
                     if std::env::var_os("RVT_BOX_IDS").is_some() {
-                        eprintln!(
-                            "box {} category {} {:?} {:?}",
-                            b.id, b.category, b.min, b.max
-                        );
+                        eprintln!("box {} category {} {:?} {:?}", b.id, b.category, b.min, b.max);
                     }
                 }
             }
             for (c, (n, k, x)) in by {
-                eprintln!(
-                    "category {c}: {n} elements, {k} boxes, e.g. {x} ({:?})",
-                    rvt_model::category_in(c, false)
-                );
+                eprintln!("category {c}: {n} elements, {k} boxes, e.g. {x} ({:?})", rvt_model::category_in(c, false));
             }
         }
     }
     if !sheet_ids.is_empty() {
-        let model: Vec<(
-            i64,
-            i64,
-            [f64; 3],
-            [f64; 3],
-            Option<&crate::rvt_shape::Mesh>,
-        )> = match &boxes {
-            Ok(b) => b
-                .iter()
-                .filter(|b| rvt_model::category_in(b.category, false).is_some())
-                .map(|b| (b.id, b.category, b.min, b.max, meshes.get(&b.id)))
-                .collect(),
+        let model: Vec<(i64, i64, [f64; 3], [f64; 3], Option<&crate::rvt_shape::Mesh>)> = match &boxes {
+            Ok(b) => b.iter().filter(|b| rvt_model::category_in(b.category, false).is_some()).map(|b| (b.id, b.category, b.min, b.max, meshes.get(&b.id))).collect(),
             Err(_) => vec![],
         };
         s.sheets = sheets.finish(&sheet_ids, &model);
@@ -454,10 +315,7 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
         // how each view looks at the model (Revit view direction, crop region)
         let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
         if let Ok(b) = &boxes {
-            for b in b
-                .iter()
-                .filter(|b| rvt_model::category_in(b.category, false).is_some())
-            {
+            for b in b.iter().filter(|b| rvt_model::category_in(b.category, false).is_some()) {
                 for a in 0..3 {
                     lo[a] = lo[a].min(b.min[a]);
                     hi[a] = hi[a].max(b.max[a]);
@@ -465,17 +323,8 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
             }
         }
         if lo[0].is_finite() {
-            let rows: std::collections::HashSet<i64> = s
-                .browser
-                .iter()
-                .filter(|r| r.id > 0)
-                .map(|r| r.id)
-                .collect();
-            s.view_frames = sheets
-                .frames(lo, hi)
-                .into_iter()
-                .filter(|f| rows.contains(&f.id))
-                .collect();
+            let rows: std::collections::HashSet<i64> = s.browser.iter().filter(|r| r.id > 0).map(|r| r.id).collect();
+            s.view_frames = sheets.frames(lo, hi).into_iter().filter(|f| rows.contains(&f.id)).collect();
         }
     }
     let (n, shaped) = match &boxes {
@@ -483,21 +332,8 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
         Err(_) => (0, 0),
     };
     if n > 0 {
-        props.push((
-            "Éléments 3D".into(),
-            format!(
-                "{n} dont {shaped} en forme reconstruite, {} en boîte englobante",
-                n - shaped
-            ),
-        ));
-        s.warnings.push(
-            if shaped == n {
-                WARN_SHAPES
-            } else {
-                WARN_SHAPES_PARTIAL
-            }
-            .into(),
-        );
+        props.push(("Éléments 3D".into(), format!("{n} dont {shaped} en forme reconstruite, {} en boîte englobante", n - shaped)));
+        s.warnings.push(if shaped == n { WARN_SHAPES } else { WARN_SHAPES_PARTIAL }.into());
     } else {
         s.warnings.push(
             match &boxes {
@@ -518,8 +354,7 @@ pub const WARN_SHAPES_PARTIAL: &str = "Revit : murs, sols, plafonds, toits, esca
 /// Warning when the file holds no placed element with a box (translated by the viewer).
 pub const NO_ELEMENTS: &str = "Aucun élément 3D placé dans ce fichier";
 /// Same when the element records are not recognised (Revit 2008 and similar old formats).
-pub const NO_ELEMENTS_FORMAT: &str =
-    "Aucun élément 3D placé lisible dans ce fichier (format Revit trop ancien ou non reconnu)";
+pub const NO_ELEMENTS_FORMAT: &str = "Aucun élément 3D placé lisible dans ce fichier (format Revit trop ancien ou non reconnu)";
 
 /// Stored size above which a partition is not read (memory bound).
 const MAX_PARTITION: u64 = 2 << 30;
@@ -527,42 +362,25 @@ const MAX_PARTITION: u64 = 2 << 30;
 const MAX_BOXES: usize = 400_000;
 
 /// The placed elements' boxes of every partition (see `rvt_model`).
-pub fn element_boxes<F: Read + std::io::Seek>(
-    cf: &mut cfb::CompoundFile<F>,
-    names: &[(String, u64)],
-    family: bool,
-) -> Result<Vec<rvt_model::ElemBox>, String> {
-    let schema = rvt_model::read_stream(cf, "/Formats/Latest", 64 << 20, 64 << 20, |_| true)
-        .ok_or("schéma illisible")?;
+pub fn element_boxes<F: Read + std::io::Seek>(cf: &mut cfb::CompoundFile<F>, names: &[(String, u64)], family: bool) -> Result<Vec<rvt_model::ElemBox>, String> {
+    let schema = rvt_model::read_stream(cf, "/Formats/Latest", 64 << 20, 64 << 20, |_| true).ok_or("schéma illisible")?;
     if schema.verified == 0 {
         return Err("schéma illisible".into());
     }
-    let outline = rvt_model::schema_inline_tag(&schema.data, "Outline")
-        .ok_or("format de modèle non reconnu (classe Outline absente)")?;
+    let outline = rvt_model::schema_inline_tag(&schema.data, "Outline").ok_or("format de modèle non reconnu (classe Outline absente)")?;
     drop(schema);
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
     let mut any_chain = false;
     for (n, _) in names.iter().filter(|(n, _)| n.starts_with("Partitions/")) {
-        let Some(inf) = rvt_model::read_stream(
-            cf,
-            &format!("/{n}"),
-            MAX_PARTITION,
-            rvt_model::MAX_INFLATED,
-            rvt_model::until_chain_end(),
-        ) else {
-            continue;
-        };
+        let Some(inf) = rvt_model::read_stream(cf, &format!("/{n}"), MAX_PARTITION, rvt_model::MAX_INFLATED, rvt_model::until_chain_end()) else { continue };
         let chain = rvt_model::walk_chain(&inf.data);
         if chain.records.is_empty() {
             continue;
         }
         any_chain = true;
         for b in rvt_model::scan_boxes(&inf.data, &chain, outline, MAX_BOXES).boxes {
-            if rvt_model::category_in(b.category, family).is_some()
-                && (!family || b.category != -1 || (0..3).all(|a| b.max[a] - b.min[a] > 1e-3))
-                && seen.insert((b.category, b.min.map(f64::to_bits), b.max.map(f64::to_bits)))
-            {
+            if rvt_model::category_in(b.category, family).is_some() && (!family || b.category != -1 || (0..3).all(|a| b.max[a] - b.min[a] > 1e-3)) && seen.insert((b.category, b.min.map(f64::to_bits), b.max.map(f64::to_bits))) {
                 out.push(b);
             }
         }
@@ -584,23 +402,13 @@ const ZONES: f64 = 16.0;
 /// One group component per category with its elements (or zones) below; an element with a
 /// rebuilt shape in `shapes` (by id) gets it, the others their box. Returns the number of
 /// elements and how many have their shape.
-fn build_boxes(
-    s: &mut Scene,
-    boxes: &[rvt_model::ElemBox],
-    shapes: &std::collections::HashMap<i64, crate::rvt_shape::Mesh>,
-    family: bool,
-) -> (usize, usize) {
+fn build_boxes(s: &mut Scene, boxes: &[rvt_model::ElemBox], shapes: &std::collections::HashMap<i64, crate::rvt_shape::Mesh>, family: bool) -> (usize, usize) {
     let t = std::time::Instant::now();
     type Cat<'a> = (Vec<&'a rvt_model::ElemBox>, [f32; 4]);
     let mut by: std::collections::BTreeMap<&'static str, Cat> = Default::default();
     for b in boxes {
-        let Some((name, color)) = rvt_model::category_in(b.category, family) else {
-            continue;
-        };
-        by.entry(name)
-            .or_insert_with(|| (Vec::new(), color))
-            .0
-            .push(b);
+        let Some((name, color)) = rvt_model::category_in(b.category, family) else { continue };
+        by.entry(name).or_insert_with(|| (Vec::new(), color)).0.push(b);
     }
     let n: usize = by.values().map(|c| c.0.len()).sum();
     let root = s.components.len();
@@ -609,8 +417,7 @@ fn build_boxes(
         return (0, 0);
     }
     let mut shaped = 0;
-    s.components
-        .push(crate::component(&crate::stem(&s.path), 0, None, true, None));
+    s.components.push(crate::component(&crate::stem(&s.path), 0, None, true, None));
     let per_element = n <= PER_ELEMENT_MAX;
     // zone grid for the merged mode
     let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
@@ -623,88 +430,40 @@ fn build_boxes(
     let cell: [f64; 3] = std::array::from_fn(|a| ((hi[a] - lo[a]) / ZONES).max(1e-6));
     for (name, (list, color)) in by {
         let group = s.components.len();
-        s.components.push(crate::component(
-            &format!("{name} ({})", list.len()),
-            1,
-            Some(root),
-            true,
-            None,
-        ));
+        s.components.push(crate::component(&format!("{name} ({})", list.len()), 1, Some(root), true, None));
         if per_element {
             // unit cube [0,1]³ shared by the whole category
-            let unit = rvt_model::ElemBox {
-                id: 0,
-                category: 0,
-                min: [0.0; 3],
-                max: [1.0; 3],
-            };
+            let unit = rvt_model::ElemBox { id: 0, category: 0, min: [0.0; 3], max: [1.0; 3] };
             let (mut pos, mut tri) = (Vec::new(), Vec::new());
             rvt_model::push_box(&unit, &mut pos, &mut tri);
             let mesh = sw_format::mesh::build_from_triangles(&pos, &tri, 30.0, true);
-            s.meshes.push(sw_format::SceneMesh {
-                name: name.to_string(),
-                mesh,
-                source: sw_format::MeshSource::Embedded,
-                color: Some(color),
-            });
+            s.meshes.push(sw_format::SceneMesh { name: name.to_string(), mesh, source: sw_format::MeshSource::Embedded, color: Some(color) });
             let mi = s.meshes.len() - 1;
             for (k, b) in list.iter().enumerate() {
                 if let Some(m) = shapes.get(&b.id).filter(|m| !m.tri.is_empty()) {
                     // its own mesh, already in place
                     let mesh = sw_format::mesh::build_from_triangles(&m.pos, &m.tri, 30.0, true);
-                    s.meshes.push(sw_format::SceneMesh {
-                        name: name.to_string(),
-                        mesh,
-                        source: sw_format::MeshSource::Embedded,
-                        color: Some(color),
-                    });
-                    let mut c = crate::component(
-                        &format!("{name} {}", k + 1),
-                        2,
-                        Some(group),
-                        false,
-                        Some(s.meshes.len() - 1),
-                    );
-                    c.world = [
-                        1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
-                    ];
+                    s.meshes.push(sw_format::SceneMesh { name: name.to_string(), mesh, source: sw_format::MeshSource::Embedded, color: Some(color) });
+                    let mut c = crate::component(&format!("{name} {}", k + 1), 2, Some(group), false, Some(s.meshes.len() - 1));
+                    c.world = [1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.];
                     s.components.push(c);
                     shaped += 1;
                     continue;
                 }
                 let (o, sz) = rvt_model::box_extent(b);
-                let mut c = crate::component(
-                    &format!("{name} {}", k + 1),
-                    2,
-                    Some(group),
-                    false,
-                    Some(mi),
-                );
-                c.world = [
-                    sz[0], 0., 0., 0., 0., sz[1], 0., 0., 0., 0., sz[2], 0., o[0], o[1], o[2], 1.,
-                ];
+                let mut c = crate::component(&format!("{name} {}", k + 1), 2, Some(group), false, Some(mi));
+                c.world = [sz[0], 0., 0., 0., 0., sz[1], 0., 0., 0., 0., sz[2], 0., o[0], o[1], o[2], 1.];
                 s.components.push(c);
             }
         } else {
-            let mut zones: std::collections::BTreeMap<
-                [i32; 3],
-                (Vec<[f32; 3]>, Vec<[u32; 3]>, usize),
-            > = Default::default();
+            let mut zones: std::collections::BTreeMap<[i32; 3], (Vec<[f32; 3]>, Vec<[u32; 3]>, usize)> = Default::default();
             for b in &list {
-                let key: [i32; 3] = std::array::from_fn(|a| {
-                    (((b.min[a] + b.max[a]) * 0.5 - lo[a]) / cell[a])
-                        .floor()
-                        .clamp(0.0, ZONES - 1.0) as i32
-                });
+                let key: [i32; 3] = std::array::from_fn(|a| (((b.min[a] + b.max[a]) * 0.5 - lo[a]) / cell[a]).floor().clamp(0.0, ZONES - 1.0) as i32);
                 let z = zones.entry(key).or_default();
                 if let Some(m) = shapes.get(&b.id).filter(|m| !m.tri.is_empty()) {
                     let base = z.0.len() as u32;
                     z.0.extend_from_slice(&m.pos);
-                    z.1.extend(
-                        m.tri
-                            .iter()
-                            .map(|t| [t[0] + base, t[1] + base, t[2] + base]),
-                    );
+                    z.1.extend(m.tri.iter().map(|t| [t[0] + base, t[1] + base, t[2] + base]));
                     shaped += 1;
                 } else {
                     rvt_model::push_box(b, &mut z.0, &mut z.1);
@@ -713,19 +472,8 @@ fn build_boxes(
             }
             for (k, (_, (pos, tri, count))) in zones.into_iter().enumerate() {
                 let mesh = sw_format::mesh::build_from_triangles(&pos, &tri, 30.0, true);
-                s.meshes.push(sw_format::SceneMesh {
-                    name: name.to_string(),
-                    mesh,
-                    source: sw_format::MeshSource::Embedded,
-                    color: Some(color),
-                });
-                s.components.push(crate::component(
-                    &format!("{name} - zone {} ({count})", k + 1),
-                    2,
-                    Some(group),
-                    false,
-                    Some(s.meshes.len() - 1),
-                ));
+                s.meshes.push(sw_format::SceneMesh { name: name.to_string(), mesh, source: sw_format::MeshSource::Embedded, color: Some(color) });
+                s.components.push(crate::component(&format!("{name} - zone {} ({count})", k + 1), 2, Some(group), false, Some(s.meshes.len() - 1)));
             }
         }
     }
@@ -745,9 +493,7 @@ mod tests {
         let kv = basic_file_info(&b);
         assert!(kv.contains(&("Worksharing".into(), "Central".into())));
         assert!(kv.contains(&("Locale when saved".into(), "FRA".into())));
-        assert!(kv
-            .iter()
-            .any(|(k, v)| k == "Revit Build" && v.starts_with("Autodesk Revit 2018")));
+        assert!(kv.iter().any(|(k, v)| k == "Revit Build" && v.starts_with("Autodesk Revit 2018")));
     }
 
     #[test]
@@ -763,66 +509,29 @@ mod tests {
     /// /workspace/rvt-samples; skipped when absent.
     #[test]
     fn sample_boxes() {
-        let dir = std::env::var_os("RVT_SAMPLES")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| "/workspace/rvt-samples".into());
+        let dir = std::env::var_os("RVT_SAMPLES").map(std::path::PathBuf::from).unwrap_or_else(|| "/workspace/rvt-samples".into());
         let get = |n: &str| {
             let p = dir.join(n);
-            p.exists()
-                .then(|| load(&p, &crate::Options::default()).expect(n))
+            p.exists().then(|| load(&p, &crate::Options::default()).expect(n))
         };
         // elements drawn: one component each (its shape or a unit cube)
-        let count = |s: &Scene| {
-            s.components
-                .iter()
-                .filter(|c| c.depth == 2 && c.mesh.is_some())
-                .count()
-        };
+        let count = |s: &Scene| s.components.iter().filter(|c| c.depth == 2 && c.mesh.is_some()).count();
         // how many with a rebuilt shape (property "N dont M en forme reconstruite…")
-        let shaped = |s: &Scene| {
-            s.properties
-                .iter()
-                .find(|(k, _)| k == "Éléments 3D")
-                .and_then(|(_, v)| {
-                    v.split(" dont ")
-                        .nth(1)?
-                        .split(' ')
-                        .next()?
-                        .parse::<usize>()
-                        .ok()
-                })
-                .unwrap_or(0)
-        };
+        let shaped = |s: &Scene| s.properties.iter().find(|(k, _)| k == "Éléments 3D").and_then(|(_, v)| v.split(" dont ").nth(1)?.split(' ').next()?.parse::<usize>().ok()).unwrap_or(0);
         if let Some(s) = get("DynamoSample_2025.rvt") {
             let n = count(&s);
-            eprintln!(
-                "DynamoSample_2025: {n} boxes, {:?}",
-                s.components
-                    .iter()
-                    .filter(|c| c.depth < 2)
-                    .map(|c| c.name.clone())
-                    .collect::<Vec<_>>()
-            );
+            eprintln!("DynamoSample_2025: {n} boxes, {:?}", s.components.iter().filter(|c| c.depth < 2).map(|c| c.name.clone()).collect::<Vec<_>>());
             assert!(n > 100, "{n}");
             assert!(s.components.iter().any(|c| c.name.starts_with("Murs")));
             // straight walls and floors rebuilt from their parameters
             assert!(shaped(&s) >= 40, "{}", shaped(&s));
             // a building a few tens of metres wide
-            let (lo, hi) = s.components.iter().filter(|c| c.mesh.is_some()).fold(
-                ([f32::MAX; 3], [f32::MIN; 3]),
-                |(l, h), c| {
-                    let w = glam::Mat4::from_cols_array(&c.world);
-                    let m = &s.meshes[c.mesh.unwrap()].mesh;
-                    let (a, b) = (
-                        w.transform_point3(m.bbox_min.into()),
-                        w.transform_point3(m.bbox_max.into()),
-                    );
-                    (
-                        std::array::from_fn(|i| l[i].min(a[i]).min(b[i])),
-                        std::array::from_fn(|i| h[i].max(a[i]).max(b[i])),
-                    )
-                },
-            );
+            let (lo, hi) = s.components.iter().filter(|c| c.mesh.is_some()).fold(([f32::MAX; 3], [f32::MIN; 3]), |(l, h), c| {
+                let w = glam::Mat4::from_cols_array(&c.world);
+                let m = &s.meshes[c.mesh.unwrap()].mesh;
+                let (a, b) = (w.transform_point3(m.bbox_min.into()), w.transform_point3(m.bbox_max.into()));
+                (std::array::from_fn(|i| l[i].min(a[i]).min(b[i])), std::array::from_fn(|i| h[i].max(a[i]).max(b[i])))
+            });
             assert!((0..3).all(|i| hi[i] - lo[i] < 200.0), "{lo:?} {hi:?}");
         }
         if let Some(s) = get("M_Chair-Desk.rfa") {
@@ -831,23 +540,10 @@ mod tests {
             assert!(s.properties.iter().any(|(k, _)| k == "Revit"));
         }
         // Autodesk's published sample projects (revit.downloads.autodesk.com), 32-bit ids
-        for (n, min) in [
-            ("ad/rst_2018.rvt", 500),
-            ("ad/rac_2018.rvt", 300),
-            ("ad/rst_2023.rvt", 500),
-            ("ad/rac_2021.rvt", 300),
-            ("ad/rst_2025.rvt", 500),
-        ] {
+        for (n, min) in [("ad/rst_2018.rvt", 500), ("ad/rac_2018.rvt", 300), ("ad/rst_2023.rvt", 500), ("ad/rac_2021.rvt", 300), ("ad/rst_2025.rvt", 500)] {
             if let Some(s) = get(n) {
                 let k = count(&s);
-                eprintln!(
-                    "{n}: {k} boxes, {:?}",
-                    s.components
-                        .iter()
-                        .filter(|c| c.depth < 2)
-                        .map(|c| c.name.clone())
-                        .collect::<Vec<_>>()
-                );
+                eprintln!("{n}: {k} boxes, {:?}", s.components.iter().filter(|c| c.depth < 2).map(|c| c.name.clone()).collect::<Vec<_>>());
                 assert!(k >= min, "{n}: {k}");
                 assert!(s.properties.iter().any(|(k, _)| k == "Revit"), "{n}");
             }
@@ -862,28 +558,16 @@ mod tests {
     /// Real files: SW_SAMPLES3=/folder with .rvt files (skipped if absent).
     #[test]
     fn real_rvt_files() {
-        let Some(dir) = std::env::var_os("SW_SAMPLES3") else {
-            return;
-        };
-        let Ok(rd) = std::fs::read_dir(dir) else {
-            return;
-        };
+        let Some(dir) = std::env::var_os("SW_SAMPLES3") else { return };
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
         for e in rd.flatten() {
             let p = e.path();
             if crate::ext_of(&p) != "rvt" {
                 continue;
             }
             let s = load(&p, &crate::Options::default()).expect("rvt");
-            assert!(
-                s.properties.iter().any(|(k, _)| k == "Revit"),
-                "{}",
-                p.display()
-            );
-            assert!(
-                s.properties.iter().any(|(k, _)| k == "Titre"),
-                "{}",
-                p.display()
-            );
+            assert!(s.properties.iter().any(|(k, _)| k == "Revit"), "{}", p.display());
+            assert!(s.properties.iter().any(|(k, _)| k == "Titre"), "{}", p.display());
             // at most one starting view, always a view or sheet row
             let starts: Vec<_> = s.browser.iter().filter(|r| r.start).collect();
             assert!(starts.len() <= 1, "{}", p.display());

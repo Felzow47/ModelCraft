@@ -41,16 +41,8 @@ impl Camera {
     /// Orientation looking at the target from azimuth `yaw` (around +Y, 0 = from +Z) and elevation
     /// `pitch` (radians), with no roll. Exact at ±90° (top / bottom views).
     pub fn orientation(yaw: f32, pitch: f32) -> Quat {
-        let f = Vec3::new(
-            pitch.cos() * yaw.sin(),
-            pitch.sin(),
-            pitch.cos() * yaw.cos(),
-        );
-        let u = Vec3::new(
-            -pitch.sin() * yaw.sin(),
-            pitch.cos(),
-            -pitch.sin() * yaw.cos(),
-        );
+        let f = Vec3::new(pitch.cos() * yaw.sin(), pitch.sin(), pitch.cos() * yaw.cos());
+        let u = Vec3::new(-pitch.sin() * yaw.sin(), pitch.cos(), -pitch.sin() * yaw.cos());
         let r = u.cross(f).normalize();
         let u = f.cross(r).normalize();
         Quat::from_mat3(&Mat3::from_cols(r, u, f)).normalize()
@@ -76,21 +68,12 @@ impl Camera {
 
     pub fn proj(&self, aspect: f32) -> Mat4 {
         let r = self.radius.max(1e-6);
-        let near = (self.distance - 2.0 * r)
-            .max(self.distance * 1e-3)
-            .max(r * 1e-4);
+        let near = (self.distance - 2.0 * r).max(self.distance * 1e-3).max(r * 1e-4);
         let far = self.distance + 2.0 * r;
         if self.ortho {
             let h = self.distance * (self.fov_y * 0.5).tan();
             // reversed-Z: near and far swapped so depth runs 1 → 0 (see render.rs DEPTH_FORMAT)
-            Mat4::orthographic_rh(
-                -h * aspect,
-                h * aspect,
-                -h,
-                h,
-                far,
-                near.min(self.distance * 0.01),
-            )
+            Mat4::orthographic_rh(-h * aspect, h * aspect, -h, h, far, near.min(self.distance * 0.01))
         } else {
             Mat4::perspective_rh(self.fov_y, aspect, far, near)
         }
@@ -122,15 +105,10 @@ impl Camera {
             let d = Vec2::new(delta.x * c + delta.y * s, -delta.x * s + delta.y * c);
             let lim = 89.9f32.to_radians();
             let yaw = yaw - d.x * K;
-            let pitch = if pitch.abs() > lim && d.y == 0.0 {
-                pitch
-            } else {
-                (pitch + d.y * K).clamp(-lim, lim)
-            };
+            let pitch = if pitch.abs() > lim && d.y == 0.0 { pitch } else { (pitch + d.y * K).clamp(-lim, lim) };
             self.rot = (Self::orientation(yaw, pitch) * Quat::from_rotation_z(roll)).normalize();
         } else {
-            let q = Quat::from_axis_angle(self.up(), -delta.x * K)
-                * Quat::from_axis_angle(self.right(), -delta.y * K);
+            let q = Quat::from_axis_angle(self.up(), -delta.x * K) * Quat::from_axis_angle(self.right(), -delta.y * K);
             self.rot = (q * self.rot).normalize();
         }
     }
@@ -143,11 +121,7 @@ impl Camera {
         // only exact top / bottom views (orbit stops at 89.9°, so a drag never folds the roll)
         if pitch.abs() > 89.95f32.to_radians() {
             let u = self.up();
-            let yaw = if f.y > 0.0 {
-                (-u.x).atan2(-u.z)
-            } else {
-                u.x.atan2(u.z)
-            };
+            let yaw = if f.y > 0.0 { (-u.x).atan2(-u.z) } else { u.x.atan2(u.z) };
             return (yaw, pitch.signum() * std::f32::consts::FRAC_PI_2, 0.0);
         }
         let yaw = f.x.atan2(f.z);
@@ -158,8 +132,7 @@ impl Camera {
 
     /// Roll around the viewing axis (degrees, positive = counter-clockwise on screen).
     pub fn roll(&mut self, deg: f32) {
-        self.rot =
-            (Quat::from_axis_angle(self.forward_dir(), deg.to_radians()) * self.rot).normalize();
+        self.rot = (Quat::from_axis_angle(self.forward_dir(), deg.to_radians()) * self.rot).normalize();
     }
 
     /// Pan by a pixel delta, given the viewport height in pixels.
@@ -185,12 +158,10 @@ impl Camera {
         let fwd = -self.forward_dir();
         if self.ortho {
             let half = self.distance * h;
-            let o =
-                self.eye() + self.right() * (ndc.x * half * aspect) + self.up() * (ndc.y * half);
+            let o = self.eye() + self.right() * (ndc.x * half * aspect) + self.up() * (ndc.y * half);
             (o - fwd * self.radius * 4.0, fwd)
         } else {
-            let d =
-                (fwd + self.right() * (ndc.x * h * aspect) + self.up() * (ndc.y * h)).normalize();
+            let d = (fwd + self.right() * (ndc.x * h * aspect) + self.up() * (ndc.y * h)).normalize();
             (self.eye(), d)
         }
     }
@@ -198,11 +169,7 @@ impl Camera {
     /// Smoothly move towards another orientation (view cube, standard views). Returns true once
     /// the goal is reached (and snaps to it).
     pub fn lerp_towards(&mut self, goal: Quat, k: f32) -> bool {
-        let goal = if self.rot.dot(goal) < 0.0 {
-            -goal
-        } else {
-            goal
-        };
+        let goal = if self.rot.dot(goal) < 0.0 { -goal } else { goal };
         if self.rot.angle_between(goal) < 1e-3 {
             self.rot = goal;
             return true;
@@ -225,10 +192,7 @@ mod tests {
         let mut c = Camera::default();
         c.fit(glam::Vec3::splat(-5.0), glam::Vec3::splat(5.0), 1.5);
         let vp = c.proj(1.5) * c.view();
-        let depth = |p: glam::Vec3| {
-            let q = vp * p.extend(1.0);
-            q.z / q.w
-        };
+        let depth = |p: glam::Vec3| { let q = vp * p.extend(1.0); q.z / q.w };
         let near = c.target + (c.eye() - c.target).normalize() * 8.0;
         let far = c.target;
         assert!(depth(near) > depth(far), "{} {}", depth(near), depth(far));
@@ -251,10 +215,7 @@ mod tests {
             max_y = max_y.max(c.forward_dir().y);
         }
         assert!(max_y > 0.999, "went over the pole");
-        assert!(
-            (c.forward_dir() - f0).length() < 1e-2,
-            "full vertical turn returns to start"
-        );
+        assert!((c.forward_dir() - f0).length() < 1e-2, "full vertical turn returns to start");
         for _ in 0..steps {
             c.orbit(Vec2::new(px, 0.0), false);
         }
@@ -296,11 +257,7 @@ mod tests {
         for k in 0..2000 {
             let a = k as f32 * 0.05;
             c.orbit(Vec2::new(a.cos() * 9.0, a.sin() * 9.0), true);
-            assert!(
-                c.right().y.abs() < 1e-4,
-                "rolled at step {k}: {:?}",
-                c.right()
-            );
+            assert!(c.right().y.abs() < 1e-4, "rolled at step {k}: {:?}", c.right());
             assert!(c.up().y > 0.0);
         }
         // the trackball does roll on the same drag (kept as the optional free mode)

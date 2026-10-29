@@ -6,10 +6,7 @@ use std::path::Path;
 pub fn load(path: &Path, bytes: &[u8]) -> Result<Loaded, String> {
     let text = String::from_utf8_lossy(bytes);
     // strip comments
-    let mut toks = text
-        .lines()
-        .map(|l| l.split('#').next().unwrap_or(""))
-        .flat_map(|l| l.split_whitespace());
+    let mut toks = text.lines().map(|l| l.split('#').next().unwrap_or("")).flat_map(|l| l.split_whitespace());
     let head = toks.next().ok_or("fichier OFF vide")?;
     let mut first: Option<&str> = None;
     let up = head.to_ascii_uppercase();
@@ -27,12 +24,8 @@ pub fn load(path: &Path, bytes: &[u8]) -> Result<Loaded, String> {
     let has_nrm = up.contains('N');
     let has_col = up.contains('C');
     let mut num = |what: &str| -> Result<f64, String> {
-        let t = first
-            .take()
-            .or_else(|| toks.next())
-            .ok_or_else(|| format!("fin de fichier inattendue ({what})"))?;
-        t.parse::<f64>()
-            .map_err(|_| format!("nombre attendu ({what}) : « {t} »"))
+        let t = first.take().or_else(|| toks.next()).ok_or_else(|| format!("fin de fichier inattendue ({what})"))?;
+        t.parse::<f64>().map_err(|_| format!("nombre attendu ({what}) : « {t} »"))
     };
     let nv = num("sommets")? as usize;
     let nf = num("faces")? as usize;
@@ -40,8 +33,7 @@ pub fn load(path: &Path, bytes: &[u8]) -> Result<Loaded, String> {
     if nv > 50_000_000 || nf > 100_000_000 {
         return Err("fichier OFF trop grand".into());
     }
-    let extra =
-        if has_nrm { 3 } else { 0 } + if has_col { 4 } else { 0 } + if has_tex { 2 } else { 0 };
+    let extra = if has_nrm { 3 } else { 0 } + if has_col { 4 } else { 0 } + if has_tex { 2 } else { 0 };
     let mut pos = Vec::with_capacity(nv);
     for _ in 0..nv {
         let p = [num("x")? as f32, num("y")? as f32, num("z")? as f32];
@@ -55,16 +47,9 @@ pub fn load(path: &Path, bytes: &[u8]) -> Result<Loaded, String> {
     let rest: Vec<&str> = toks.collect();
     let mut i = 0;
     for _ in 0..nf {
-        let Some(n) = rest.get(i).and_then(|t| t.parse::<usize>().ok()) else {
-            break;
-        };
+        let Some(n) = rest.get(i).and_then(|t| t.parse::<usize>().ok()) else { break };
         i += 1;
-        let idx: Vec<u32> = rest
-            .get(i..i + n)
-            .unwrap_or(&[])
-            .iter()
-            .filter_map(|t| t.parse().ok())
-            .collect();
+        let idx: Vec<u32> = rest.get(i..i + n).unwrap_or(&[]).iter().filter_map(|t| t.parse().ok()).collect();
         i += n;
         // skip optional face colour: tokens until the next face would start are ambiguous, so
         // only skip when they are clearly not integers or when 3/4 floats follow

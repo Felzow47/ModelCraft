@@ -80,8 +80,6 @@ fn main() {
     record(&mut out, magic, "Header2", &small, 12);
     record(&mut out, magic, "Contents/DisplayLists", &comp, raw);
     record(&mut out, magic, "Contents/Config-0", &small, 12);
-    std::fs::File::create(&path)
-        .and_then(|mut f| f.write_all(&out))
-        .expect("write");
+    std::fs::File::create(&path).and_then(|mut f| f.write_all(&out)).expect("write");
     eprintln!("wrote {path}: {} MB", out.len() >> 20);
 }

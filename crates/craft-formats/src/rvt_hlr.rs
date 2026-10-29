@@ -27,15 +27,7 @@ impl Hlr {
         let px = dw.max(dh) / max_px.max(16) as f64;
         let w = (dw / px).ceil() as usize + 3;
         let h = (dh / px).ceil() as usize + 3;
-        Some(Hlr {
-            x0: r[0] - px,
-            y0: r[1] - px,
-            px,
-            w,
-            h,
-            z: vec![f32::NEG_INFINITY; w * h],
-            faces: 0,
-        })
+        Some(Hlr { x0: r[0] - px, y0: r[1] - px, px, w, h, z: vec![f32::NEG_INFINITY; w * h], faces: 0 })
     }
 
     pub(crate) fn pixel(&self) -> f64 {

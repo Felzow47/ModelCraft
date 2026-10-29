@@ -65,12 +65,7 @@ pub enum Lighting {
 }
 
 impl Lighting {
-    pub const ALL: [Lighting; 4] = [
-        Lighting::Studio,
-        Lighting::Soft,
-        Lighting::Contrast,
-        Lighting::Flat,
-    ];
+    pub const ALL: [Lighting; 4] = [Lighting::Studio, Lighting::Soft, Lighting::Contrast, Lighting::Flat];
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -231,10 +226,7 @@ impl Default for Settings {
             browser_full: true,
             recent: Vec::new(),
             pinned: Vec::new(),
-            assoc_exts: crate::platform::ASSOC_EXTS
-                .iter()
-                .map(|e| e.to_string())
-                .collect(),
+            assoc_exts: crate::platform::ASSOC_EXTS.iter().map(|e| e.to_string()).collect(),
         }
     }
 }
@@ -319,8 +311,7 @@ impl Settings {
         }
         self.recent_max = self.recent_max.clamp(1, 50);
         self.recent.truncate(self.recent_max);
-        self.assoc_exts
-            .retain(|e| crate::platform::ASSOC_EXTS.contains(&e.as_str()));
+        self.assoc_exts.retain(|e| crate::platform::ASSOC_EXTS.contains(&e.as_str()));
         self.assoc_exts.dedup();
     }
 
@@ -329,30 +320,15 @@ impl Settings {
         let recent = std::mem::take(&mut self.recent);
         let pinned = std::mem::take(&mut self.pinned);
         let assoc_exts = std::mem::take(&mut self.assoc_exts);
-        *self = Settings {
-            recent,
-            pinned,
-            assoc_exts,
-            ..Settings::default()
-        };
+        *self = Settings { recent, pinned, assoc_exts, ..Settings::default() };
     }
 
     pub fn add_recent(&mut self, path: &Path) {
         let p = path.to_string_lossy().into_owned();
         let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         self.recent.retain(|r| r.path != p);
-        self.recent.insert(
-            0,
-            RecentFile {
-                path: p,
-                size,
-                opened: now,
-            },
-        );
+        self.recent.insert(0, RecentFile { path: p, size, opened: now });
         self.recent.truncate(self.recent_max);
     }
 
@@ -390,12 +366,7 @@ impl Settings {
     /// "a × b × c unit" with one unit for the three values.
     pub fn fmt_dims(&self, x: f64, y: f64, z: f64) -> String {
         let (f, u) = self.group_unit(x.abs().max(y.abs()).max(z.abs()));
-        format!(
-            "{} × {} × {} {u}",
-            fmt_num(x * f, self.decimals),
-            fmt_num(y * f, self.decimals),
-            fmt_num(z * f, self.decimals)
-        )
+        format!("{} × {} × {} {u}", fmt_num(x * f, self.decimals), fmt_num(y * f, self.decimals), fmt_num(z * f, self.decimals))
     }
     pub fn fmt_len_bare(&self, m: f64) -> String {
         fmt_num(self.units.from_m(m), self.decimals)
@@ -456,10 +427,7 @@ pub fn fmt_num_in(v: f64, decimals: u8, fr: bool) -> String {
         return format!("{v}");
     }
     let s = format!("{:.*}", decimals as usize, v.abs());
-    let (int, frac) = s
-        .split_once('.')
-        .map(|(a, b)| (a.to_string(), Some(b.to_string())))
-        .unwrap_or((s.clone(), None));
+    let (int, frac) = s.split_once('.').map(|(a, b)| (a.to_string(), Some(b.to_string()))).unwrap_or((s.clone(), None));
     let sep = if fr { '\u{a0}' } else { ',' };
     let mut out = String::new();
     let n = int.len();
@@ -499,21 +467,14 @@ mod tests {
         assert_eq!(v4.orbit, OrbitMode::Turntable);
         let mut v5: Settings = serde_json::from_str(r#"{"version":5,"orbit":"Free"}"#).unwrap();
         v5.migrate();
-        assert_eq!(
-            v5.orbit,
-            OrbitMode::Free,
-            "a trackball chosen after V4.1 is kept"
-        );
+        assert_eq!(v5.orbit, OrbitMode::Free, "a trackball chosen after V4.1 is kept");
         assert_eq!(s.bg_top, Settings::default().bg_top);
         assert!(!s.show_tree, "user choices are kept");
         let mut custom: Settings = serde_json::from_str(r#"{"bg_top":[1,2,3]}"#).unwrap();
         custom.migrate();
         assert_eq!(custom.bg_top, [1, 2, 3]);
         // a current file is left alone
-        let mut cur = Settings {
-            nav: NavStyle::SolidWorks,
-            ..Settings::default()
-        };
+        let mut cur = Settings { nav: NavStyle::SolidWorks, ..Settings::default() };
         cur.migrate();
         assert_eq!(cur.nav, NavStyle::SolidWorks);
     }
@@ -543,10 +504,7 @@ mod tests {
         assert_eq!(s.fmt_volume(5e6 * 1e-9), "5,000.00 cm³");
         assert_eq!(s.fmt_volume(2.0), "2.00 m³");
         assert_eq!(s.fmt_len(12.5), "12.50 m");
-        let raw = Settings {
-            auto_units: false,
-            ..Settings::default()
-        };
+        let raw = Settings { auto_units: false, ..Settings::default() };
         assert_eq!(raw.fmt_area(6115613.46e-6), "6,115,613.46 mm²");
     }
     #[test]

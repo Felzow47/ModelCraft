@@ -65,21 +65,7 @@ fn tokenize(src: &str) -> Vec<Tok> {
             }
             _ => {
                 let st = i;
-                while i < b.len()
-                    && !matches!(
-                        b[i],
-                        b' ' | b'\t'
-                            | b'\n'
-                            | b'\r'
-                            | b','
-                            | b'{'
-                            | b'}'
-                            | b'['
-                            | b']'
-                            | b'"'
-                            | b'#'
-                    )
-                {
+                while i < b.len() && !matches!(b[i], b' ' | b'\t' | b'\n' | b'\r' | b',' | b'{' | b'}' | b'[' | b']' | b'"' | b'#') {
                     i += 1;
                 }
                 let w = &src[st..i];
@@ -229,15 +215,11 @@ impl Parser {
         out
     }
     fn node(&mut self) -> Option<Rc<Node>> {
-        let Some(Tok::Word(w)) = self.peek().cloned() else {
-            return None;
-        };
+        let Some(Tok::Word(w)) = self.peek().cloned() else { return None };
         match w.as_str() {
             "USE" => {
                 self.i += 1;
-                let Some(Tok::Word(n)) = self.next() else {
-                    return None;
-                };
+                let Some(Tok::Word(n)) = self.next() else { return None };
                 self.defs.get(&n).cloned()
             }
             "NULL" => {
@@ -246,9 +228,7 @@ impl Parser {
             }
             "DEF" => {
                 self.i += 1;
-                let Some(Tok::Word(name)) = self.next() else {
-                    return None;
-                };
+                let Some(Tok::Word(name)) = self.next() else { return None };
                 let n = self.body(Some(name.clone()))?;
                 self.defs.insert(name, n.clone());
                 Some(n)
@@ -257,9 +237,7 @@ impl Parser {
         }
     }
     fn body(&mut self, def: Option<String>) -> Option<Rc<Node>> {
-        let Some(Tok::Word(ty)) = self.next() else {
-            return None;
-        };
+        let Some(Tok::Word(ty)) = self.next() else { return None };
         if self.peek() != Some(&Tok::Open) {
             return None;
         }
@@ -348,9 +326,7 @@ impl Parser {
                             self.i += 1;
                         }
                         Some(Tok::Word(w)) => {
-                            if matches!(w.as_str(), "DEF" | "USE")
-                                || self.peek2() == Some(&Tok::Open)
-                            {
+                            if matches!(w.as_str(), "DEF" | "USE") || self.peek2() == Some(&Tok::Open) {
                                 if let Some(n) = self.node() {
                                     nodes.push(n);
                                 }
@@ -486,13 +462,8 @@ fn polygons_to_tris(index: &[f64], nv: usize, ccw: bool) -> Vec<[u32; 3]> {
     let mut poly: Vec<u32> = Vec::new();
     let mut flush = |poly: &mut Vec<u32>| {
         for k in 1..poly.len().saturating_sub(1) {
-            let t = if ccw {
-                [poly[0], poly[k], poly[k + 1]]
-            } else {
-                [poly[0], poly[k + 1], poly[k]]
-            };
-            if t.iter().all(|&v| (v as usize) < nv) && t[0] != t[1] && t[1] != t[2] && t[0] != t[2]
-            {
+            let t = if ccw { [poly[0], poly[k], poly[k + 1]] } else { [poly[0], poly[k + 1], poly[k]] };
+            if t.iter().all(|&v| (v as usize) < nv) && t[0] != t[1] && t[1] != t[2] && t[0] != t[2] {
                 tris.push(t);
             }
         }
@@ -510,13 +481,7 @@ fn polygons_to_tris(index: &[f64], nv: usize, ccw: bool) -> Vec<[u32; 3]> {
 }
 
 fn points(n: Option<&Rc<Node>>) -> Vec<[f32; 3]> {
-    n.map(|c| {
-        c.nums("point")
-            .chunks_exact(3)
-            .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
-            .collect()
-    })
-    .unwrap_or_default()
+    n.map(|c| c.nums("point").chunks_exact(3).map(|p| [p[0] as f32, p[1] as f32, p[2] as f32]).collect()).unwrap_or_default()
 }
 
 fn ccw(n: &Node) -> bool {
@@ -534,57 +499,20 @@ fn geometry(g: &Node) -> Option<(Vec<[f32; 3]>, Vec<[u32; 3]>)> {
         "IndexedTriangleSet" => {
             let p = points(g.node("coord"));
             let ix = g.nums("index");
-            let t = ix
-                .chunks_exact(3)
-                .map(|c| [c[0] as u32, c[1] as u32, c[2] as u32])
-                .filter(|t| t.iter().all(|&v| (v as usize) < p.len()))
-                .map(|t| if ccw(g) { t } else { [t[0], t[2], t[1]] })
-                .collect();
+            let t = ix.chunks_exact(3).map(|c| [c[0] as u32, c[1] as u32, c[2] as u32]).filter(|t| t.iter().all(|&v| (v as usize) < p.len())).map(|t| if ccw(g) { t } else { [t[0], t[2], t[1]] }).collect();
             Some((p, t))
         }
         "TriangleSet" => {
             let p = points(g.node("coord"));
-            let t = (0..p.len() / 3)
-                .map(|k| (k * 3) as u32)
-                .map(|b| {
-                    if ccw(g) {
-                        [b, b + 1, b + 2]
-                    } else {
-                        [b, b + 2, b + 1]
-                    }
-                })
-                .collect();
+            let t = (0..p.len() / 3).map(|k| (k * 3) as u32).map(|b| if ccw(g) { [b, b + 1, b + 2] } else { [b, b + 2, b + 1] }).collect();
             Some((p, t))
         }
         "Box" => {
             let s = g.nums("size");
-            let (x, y, z) = if s.len() >= 3 {
-                (s[0] as f32 / 2.0, s[1] as f32 / 2.0, s[2] as f32 / 2.0)
-            } else {
-                (1.0, 1.0, 1.0)
-            };
-            let p = vec![
-                [-x, -y, -z],
-                [x, -y, -z],
-                [x, y, -z],
-                [-x, y, -z],
-                [-x, -y, z],
-                [x, -y, z],
-                [x, y, z],
-                [-x, y, z],
-            ];
-            let q = [
-                [0, 3, 2, 1],
-                [4, 5, 6, 7],
-                [0, 1, 5, 4],
-                [1, 2, 6, 5],
-                [2, 3, 7, 6],
-                [3, 0, 4, 7],
-            ];
-            let t = q
-                .iter()
-                .flat_map(|f| [[f[0], f[1], f[2]], [f[0], f[2], f[3]]])
-                .collect();
+            let (x, y, z) = if s.len() >= 3 { (s[0] as f32 / 2.0, s[1] as f32 / 2.0, s[2] as f32 / 2.0) } else { (1.0, 1.0, 1.0) };
+            let p = vec![[-x, -y, -z], [x, -y, -z], [x, y, -z], [-x, y, -z], [-x, -y, z], [x, -y, z], [x, y, z], [-x, y, z]];
+            let q = [[0, 3, 2, 1], [4, 5, 6, 7], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]];
+            let t = q.iter().flat_map(|f| [[f[0], f[1], f[2]], [f[0], f[2], f[3]]]).collect();
             Some((p, t))
         }
         "Sphere" => {
@@ -595,11 +523,7 @@ fn geometry(g: &Node) -> Option<(Vec<[f32; 3]>, Vec<[u32; 3]>)> {
                 let th = std::f32::consts::PI * j as f32 / nv as f32;
                 for i in 0..nu {
                     let ph = std::f32::consts::TAU * i as f32 / nu as f32;
-                    p.push([
-                        r * th.sin() * ph.sin(),
-                        r * th.cos(),
-                        r * th.sin() * ph.cos(),
-                    ]);
+                    p.push([r * th.sin() * ph.sin(), r * th.cos(), r * th.sin() * ph.cos()]);
                 }
             }
             let mut t = Vec::new();
@@ -617,11 +541,7 @@ fn geometry(g: &Node) -> Option<(Vec<[f32; 3]>, Vec<[u32; 3]>)> {
         }
         "Cylinder" | "Cone" => {
             let cone = g.ty == "Cone";
-            let r = g
-                .nums(if cone { "bottomRadius" } else { "radius" })
-                .first()
-                .copied()
-                .unwrap_or(1.0) as f32;
+            let r = g.nums(if cone { "bottomRadius" } else { "radius" }).first().copied().unwrap_or(1.0) as f32;
             let h = g.nums("height").first().copied().unwrap_or(2.0) as f32 / 2.0;
             let rt = if cone { 0.0 } else { r };
             let mut p = Vec::new();
@@ -657,12 +577,7 @@ fn color_of(shape: &Node) -> Option<[f32; 4]> {
     let d = m.nums("diffuseColor");
     let tr = m.nums("transparency").first().copied().unwrap_or(0.0) as f32;
     if d.len() >= 3 {
-        Some([
-            d[0] as f32,
-            d[1] as f32,
-            d[2] as f32,
-            (1.0 - tr).clamp(0.05, 1.0),
-        ])
+        Some([d[0] as f32, d[1] as f32, d[2] as f32, (1.0 - tr).clamp(0.05, 1.0)])
     } else {
         Some([0.8, 0.8, 0.8, (1.0 - tr).clamp(0.05, 1.0)])
     }
@@ -682,11 +597,7 @@ fn walk(n: &Rc<Node>, world: [f32; 16], label: &str, out: &mut Out, depth: usize
         }
         "Switch" => {
             let which = n.nums("whichChoice").first().copied().unwrap_or(-1.0);
-            let ch = if n.get("choice").is_some() {
-                n.nodes("choice")
-            } else {
-                n.nodes("children")
-            };
+            let ch = if n.get("choice").is_some() { n.nodes("choice") } else { n.nodes("children") };
             if which >= 0.0 {
                 if let Some(c) = ch.get(which as usize) {
                     walk(c, world, label, out, depth + 1);
@@ -694,11 +605,7 @@ fn walk(n: &Rc<Node>, world: [f32; 16], label: &str, out: &mut Out, depth: usize
             }
         }
         "LOD" => {
-            let lv = if n.get("level").is_some() {
-                n.nodes("level")
-            } else {
-                n.nodes("children")
-            };
+            let lv = if n.get("level").is_some() { n.nodes("level") } else { n.nodes("children") };
             if let Some(c) = lv.first() {
                 walk(c, world, label, out, depth + 1);
             }
@@ -716,12 +623,7 @@ fn walk(n: &Rc<Node>, world: [f32; 16], label: &str, out: &mut Out, depth: usize
                 }
                 out.tris += t.len();
                 let mesh = sw_format::mesh::build_from_triangles(&p, &t, 30.0, out.edges);
-                out.meshes.push(SceneMesh {
-                    name: g.def.clone().unwrap_or_default(),
-                    mesh,
-                    source: MeshSource::Embedded,
-                    color: color_of(n),
-                });
+                out.meshes.push(SceneMesh { name: g.def.clone().unwrap_or_default(), mesh, source: MeshSource::Embedded, color: color_of(n) });
                 out.cache.insert(key, out.meshes.len() - 1);
                 out.meshes.len() - 1
             };
@@ -737,16 +639,7 @@ fn walk(n: &Rc<Node>, world: [f32; 16], label: &str, out: &mut Out, depth: usize
                     _ => continue,
                 };
                 for c in kids {
-                    if matches!(
-                        c.ty.as_str(),
-                        "Appearance"
-                            | "Material"
-                            | "Coordinate"
-                            | "Normal"
-                            | "TextureCoordinate"
-                            | "Color"
-                            | "ImageTexture"
-                    ) {
+                    if matches!(c.ty.as_str(), "Appearance" | "Material" | "Coordinate" | "Normal" | "TextureCoordinate" | "Color" | "ImageTexture") {
                         continue;
                     }
                     walk(&c, world, label, out, depth + 1);
@@ -762,9 +655,7 @@ pub fn load(path: &Path, bytes: &[u8]) -> Result<Loaded, String> {
     let bytes = if bytes.starts_with(&[0x1f, 0x8b]) {
         use std::io::Read;
         let mut v = Vec::new();
-        flate2::read::MultiGzDecoder::new(bytes)
-            .read_to_end(&mut v)
-            .map_err(|e| format!("gzip : {e}"))?;
+        flate2::read::MultiGzDecoder::new(bytes).read_to_end(&mut v).map_err(|e| format!("gzip : {e}"))?;
         inflated = v;
         &inflated[..]
     } else {
@@ -779,21 +670,9 @@ pub fn load(path: &Path, bytes: &[u8]) -> Result<Loaded, String> {
     if !x3d && !head.starts_with("#VRML") {
         return Err("en-tête « #VRML V2.0 » ou « #X3D » absent".into());
     }
-    let mut p = Parser {
-        t: tokenize(&text),
-        i: 0,
-        defs: HashMap::new(),
-        depth: 0,
-    };
+    let mut p = Parser { t: tokenize(&text), i: 0, defs: HashMap::new(), depth: 0 };
     let roots = p.statements(false);
-    let mut out = Out {
-        meshes: Vec::new(),
-        comps: Vec::new(),
-        cache: HashMap::new(),
-        edges: true,
-        inline: 0,
-        tris: 0,
-    };
+    let mut out = Out { meshes: Vec::new(), comps: Vec::new(), cache: HashMap::new(), edges: true, inline: 0, tris: 0 };
     let name = stem(path);
     for r in &roots {
         walk(r, crate::IDENTITY, &name, &mut out, 0);
@@ -811,11 +690,7 @@ pub fn load(path: &Path, bytes: &[u8]) -> Result<Loaded, String> {
         for (label, w, m) in out.comps {
             let k = seen.entry(label.clone()).or_insert(0);
             *k += 1;
-            let nm = if *k > 1 {
-                format!("{label} ({k})")
-            } else {
-                label
-            };
+            let nm = if *k > 1 { format!("{label} ({k})") } else { label };
             let mut c = component(&nm, 1, Some(0), false, Some(m));
             c.world = w;
             s.components.push(c);
@@ -823,14 +698,10 @@ pub fn load(path: &Path, bytes: &[u8]) -> Result<Loaded, String> {
     }
     s.up_z = false;
     if out.inline > 0 {
-        s.warnings.push(format!(
-            "{} fichier(s) Inline référencé(s) non chargé(s)",
-            out.inline
-        ));
+        s.warnings.push(format!("{} fichier(s) Inline référencé(s) non chargé(s)", out.inline));
     }
     if s.meshes.is_empty() {
-        s.warnings
-            .push("Aucune géométrie affichable trouvée dans le fichier".into());
+        s.warnings.push("Aucune géométrie affichable trouvée dans le fichier".into());
     }
     s.timings.mesh = t0.elapsed();
     Ok(s)
@@ -864,10 +735,7 @@ ROUTE A.b TO C.d
         assert_eq!(s.meshes[1].mesh.triangle_count(), 12);
         let c = s.meshes[0].color.unwrap();
         assert!((c[0] - 1.0).abs() < 1e-6 && (c[3] - 0.5).abs() < 1e-6);
-        assert!(
-            (s.components[2].world[13] - 5.0).abs() < 1e-6
-                && (s.components[2].world[12] - 1.0).abs() < 1e-6
-        );
+        assert!((s.components[2].world[13] - 5.0).abs() < 1e-6 && (s.components[2].world[12] - 1.0).abs() < 1e-6);
     }
     #[test]
     fn x3d_classic() {

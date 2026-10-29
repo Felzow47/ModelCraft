@@ -82,29 +82,19 @@ impl Assembly {
 
     pub fn new(scene: &Scene, base: Vec<Mat4>) -> Assembly {
         let n = scene.components.len();
-        let parent: Vec<Option<usize>> = scene
-            .components
-            .iter()
-            .map(|c| c.parent.filter(|&p| p < n))
-            .collect();
+        let parent: Vec<Option<usize>> = scene.components.iter().map(|c| c.parent.filter(|&p| p < n)).collect();
         // subtree bounding boxes (children come after their parent: accumulate backwards)
         let mut lo = vec![Vec3::splat(f32::INFINITY); n];
         let mut hi = vec![Vec3::splat(f32::NEG_INFINITY); n];
         for (i, c) in scene.components.iter().enumerate() {
-            let Some(m) = c.mesh.and_then(|m| scene.meshes.get(m)) else {
-                continue;
-            };
+            let Some(m) = c.mesh.and_then(|m| scene.meshes.get(m)) else { continue };
             let m = &m.mesh;
             if m.is_empty() || c.suppressed {
                 continue;
             }
             let (a, b) = (Vec3::from(m.bbox_min), Vec3::from(m.bbox_max));
             for k in 0..8 {
-                let p = Vec3::new(
-                    if k & 1 == 0 { a.x } else { b.x },
-                    if k & 2 == 0 { a.y } else { b.y },
-                    if k & 4 == 0 { a.z } else { b.z },
-                );
+                let p = Vec3::new(if k & 1 == 0 { a.x } else { b.x }, if k & 2 == 0 { a.y } else { b.y }, if k & 4 == 0 { a.z } else { b.z });
                 let q = base[i].transform_point3(p);
                 lo[i] = lo[i].min(q);
                 hi[i] = hi[i].max(q);
@@ -120,26 +110,9 @@ impl Assembly {
             }
         }
         let valid = |i: usize| lo[i].x <= hi[i].x && lo[i].is_finite() && hi[i].is_finite();
-        let center0: Vec<Vec3> = (0..n)
-            .map(|i| {
-                if valid(i) {
-                    (lo[i] + hi[i]) * 0.5
-                } else {
-                    base[i].w_axis.truncate()
-                }
-            })
-            .collect();
-        let own_valid =
-            |i: usize| own_lo[i].x <= own_hi[i].x && own_lo[i].is_finite() && own_hi[i].is_finite();
-        let own_center: Vec<Vec3> = (0..n)
-            .map(|i| {
-                if own_valid(i) {
-                    (own_lo[i] + own_hi[i]) * 0.5
-                } else {
-                    center0[i]
-                }
-            })
-            .collect();
+        let center0: Vec<Vec3> = (0..n).map(|i| if valid(i) { (lo[i] + hi[i]) * 0.5 } else { base[i].w_axis.truncate() }).collect();
+        let own_valid = |i: usize| own_lo[i].x <= own_hi[i].x && own_lo[i].is_finite() && own_hi[i].is_finite();
+        let own_center: Vec<Vec3> = (0..n).map(|i| if own_valid(i) { (own_lo[i] + own_hi[i]) * 0.5 } else { center0[i] }).collect();
         // whole-scene box (virtual root for several top-level components)
         let (mut slo, mut shi) = (Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY));
         for i in (0..n).filter(|&i| parent[i].is_none() && valid(i)) {
@@ -151,20 +124,9 @@ impl Assembly {
         // of the whole model, along the line from that centre to its own centre, by an amount
         // proportional to the slider. One direction per piece, linear in t: pieces never turn
         // round or come back as the slider goes up, and parents never add their offset twice.
-        let sr = if scene_ok {
-            ((shi - slo).length() * 0.5).max(1e-9)
-        } else {
-            1.0
-        };
+        let sr = if scene_ok { ((shi - slo).length() * 0.5).max(1e-9) } else { 1.0 };
         let pieces: Vec<usize> = (0..n)
-            .filter(|&i| {
-                scene.components[i]
-                    .mesh
-                    .and_then(|m| scene.meshes.get(m))
-                    .is_some_and(|m| !m.mesh.is_empty())
-                    && !scene.components[i].suppressed
-                    && own_valid(i)
-            })
+            .filter(|&i| scene.components[i].mesh.and_then(|m| scene.meshes.get(m)).is_some_and(|m| !m.mesh.is_empty()) && !scene.components[i].suppressed && own_valid(i))
             .collect();
         let mut world_off = vec![Vec3::ZERO; n];
         if scene_ok && pieces.len() >= 2 {
@@ -253,17 +215,11 @@ impl Assembly {
 
     /// At least two pieces (components or bodies) move apart in the exploded view.
     pub fn can_explode(&self) -> bool {
-        self.explode_dir
-            .iter()
-            .filter(|d| d.length_squared() > 0.0)
-            .count()
-            >= 2
+        self.explode_dir.iter().filter(|d| d.length_squared() > 0.0).count() >= 2
     }
 
     pub fn is_modified(&self) -> bool {
-        self.user.iter().any(|m| *m != Mat4::IDENTITY)
-            || self.explode_goal > 0.0
-            || self.explode > 0.0
+        self.user.iter().any(|m| *m != Mat4::IDENTITY) || self.explode_goal > 0.0 || self.explode > 0.0
     }
 
     pub fn is_moved(&self, i: usize) -> bool {
@@ -326,8 +282,7 @@ impl Assembly {
                 continue;
             }
             let b = acc[i].transform_point3(self.own_center[i]);
-            let a = b - self.world_off.get(i).copied().unwrap_or(Vec3::ZERO)
-                * self.explode.clamp(0.0, 1.0);
+            let a = b - self.world_off.get(i).copied().unwrap_or(Vec3::ZERO) * self.explode.clamp(0.0, 1.0);
             if (b - a).length_squared() > 1e-12 {
                 v.push((a, b));
             }
@@ -359,51 +314,12 @@ mod explode_tests {
     /// Two pieces with (almost) the same centre, like a U-bolt in its bracket, go opposite ways.
     #[test]
     fn concentric_pieces_separate() {
-        let meshes: Vec<SceneMesh> = [[0.0, -0.0085, 0.0], [0.0, -0.0081, 0.0]]
-            .iter()
-            .map(|c| SceneMesh {
-                name: "m".into(),
-                mesh: tri_at(*c),
-                source: sw_format::MeshSource::Embedded,
-                color: None,
-            })
-            .collect();
-        let id = [
-            1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
-        ];
-        let comp = |name: &str, mesh: usize| SceneComponent {
-            name: name.into(),
-            path: String::new(),
-            depth: 0,
-            parent: None,
-            is_assembly: false,
-            world: id,
-            mesh: Some(mesh),
-            suppressed: false,
-            hidden: false,
-            color: None,
-        };
-        let scene = sw_format::Scene {
-            meshes,
-            components: vec![comp("a", 0), comp("b", 1)],
-            path: Default::default(),
-            kind: sw_format::DocKind::Assembly,
-            container: sw_format::ContainerKind::Other("t"),
-            stream_count: 0,
-            preview: None,
-            warnings: vec![],
-            properties: vec![],
-            timings: Default::default(),
-            up_z: false,
-            browser: vec![],
-            sheets: vec![],
-            view_frames: vec![],
-        };
+        let meshes: Vec<SceneMesh> = [[0.0, -0.0085, 0.0], [0.0, -0.0081, 0.0]].iter().map(|c| SceneMesh { name: "m".into(), mesh: tri_at(*c), source: sw_format::MeshSource::Embedded, color: None }).collect();
+        let id = [1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.];
+        let comp = |name: &str, mesh: usize| SceneComponent { name: name.into(), path: String::new(), depth: 0, parent: None, is_assembly: false, world: id, mesh: Some(mesh), suppressed: false, hidden: false, color: None };
+        let scene = sw_format::Scene { meshes, components: vec![comp("a", 0), comp("b", 1)], path: Default::default(), kind: sw_format::DocKind::Assembly, container: sw_format::ContainerKind::Other("t"), stream_count: 0, preview: None, warnings: vec![], properties: vec![], timings: Default::default(), up_z: false, browser: vec![], sheets: vec![], view_frames: vec![] };
         let asm = Assembly::new(&scene, vec![Mat4::IDENTITY; 2]);
-        assert!(
-            asm.world_off[0].dot(asm.world_off[1]) < 0.0,
-            "they must not move the same way"
-        );
+        assert!(asm.world_off[0].dot(asm.world_off[1]) < 0.0, "they must not move the same way");
         assert!((asm.world_off[0] - asm.world_off[1]).length() > 0.05);
     }
 
@@ -411,47 +327,13 @@ mod explode_tests {
     /// slider and nothing ever comes back (the V3 bug).
     #[test]
     fn explode_is_monotonic_and_radial() {
-        let centres = [
-            [1.0, 0.2, 0.0],
-            [1.4, -0.3, 0.5],
-            [-1.0, 0.0, 0.0],
-            [0.05, 0.02, 0.0],
-        ];
-        let meshes: Vec<SceneMesh> = centres
-            .iter()
-            .map(|c| SceneMesh {
-                name: "m".into(),
-                mesh: tri_at(*c),
-                source: sw_format::MeshSource::Embedded,
-                color: None,
-            })
-            .collect();
-        let id = [
-            1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
-        ];
-        let comp =
-            |name: &str, depth: usize, parent: Option<usize>, mesh: Option<usize>| SceneComponent {
-                name: name.into(),
-                path: String::new(),
-                depth,
-                parent,
-                is_assembly: mesh.is_none(),
-                world: id,
-                mesh,
-                suppressed: false,
-                hidden: false,
-                color: None,
-            };
+        let centres = [[1.0, 0.2, 0.0], [1.4, -0.3, 0.5], [-1.0, 0.0, 0.0], [0.05, 0.02, 0.0]];
+        let meshes: Vec<SceneMesh> = centres.iter().map(|c| SceneMesh { name: "m".into(), mesh: tri_at(*c), source: sw_format::MeshSource::Embedded, color: None }).collect();
+        let id = [1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.];
+        let comp = |name: &str, depth: usize, parent: Option<usize>, mesh: Option<usize>| SceneComponent { name: name.into(), path: String::new(), depth, parent, is_assembly: mesh.is_none(), world: id, mesh, suppressed: false, hidden: false, color: None };
         let scene = sw_format::Scene {
             meshes,
-            components: vec![
-                comp("root", 0, None, None),
-                comp("sub", 1, Some(0), None),
-                comp("a", 2, Some(1), Some(0)),
-                comp("b", 2, Some(1), Some(1)),
-                comp("c", 1, Some(0), Some(2)),
-                comp("d", 1, Some(0), Some(3)),
-            ],
+            components: vec![comp("root", 0, None, None), comp("sub", 1, Some(0), None), comp("a", 2, Some(1), Some(0)), comp("b", 2, Some(1), Some(1)), comp("c", 1, Some(0), Some(2)), comp("d", 1, Some(0), Some(3))],
             path: Default::default(),
             kind: sw_format::DocKind::Assembly,
             container: sw_format::ContainerKind::Other("t"),
@@ -481,11 +363,7 @@ mod explode_tests {
             let now = pos(&asm);
             for (j, p) in now.iter().enumerate() {
                 let d = (*p - sc).length();
-                assert!(
-                    d > last[j] - 1e-6,
-                    "piece {j} came back at {}%",
-                    k * 100 / 40
-                );
+                assert!(d > last[j] - 1e-6, "piece {j} came back at {}%", k * 100 / 40);
                 last[j] = d;
                 // straight line out: the displacement keeps the same direction
                 let disp = (*p - start[j]).normalize();
@@ -495,10 +373,7 @@ mod explode_tests {
         }
         // every piece moves out, even one sitting near the middle
         for j in 0..4 {
-            assert!(
-                (pos(&asm)[j] - start[j]).length() > 0.1,
-                "piece {j} barely moved"
-            );
+            assert!((pos(&asm)[j] - start[j]).length() > 0.1, "piece {j} barely moved");
         }
         // a moved (rotated) sub-assembly keeps exploding along fixed world directions
         asm.user[1] = Mat4::from_rotation_z(0.7);
@@ -525,90 +400,28 @@ mod explode_tests {
                 }
             }
         }
-        let meshes: Vec<SceneMesh> = centres
-            .iter()
-            .map(|c| SceneMesh {
-                name: "m".into(),
-                mesh: tri_at(*c),
-                source: sw_format::MeshSource::Embedded,
-                color: None,
-            })
-            .collect();
-        let id = [
-            1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.,
-        ];
-        let mut components = vec![SceneComponent {
-            name: "root".into(),
-            path: String::new(),
-            depth: 0,
-            parent: None,
-            is_assembly: true,
-            world: id,
-            mesh: None,
-            suppressed: false,
-            hidden: false,
-            color: None,
-        }];
+        let meshes: Vec<SceneMesh> = centres.iter().map(|c| SceneMesh { name: "m".into(), mesh: tri_at(*c), source: sw_format::MeshSource::Embedded, color: None }).collect();
+        let id = [1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.];
+        let mut components = vec![SceneComponent { name: "root".into(), path: String::new(), depth: 0, parent: None, is_assembly: true, world: id, mesh: None, suppressed: false, hidden: false, color: None }];
         for g in 0..2 {
-            components.push(SceneComponent {
-                name: format!("cat{g}"),
-                path: String::new(),
-                depth: 1,
-                parent: Some(0),
-                is_assembly: true,
-                world: id,
-                mesh: None,
-                suppressed: false,
-                hidden: false,
-                color: None,
-            });
+            components.push(SceneComponent { name: format!("cat{g}"), path: String::new(), depth: 1, parent: Some(0), is_assembly: true, world: id, mesh: None, suppressed: false, hidden: false, color: None });
         }
         for k in 0..centres.len() {
-            components.push(SceneComponent {
-                name: format!("e{k}"),
-                path: String::new(),
-                depth: 2,
-                parent: Some(1 + k % 2),
-                is_assembly: false,
-                world: id,
-                mesh: Some(k),
-                suppressed: false,
-                hidden: false,
-                color: None,
-            });
+            components.push(SceneComponent { name: format!("e{k}"), path: String::new(), depth: 2, parent: Some(1 + k % 2), is_assembly: false, world: id, mesh: Some(k), suppressed: false, hidden: false, color: None });
         }
         let n = components.len();
-        let scene = sw_format::Scene {
-            meshes,
-            components,
-            path: Default::default(),
-            kind: sw_format::DocKind::Assembly,
-            container: sw_format::ContainerKind::Other("t"),
-            stream_count: 0,
-            preview: None,
-            warnings: vec![],
-            properties: vec![],
-            timings: Default::default(),
-            up_z: false,
-            browser: vec![],
-            sheets: vec![],
-            view_frames: vec![],
-        };
+        let scene = sw_format::Scene { meshes, components, path: Default::default(), kind: sw_format::DocKind::Assembly, container: sw_format::ContainerKind::Other("t"), stream_count: 0, preview: None, warnings: vec![], properties: vec![], timings: Default::default(), up_z: false, browser: vec![], sheets: vec![], view_frames: vec![] };
         let mut asm = Assembly::new(&scene, vec![Mat4::IDENTITY; n]);
         let pos = |asm: &Assembly| {
             let (_, acc) = asm.compute();
-            (3..n)
-                .map(|i| acc[i].transform_point3(asm.own_center[i]))
-                .collect::<Vec<_>>()
+            (3..n).map(|i| acc[i].transform_point3(asm.own_center[i])).collect::<Vec<_>>()
         };
         let p0 = pos(&asm);
         asm.explode = 1.0;
         let p1 = pos(&asm);
         let sc = explode_centre(&p0);
         // nearest element to the centre stays near it: no hollow shell
-        let near = (0..p0.len())
-            .min_by(|&a, &b| (p0[a] - sc).length().total_cmp(&(p0[b] - sc).length()))
-            .unwrap();
+        let near = (0..p0.len()).min_by(|&a, &b| (p0[a] - sc).length().total_cmp(&(p0[b] - sc).length())).unwrap();
         assert!((p1[near] - sc).length() < 2.0, "the middle was emptied");
         // every pair of neighbours ends further apart, along the model's own layout
         for a in 0..p0.len() {
@@ -616,10 +429,7 @@ mod explode_tests {
             for b in a + 1..p0.len() {
                 let (d0, d1) = ((p0[a] - p0[b]).length(), (p1[a] - p1[b]).length());
                 if d0 < 1.01 {
-                    assert!(
-                        d1 > d0 * 1.5,
-                        "neighbours {a} {b} did not part: {d0} -> {d1}"
-                    );
+                    assert!(d1 > d0 * 1.5, "neighbours {a} {b} did not part: {d0} -> {d1}");
                 }
             }
         }
@@ -628,9 +438,7 @@ mod explode_tests {
     /// A stray element far away does not move the explosion centre off the model.
     #[test]
     fn centre_ignores_strays() {
-        let mut c: Vec<Vec3> = (0..40)
-            .map(|k| Vec3::new(k as f32 % 5.0, 0.0, (k / 5) as f32))
-            .collect();
+        let mut c: Vec<Vec3> = (0..40).map(|k| Vec3::new(k as f32 % 5.0, 0.0, (k / 5) as f32)).collect();
         c.push(Vec3::new(5000.0, 0.0, 0.0));
         let m = explode_centre(&c);
         assert!(m.x < 5.0 && m.z < 8.0);

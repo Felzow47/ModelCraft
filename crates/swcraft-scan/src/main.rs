@@ -127,10 +127,7 @@ Usage: {exe} <dossier> [--csv rapport.csv] [--json rapport.json] [--log progress
 }
 
 fn exe_name() -> String {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-        .unwrap_or_else(|| "swcraft-scan".into())
+    std::env::current_exe().ok().and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).unwrap_or_else(|| "swcraft-scan".into())
 }
 
 /// "1G", "500M", "200k", "123456" → bytes.
@@ -153,10 +150,7 @@ fn parse_args() -> Args {
     let mut csv = None;
     let mut json = None;
     let mut log = None;
-    let mut threads = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
-        .min(16);
+    let mut threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(16);
     let mut external = true;
     let mut quiet = false;
     let mut max_size = 1u64 << 30;
@@ -174,25 +168,9 @@ fn parse_args() -> Args {
             Some("--csv") => csv = it.next().map(PathBuf::from),
             Some("--json") => json = it.next().map(PathBuf::from),
             Some("--log") => log = it.next().map(PathBuf::from),
-            Some("--max-size") => {
-                max_size = it
-                    .next()
-                    .and_then(|s| s.to_str().and_then(parse_size))
-                    .unwrap_or_else(|| bad("--max-size"))
-            }
-            Some("--mem-limit") => {
-                mem_limit = Some(
-                    it.next()
-                        .and_then(|s| s.to_str().and_then(parse_size))
-                        .unwrap_or_else(|| bad("--mem-limit")),
-                )
-            }
-            Some("--timeout") => {
-                timeout = it
-                    .next()
-                    .and_then(|s| s.to_str().and_then(|s| s.parse().ok()))
-                    .unwrap_or_else(|| bad("--timeout"))
-            }
+            Some("--max-size") => max_size = it.next().and_then(|s| s.to_str().and_then(parse_size)).unwrap_or_else(|| bad("--max-size")),
+            Some("--mem-limit") => mem_limit = Some(it.next().and_then(|s| s.to_str().and_then(parse_size)).unwrap_or_else(|| bad("--mem-limit"))),
+            Some("--timeout") => timeout = it.next().and_then(|s| s.to_str().and_then(|s| s.parse().ok())).unwrap_or_else(|| bad("--timeout")),
             Some("--isolate") => {
                 isolate = match it.next().as_ref().and_then(|s| s.to_str()) {
                     Some("auto") | Some("occt") => Isolate::Auto,
@@ -202,11 +180,7 @@ fn parse_args() -> Args {
                 }
             }
             Some("--threads") | Some("-j") => {
-                threads = it
-                    .next()
-                    .and_then(|s| s.to_str().and_then(|s| s.parse().ok()))
-                    .unwrap_or(threads)
-                    .max(1)
+                threads = it.next().and_then(|s| s.to_str().and_then(|s| s.parse().ok())).unwrap_or(threads).max(1)
             }
             Some("--no-external") => external = false,
             Some("--quiet") | Some("-q") => quiet = true,
@@ -239,20 +213,7 @@ fn parse_args() -> Args {
     if csv.is_none() && json.is_none() && interactive_default_report(&root) {
         csv = default_report_path(&root);
     }
-    Args {
-        root,
-        csv,
-        json,
-        log,
-        threads,
-        external,
-        quiet,
-        max_size,
-        isolate,
-        timeout: timeout.max(1.0),
-        mem_limit,
-        interactive,
-    }
+    Args { root, csv, json, log, threads, external, quiet, max_size, isolate, timeout: timeout.max(1.0), mem_limit, interactive }
 }
 
 /// A report is written by default when the user gave no output option.
@@ -265,10 +226,7 @@ fn interactive_default_report(_root: &Path) -> bool {
 fn default_report_path(root: &Path) -> Option<PathBuf> {
     let name = format!("rapport-scan-{}.csv", stamp());
     let mut dirs: Vec<PathBuf> = Vec::new();
-    if let Some(d) = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(Path::to_path_buf))
-    {
+    if let Some(d) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) {
         dirs.push(d);
     }
     for v in ["USERPROFILE", "HOME"] {
@@ -278,18 +236,12 @@ fn default_report_path(root: &Path) -> Option<PathBuf> {
         }
     }
     dirs.push(std::env::temp_dir());
-    dirs.into_iter()
-        .filter(|d| d.is_dir())
-        .map(|d| d.join(&name))
-        .find(|p| !inside(root, p))
+    dirs.into_iter().filter(|d| d.is_dir()).map(|d| d.join(&name)).find(|p| !inside(root, p))
 }
 
 /// Local-ish timestamp for file names (UTC, compact).
 fn stamp() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0) as i64;
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;
     let (days, rem) = (secs.div_euclid(86400), secs.rem_euclid(86400));
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
@@ -300,26 +252,15 @@ fn stamp() -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + if m <= 2 { 1 } else { 0 };
-    format!(
-        "{y:04}{m:02}{d:02}-{:02}{:02}{:02}",
-        rem / 3600,
-        rem / 60 % 60,
-        rem % 60
-    )
+    format!("{y:04}{m:02}{d:02}-{:02}{:02}{:02}", rem / 3600, rem / 60 % 60, rem % 60)
 }
 
 fn ask_folder() -> Option<PathBuf> {
-    println!(
-        "{} {} - vérification en lecture seule d'un dossier de modèles 3D",
-        exe_name(),
-        env!("CARGO_PKG_VERSION")
-    );
+    println!("{} {} - vérification en lecture seule d'un dossier de modèles 3D", exe_name(), env!("CARGO_PKG_VERSION"));
     println!("(rien n'est jamais écrit dans le dossier analysé ; le rapport est enregistré à côté de ce programme)");
     println!();
     loop {
-        print!(
-            "Dossier à analyser (glissez-le dans cette fenêtre puis Entrée, vide pour quitter) : "
-        );
+        print!("Dossier à analyser (glissez-le dans cette fenêtre puis Entrée, vide pour quitter) : ");
         let _ = std::io::stdout().flush();
         let mut line = String::new();
         if std::io::stdin().read_line(&mut line).ok()? == 0 {
@@ -343,12 +284,7 @@ fn launched_by_double_click() -> bool {
     {
         let mut ids = [0u32; 4];
         // SAFETY: plain Win32 call with a valid buffer.
-        let n = unsafe {
-            windows_sys::Win32::System::Console::GetConsoleProcessList(
-                ids.as_mut_ptr(),
-                ids.len() as u32,
-            )
-        };
+        let n = unsafe { windows_sys::Win32::System::Console::GetConsoleProcessList(ids.as_mut_ptr(), ids.len() as u32) };
         n == 1
     }
     #[cfg(not(windows))]
@@ -431,18 +367,9 @@ fn new_row(path: &Path) -> Row {
 /// Load a file in this process (like the viewer) and fill a report row.
 fn check_inproc(path: &Path, external: bool) -> Row {
     let mut row = new_row(path);
-    let opts = craft_formats::Options {
-        edges: false,
-        resolve_external: external,
-        preview: true,
-        quality: 0.5,
-        progress: None,
-        cancel: None,
-    };
+    let opts = craft_formats::Options { edges: false, resolve_external: external, preview: true, quality: 0.5, progress: None, cancel: None };
     let t = Instant::now();
-    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        craft_formats::load_any(path, &opts)
-    }));
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| craft_formats::load_any(path, &opts)));
     row.ms = t.elapsed().as_secs_f64() * 1000.0;
     match r {
         Ok(Ok(s)) => {
@@ -455,11 +382,7 @@ fn check_inproc(path: &Path, external: bool) -> Row {
             row.faces = s.meshes.iter().map(|m| m.mesh.face_count).sum();
             row.triangles = s.drawn_triangles();
             row.components = s.components.iter().filter(|c| !c.is_assembly).count();
-            row.missing = if s.kind == DocKind::Assembly {
-                s.missing_components()
-            } else {
-                0
-            };
+            row.missing = if s.kind == DocKind::Assembly { s.missing_components() } else { 0 };
             row.preview = s.preview.is_some();
             row.status = if !s.has_geometry() {
                 Status::NoMesh
@@ -491,10 +414,7 @@ fn check_inproc(path: &Path, external: bool) -> Row {
 const ROW_TAG: &str = "MCSCAN-ROW";
 
 fn esc(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('\t', "\\t")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
+    s.replace('\\', "\\\\").replace('\t', "\\t").replace('\n', "\\n").replace('\r', "\\r")
 }
 
 fn unesc(s: &str) -> String {
@@ -598,20 +518,14 @@ fn exit_text(st: &std::process::ExitStatus) -> String {
                 0xC0000005 => " (violation d'accès)",
                 0xC00000FD => " (dépassement de pile)",
                 0xC0000017 | 0xC000012D => " (mémoire insuffisante)",
-                0xC0000409 => {
-                    " (arrêt d'urgence : souvent mémoire insuffisante ou limite mémoire atteinte)"
-                }
+                0xC0000409 => " (arrêt d'urgence : souvent mémoire insuffisante ou limite mémoire atteinte)",
                 0xC000001D => " (instruction illégale)",
                 0xC0000094 => " (division par zéro)",
                 0xE06D7363 => " (exception C++ non gérée)",
                 3 => " (abort)",
                 _ => "",
             };
-            if u >= 0x8000_0000 {
-                format!("code 0x{u:08X}{n}")
-            } else {
-                format!("code {c}{n}")
-            }
+            if u >= 0x8000_0000 { format!("code 0x{u:08X}{n}") } else { format!("code {c}{n}") }
         }
         None => "fin anormale".into(),
     }
@@ -628,11 +542,7 @@ fn check_child(path: &Path, args: &Args) -> Row {
         Err(_) => return check_inproc(path, args.external),
     };
     let mut cmd = Command::new(exe);
-    cmd.arg("--single")
-        .arg(path)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+    cmd.arg("--single").arg(path).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
     if !args.external {
         cmd.arg("--no-external");
     }
@@ -666,9 +576,7 @@ fn check_child(path: &Path, args: &Args) -> Row {
                 let _ = child.wait();
                 break None;
             }
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(
-                if t.elapsed().as_millis() < 200 { 2 } else { 20 },
-            )),
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(if t.elapsed().as_millis() < 200 { 2 } else { 20 })),
             Err(_) => break None,
         }
     };
@@ -696,13 +604,7 @@ fn needs_child(path: &Path, size: u64, iso: Isolate) -> bool {
     match iso {
         Isolate::All => true,
         Isolate::None => false,
-        Isolate::Auto => {
-            size > BIG_FILE
-                || matches!(
-                    craft_formats::ext_of(path).as_str(),
-                    "step" | "stp" | "iges" | "igs"
-                )
-        }
+        Isolate::Auto => size > BIG_FILE || matches!(craft_formats::ext_of(path).as_str(), "step" | "stp" | "iges" | "igs"),
     }
 }
 
@@ -733,14 +635,8 @@ fn json_str(s: &str) -> String {
 }
 
 fn inside(root: &Path, out: &Path) -> bool {
-    let Ok(root) = std::fs::canonicalize(root) else {
-        return false;
-    };
-    let abs = if out.is_absolute() {
-        out.to_path_buf()
-    } else {
-        std::env::current_dir().unwrap_or_default().join(out)
-    };
+    let Ok(root) = std::fs::canonicalize(root) else { return false };
+    let abs = if out.is_absolute() { out.to_path_buf() } else { std::env::current_dir().unwrap_or_default().join(out) };
     let parent = abs.parent().map(|p| p.to_path_buf()).unwrap_or_default();
     match std::fs::canonicalize(&parent) {
         Ok(p) => p.starts_with(&root),
@@ -763,10 +659,7 @@ fn main() {
         std::process::exit(2)
     };
     if !args.root.is_dir() {
-        fail(format!(
-            "Erreur : {} n'est pas un dossier",
-            args.root.display()
-        ));
+        fail(format!("Erreur : {} n'est pas un dossier", args.root.display()));
     }
     for out in [&args.csv, &args.json, &args.log].into_iter().flatten() {
         if inside(&args.root, out) {
@@ -777,9 +670,7 @@ fn main() {
         }
     }
     sys::quiet_crashes();
-    let mem_limit = args
-        .mem_limit
-        .or_else(|| sys::total_memory().map(|t| t / 4 * 3));
+    let mem_limit = args.mem_limit.or_else(|| sys::total_memory().map(|t| t / 4 * 3));
     if args.isolate != Isolate::None {
         if let Some(l) = mem_limit {
             sys::limit_child_memory(l);
@@ -788,36 +679,24 @@ fn main() {
 
     // progress log: every file is written (and flushed) BEFORE it is opened
     let log_path = args.log.clone().or_else(|| {
-        let base = args
-            .csv
-            .clone()
-            .or_else(|| args.json.clone())
-            .or_else(|| default_report_path(&args.root))?;
+        let base = args.csv.clone().or_else(|| args.json.clone()).or_else(|| default_report_path(&args.root))?;
         let stem = base.file_stem()?.to_string_lossy().into_owned();
         Some(base.with_file_name(format!("{stem}-progression.log")))
     });
-    let log: Option<Arc<Mutex<std::fs::File>>> =
-        log_path
-            .as_ref()
-            .and_then(|p| match std::fs::File::create(p) {
-                Ok(f) => Some(Arc::new(Mutex::new(f))),
-                Err(e) => {
-                    eprintln!("journal impossible ({}) : {e}", p.display());
-                    None
-                }
-            });
+    let log: Option<Arc<Mutex<std::fs::File>>> = log_path.as_ref().and_then(|p| match std::fs::File::create(p) {
+        Ok(f) => Some(Arc::new(Mutex::new(f))),
+        Err(e) => {
+            eprintln!("journal impossible ({}) : {e}", p.display());
+            None
+        }
+    });
 
     let t0 = Instant::now();
     let mut files = Vec::new();
     let mut walk_errors = Vec::new();
     walk(&args.root, &mut files, &mut walk_errors);
     let n = files.len();
-    eprintln!(
-        "{} fichiers 3D trouvés en {:.1} s - analyse sur {} threads…",
-        n,
-        t0.elapsed().as_secs_f64(),
-        args.threads
-    );
+    eprintln!("{} fichiers 3D trouvés en {:.1} s - analyse sur {} threads…", n, t0.elapsed().as_secs_f64(), args.threads);
     if let Some(p) = &log_path {
         eprintln!("Journal de progression : {}", p.display());
     }
@@ -826,14 +705,7 @@ fn main() {
     }
     if let Some(l) = &log {
         if let Ok(mut f) = l.lock() {
-            let _ = writeln!(
-                f,
-                "# {} {} - {} - {} fichiers",
-                exe_name(),
-                env!("CARGO_PKG_VERSION"),
-                args.root.display(),
-                n
-            );
+            let _ = writeln!(f, "# {} {} - {} - {} fichiers", exe_name(), env!("CARGO_PKG_VERSION"), args.root.display(), n);
             let _ = f.flush();
         }
     }
@@ -848,15 +720,7 @@ fn main() {
     let t_scan = Instant::now();
     let mut handles = Vec::new();
     for _ in 0..args.threads.min(n.max(1)) {
-        let (files, next, done, rows, log, big, args) = (
-            files.clone(),
-            next.clone(),
-            done.clone(),
-            rows.clone(),
-            log.clone(),
-            big.clone(),
-            args.clone(),
-        );
+        let (files, next, done, rows, log, big, args) = (files.clone(), next.clone(), done.clone(), rows.clone(), log.clone(), big.clone(), args.clone());
         handles.push(std::thread::spawn(move || loop {
             let i = next.fetch_add(1, Ordering::SeqCst);
             if i >= files.len() {
@@ -877,35 +741,15 @@ fn main() {
             let row = if size > args.max_size {
                 let mut r = new_row(path);
                 r.status = Status::TooLarge;
-                r.message = format!(
-                    "{:.1} Mo > limite {:.1} Mo (--max-size)",
-                    size as f64 / 1048576.0,
-                    args.max_size as f64 / 1048576.0
-                );
+                r.message = format!("{:.1} Mo > limite {:.1} Mo (--max-size)", size as f64 / 1048576.0, args.max_size as f64 / 1048576.0);
                 r
             } else {
                 let child = needs_child(path, size, args.isolate);
-                logln(format!(
-                    "START\t{}\t{}\t{}\t{}",
-                    i + 1,
-                    size,
-                    if child { "enfant" } else { "direct" },
-                    path.display()
-                ));
+                logln(format!("START\t{}\t{}\t{}\t{}", i + 1, size, if child { "enfant" } else { "direct" }, path.display()));
                 let _g = (size > 256 << 20).then(|| big.lock().unwrap_or_else(|e| e.into_inner()));
-                if child {
-                    check_child(path, &args)
-                } else {
-                    check_inproc(path, args.external)
-                }
+                if child { check_child(path, &args) } else { check_inproc(path, args.external) }
             };
-            logln(format!(
-                "END\t{}\t{}\t{:.0} ms\t{}",
-                i + 1,
-                row.status.as_str(),
-                row.ms,
-                path.display()
-            ));
+            logln(format!("END\t{}\t{}\t{:.0} ms\t{}", i + 1, row.status.as_str(), row.ms, path.display()));
             if !args.quiet {
                 eprintln!(
                     "[{:>5}/{}] {:<11} {:>8.1} ms  {}{}",
@@ -914,14 +758,7 @@ fn main() {
                     row.status.as_str(),
                     row.ms,
                     row.path.display(),
-                    if matches!(
-                        row.status,
-                        Status::Error | Status::Crash | Status::Timeout | Status::TooLarge
-                    ) {
-                        format!("  - {}", row.message)
-                    } else {
-                        String::new()
-                    }
+                    if matches!(row.status, Status::Error | Status::Crash | Status::Timeout | Status::TooLarge) { format!("  - {}", row.message) } else { String::new() }
                 );
             } else {
                 done.fetch_add(1, Ordering::SeqCst);
@@ -932,49 +769,23 @@ fn main() {
     for h in handles {
         let _ = h.join();
     }
-    let rows: Vec<Row> = std::mem::take(&mut *rows.lock().unwrap_or_else(|e| e.into_inner()))
-        .into_iter()
-        .flatten()
-        .collect();
+    let rows: Vec<Row> = std::mem::take(&mut *rows.lock().unwrap_or_else(|e| e.into_inner())).into_iter().flatten().collect();
     let scan_s = t_scan.elapsed().as_secs_f64();
 
     // ---- summary
     let count = |s: Status| rows.iter().filter(|r| r.status == s).count();
-    let (ok, partial, nomesh, err) = (
-        count(Status::Ok),
-        count(Status::Partial),
-        count(Status::NoMesh),
-        count(Status::Error),
-    );
+    let (ok, partial, nomesh, err) = (count(Status::Ok), count(Status::Partial), count(Status::NoMesh), count(Status::Error));
     let unsup = count(Status::Unsupported);
-    let nomesh_prev = rows
-        .iter()
-        .filter(|r| r.status == Status::NoMesh && r.preview)
-        .count();
+    let nomesh_prev = rows.iter().filter(|r| r.status == Status::NoMesh && r.preview).count();
     let parts = rows.iter().filter(|r| r.kind == "part").count();
     let mut times: Vec<f64> = rows.iter().map(|r| r.ms).collect();
     times.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let pct = |p: f64| {
-        if times.is_empty() {
-            0.0
-        } else {
-            times[((times.len() - 1) as f64 * p).round() as usize]
-        }
-    };
-    let pc = |k: usize| {
-        if n == 0 {
-            0.0
-        } else {
-            k as f64 * 100.0 / n as f64
-        }
-    };
+    let pct = |p: f64| if times.is_empty() { 0.0 } else { times[((times.len() - 1) as f64 * p).round() as usize] };
+    let pc = |k: usize| if n == 0 { 0.0 } else { k as f64 * 100.0 / n as f64 };
     println!();
     println!("=== swcraft-scan : {} ===", args.root.display());
     let asms = rows.iter().filter(|r| r.kind == "assembly").count();
-    println!(
-        "Fichiers          : {n} ({parts} pièces, {asms} assemblages, {} modèles)",
-        n - parts - asms
-    );
+    println!("Fichiers          : {n} ({parts} pièces, {asms} assemblages, {} modèles)", n - parts - asms);
     let mut by_fmt: std::collections::BTreeMap<&str, (usize, usize)> = Default::default();
     for r in &rows {
         let e = by_fmt.entry(r.format.as_str()).or_default();
@@ -983,44 +794,16 @@ fn main() {
             e.1 += 1;
         }
     }
-    println!(
-        "Par format        : {}",
-        by_fmt
-            .iter()
-            .map(|(f, (t, o))| format!(".{f} {o}/{t}"))
-            .collect::<Vec<_>>()
-            .join(" · ")
-    );
+    println!("Par format        : {}", by_fmt.iter().map(|(f, (t, o))| format!(".{f} {o}/{t}")).collect::<Vec<_>>().join(" · "));
     println!("OK                : {ok:>6}  ({:.1} %)", pc(ok));
-    println!(
-        "Partiel           : {partial:>6}  ({:.1} %)  assemblages avec composants sans maillage",
-        pc(partial)
-    );
-    println!(
-        "Sans maillage     : {nomesh:>6}  ({:.1} %)  dont {nomesh_prev} avec vignette",
-        pc(nomesh)
-    );
+    println!("Partiel           : {partial:>6}  ({:.1} %)  assemblages avec composants sans maillage", pc(partial));
+    println!("Sans maillage     : {nomesh:>6}  ({:.1} %)  dont {nomesh_prev} avec vignette", pc(nomesh));
     println!("Non supporté      : {unsup:>6}  ({:.1} %)", pc(unsup));
     println!("Erreur            : {err:>6}  ({:.1} %)", pc(err));
-    let (crash, tout, big) = (
-        count(Status::Crash),
-        count(Status::Timeout),
-        count(Status::TooLarge),
-    );
-    println!(
-        "Plantage lecteur  : {crash:>6}  ({:.1} %)  isolés dans un processus séparé",
-        pc(crash)
-    );
-    println!(
-        "Délai dépassé     : {tout:>6}  ({:.1} %)  plus de {:.0} s",
-        pc(tout),
-        args.timeout
-    );
-    println!(
-        "Trop volumineux   : {big:>6}  ({:.1} %)  plus de {:.0} Mo, non ouverts",
-        pc(big),
-        args.max_size as f64 / 1048576.0
-    );
+    let (crash, tout, big) = (count(Status::Crash), count(Status::Timeout), count(Status::TooLarge));
+    println!("Plantage lecteur  : {crash:>6}  ({:.1} %)  isolés dans un processus séparé", pc(crash));
+    println!("Délai dépassé     : {tout:>6}  ({:.1} %)  plus de {:.0} s", pc(tout), args.timeout);
+    println!("Trop volumineux   : {big:>6}  ({:.1} %)  plus de {:.0} Mo, non ouverts", pc(big), args.max_size as f64 / 1048576.0);
     println!(
         "Temps par fichier : médiane {:.1} ms · p95 {:.1} ms · max {:.1} ms   (total {:.1} s)",
         pct(0.5),
@@ -1030,13 +813,8 @@ fn main() {
     );
     if err + crash + tout > 0 {
         let mut msgs: std::collections::BTreeMap<String, usize> = Default::default();
-        for r in rows
-            .iter()
-            .filter(|r| matches!(r.status, Status::Error | Status::Crash | Status::Timeout))
-        {
-            *msgs
-                .entry(r.message.chars().take(80).collect())
-                .or_default() += 1;
+        for r in rows.iter().filter(|r| matches!(r.status, Status::Error | Status::Crash | Status::Timeout)) {
+            *msgs.entry(r.message.chars().take(80).collect()).or_default() += 1;
         }
         println!("Erreurs les plus fréquentes :");
         let mut v: Vec<_> = msgs.into_iter().collect();
@@ -1071,10 +849,7 @@ fn main() {
     }
     if let Some(p) = &args.json {
         let mut s = String::from("{\n");
-        s.push_str(&format!(
-            "  \"root\": {},\n",
-            json_str(&args.root.to_string_lossy())
-        ));
+        s.push_str(&format!("  \"root\": {},\n", json_str(&args.root.to_string_lossy())));
         s.push_str(&format!(
             "  \"summary\": {{\"files\": {n}, \"ok\": {ok}, \"partial\": {partial}, \"no_mesh\": {nomesh}, \"unsupported\": {unsup}, \"error\": {err}, \"crash\": {crash}, \"timeout\": {tout}, \"too_large\": {big}, \"seconds\": {scan_s:.2}}},\n"
         ));
@@ -1120,9 +895,7 @@ mod sys {
     pub fn total_memory() -> Option<u64> {
         #[cfg(windows)]
         {
-            use windows_sys::Win32::System::SystemInformation::{
-                GlobalMemoryStatusEx, MEMORYSTATUSEX,
-            };
+            use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
             let mut s: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
             s.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
             // SAFETY: correctly sized struct.
@@ -1134,13 +907,7 @@ mod sys {
         #[cfg(target_os = "linux")]
         {
             let s = std::fs::read_to_string("/proc/meminfo").ok()?;
-            let kb = s
-                .lines()
-                .find(|l| l.starts_with("MemTotal:"))?
-                .split_whitespace()
-                .nth(1)?
-                .parse::<u64>()
-                .ok()?;
+            let kb = s.lines().find(|l| l.starts_with("MemTotal:"))?.split_whitespace().nth(1)?.parse::<u64>().ok()?;
             Some(kb * 1024)
         }
         #[cfg(not(any(windows, target_os = "linux")))]
@@ -1154,9 +921,7 @@ mod sys {
     pub fn quiet_crashes() {
         #[cfg(windows)]
         unsafe {
-            use windows_sys::Win32::System::Diagnostics::Debug::{
-                SetErrorMode, SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SEM_NOOPENFILEERRORBOX,
-            };
+            use windows_sys::Win32::System::Diagnostics::Debug::{SetErrorMode, SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX, SEM_NOOPENFILEERRORBOX};
             SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
         }
     }
@@ -1167,9 +932,8 @@ mod sys {
         #[cfg(windows)]
         unsafe {
             use windows_sys::Win32::System::JobObjects::{
-                AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-                SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-                JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
+                AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
             };
             use windows_sys::Win32::System::Threading::GetCurrentProcess;
             let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
@@ -1177,8 +941,7 @@ mod sys {
                 return;
             }
             let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-            info.BasicLimitInformation.LimitFlags =
-                JOB_OBJECT_LIMIT_PROCESS_MEMORY | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_PROCESS_MEMORY | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
             info.ProcessMemoryLimit = bytes as usize;
             let ok = SetInformationJobObject(
                 job,
@@ -1187,10 +950,7 @@ mod sys {
                 std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
             );
             if ok != 0 && AssignProcessToJobObject(job, GetCurrentProcess()) != 0 {
-                eprintln!(
-                    "Limite mémoire par fichier : {:.1} Go",
-                    bytes as f64 / (1u64 << 30) as f64
-                );
+                eprintln!("Limite mémoire par fichier : {:.1} Go", bytes as f64 / (1u64 << 30) as f64);
             }
             // the handle is kept open for the lifetime of the process
         }

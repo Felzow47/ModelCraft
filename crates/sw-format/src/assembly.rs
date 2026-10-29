@@ -55,10 +55,7 @@ pub struct Component {
 }
 
 fn parse_matrix(s: &str) -> Option<DMat4> {
-    let v: Vec<f64> = s
-        .split_whitespace()
-        .filter_map(|x| x.parse().ok())
-        .collect();
+    let v: Vec<f64> = s.split_whitespace().filter_map(|x| x.parse().ok()).collect();
     if v.len() < 16 {
         return None;
     }
@@ -77,13 +74,7 @@ fn decode_text(b: &[u8]) -> String {
         let le = b[0] == 0xff;
         let u: Vec<u16> = b[2..]
             .chunks_exact(2)
-            .map(|c| {
-                if le {
-                    u16::from_le_bytes([c[0], c[1]])
-                } else {
-                    u16::from_be_bytes([c[0], c[1]])
-                }
-            })
+            .map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) })
             .collect();
         String::from_utf16_lossy(&u)
     } else {
@@ -97,10 +88,7 @@ pub fn parse(xml: &[u8]) -> Result<AsmTree, String> {
     let text = text.trim_end_matches('\0');
     let doc = roxmltree::Document::parse_with_options(
         text,
-        roxmltree::ParsingOptions {
-            allow_dtd: true,
-            ..Default::default()
-        },
+        roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() },
     )
     .map_err(|e| format!("COMPINSTANCETREE: {e}"))?;
     let mut t = AsmTree::default();
@@ -114,9 +102,7 @@ pub fn parse(xml: &[u8]) -> Result<AsmTree, String> {
                         i,
                         AsmFile {
                             path: n.attribute("swPath").unwrap_or("").to_string(),
-                            is_assembly: n
-                                .attribute("swDocType")
-                                .is_some_and(|x| x.eq_ignore_ascii_case("ASSEMBLY")),
+                            is_assembly: n.attribute("swDocType").is_some_and(|x| x.eq_ignore_ascii_case("ASSEMBLY")),
                         },
                     );
                 }
@@ -130,10 +116,7 @@ pub fn parse(xml: &[u8]) -> Result<AsmTree, String> {
                             Some(AsmReference {
                                 name: c.attribute("swName").unwrap_or("?").to_string(),
                                 model: c.attribute("swModelRef")?.parse().ok()?,
-                                transform: c
-                                    .attribute("swTransform")
-                                    .and_then(parse_matrix)
-                                    .unwrap_or(DMat4::IDENTITY),
+                                transform: c.attribute("swTransform").and_then(parse_matrix).unwrap_or(DMat4::IDENTITY),
                                 suppressed: yes(c.attribute("swSuppressed")),
                                 hidden: yes(c.attribute("swHidden")),
                             })
@@ -152,10 +135,7 @@ pub fn parse(xml: &[u8]) -> Result<AsmTree, String> {
             }
             "swConfiguration" => {
                 let recent = yes(n.attribute("swMostRecentConfiguration"));
-                if let Some(m) = n
-                    .attribute("swModelRef")
-                    .and_then(|x| x.parse::<u32>().ok())
-                {
+                if let Some(m) = n.attribute("swModelRef").and_then(|x| x.parse::<u32>().ok()) {
                     if (recent && !root_from_recent) || t.root_model.is_none() {
                         t.root_model = Some(m);
                         root_from_recent |= recent;
@@ -167,11 +147,8 @@ pub fn parse(xml: &[u8]) -> Result<AsmTree, String> {
     }
     if t.root_model.is_none() {
         // Fallback: the model that is not referenced by anyone and has references.
-        let referenced: std::collections::HashSet<u32> = t
-            .models
-            .values()
-            .flat_map(|m| m.refs.iter().map(|r| r.model))
-            .collect();
+        let referenced: std::collections::HashSet<u32> =
+            t.models.values().flat_map(|m| m.refs.iter().map(|r| r.model)).collect();
         t.root_model = t
             .models
             .iter()
@@ -187,16 +164,7 @@ impl AsmTree {
     pub fn flatten(&self) -> Vec<Component> {
         let mut out = Vec::new();
         if let Some(r) = self.root_model {
-            self.walk(
-                r,
-                DMat4::IDENTITY,
-                0,
-                None,
-                false,
-                false,
-                &mut out,
-                &mut Vec::new(),
-            );
+            self.walk(r, DMat4::IDENTITY, 0, None, false, false, &mut out, &mut Vec::new());
         }
         out
     }
@@ -216,9 +184,7 @@ impl AsmTree {
         if stack.contains(&model) || depth > 64 || out.len() > 200_000 {
             return;
         }
-        let Some(m) = self.models.get(&model) else {
-            return;
-        };
+        let Some(m) = self.models.get(&model) else { return };
         stack.push(model);
         for r in &m.refs {
             let w = world * r.transform;
@@ -235,16 +201,7 @@ impl AsmTree {
                 suppressed: sup || r.suppressed,
                 hidden: hid || r.hidden,
             });
-            self.walk(
-                r.model,
-                w,
-                depth + 1,
-                Some(idx),
-                sup || r.suppressed,
-                hid || r.hidden,
-                out,
-                stack,
-            );
+            self.walk(r.model, w, depth + 1, Some(idx), sup || r.suppressed, hid || r.hidden, out, stack);
         }
         stack.pop();
     }

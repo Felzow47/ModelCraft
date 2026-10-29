@@ -47,12 +47,7 @@ pub fn demo_measures(d: &mut Document, _st: &Settings) {
         let m = &s.meshes[mi].mesh;
         let tri = m.face_triangles(f).start;
         let at = cyl.center + cyl.axis.any_orthonormal_vector() * cyl.radius;
-        d.face_sel = Some(FaceSel {
-            comp: ci,
-            mesh: mi,
-            face: Some(f),
-            tri,
-        });
+        d.face_sel = Some(FaceSel { comp: ci, mesh: mi, face: Some(f), tri });
         d.measure.results.push(Measure::Diameter { cyl, at });
         d.highlight_dirty = true;
     }

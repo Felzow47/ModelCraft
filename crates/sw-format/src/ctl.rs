@@ -14,10 +14,7 @@ pub struct Progress {
 
 impl Progress {
     pub fn new(f: impl Fn(f32, &str) + Send + Sync + 'static) -> Self {
-        Progress {
-            f: Arc::new(f),
-            bytes: None,
-        }
+        Progress { f: Arc::new(f), bytes: None }
     }
     /// Also receive (done, total) byte counts while reading / decompressing.
     pub fn with_bytes(mut self, b: impl Fn(u64, u64) + Send + Sync + 'static) -> Self {
@@ -59,9 +56,7 @@ impl Ctl {
         }
     }
     pub fn cancelled(&self) -> bool {
-        self.cancel
-            .as_ref()
-            .is_some_and(|c| c.load(Ordering::Relaxed))
+        self.cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed))
     }
     /// `Err(Cancelled)` if the user cancelled.
     pub fn check(&self) -> Result<()> {
@@ -85,10 +80,7 @@ pub fn reserve<T>(v: &mut Vec<T>, extra: usize, what: &str) -> Result<()> {
     let r = v.try_reserve(extra);
     FALLIBLE.with(|f| f.set(false));
     r.map_err(|_| {
-        Error::OutOfMemory(format!(
-            "{what} : {} Mo demandés",
-            (extra.saturating_mul(std::mem::size_of::<T>()) >> 20).max(1)
-        ))
+        Error::OutOfMemory(format!("{what} : {} Mo demandés", (extra.saturating_mul(std::mem::size_of::<T>()) >> 20).max(1)))
     })
 }
 
@@ -108,13 +100,7 @@ pub fn total_memory() -> Option<u64> {
     #[cfg(target_os = "linux")]
     {
         let s = std::fs::read_to_string("/proc/meminfo").ok()?;
-        let kb = s
-            .lines()
-            .find(|l| l.starts_with("MemTotal:"))?
-            .split_whitespace()
-            .nth(1)?
-            .parse::<u64>()
-            .ok()?;
+        let kb = s.lines().find(|l| l.starts_with("MemTotal:"))?.split_whitespace().nth(1)?.parse::<u64>().ok()?;
         Some(kb * 1024)
     }
     #[cfg(not(any(windows, target_os = "linux")))]
@@ -133,24 +119,14 @@ pub fn mem_available() -> Option<u64> {
         // SAFETY: plain Win32 call filling a correctly sized struct.
         if unsafe { GlobalMemoryStatusEx(&mut s) } != 0 {
             // available physical memory plus some page file headroom, never more than the address space
-            return Some(
-                s.ullAvailPhys
-                    .max(s.ullAvailPageFile.min(s.ullAvailPhys.saturating_mul(2)))
-                    .min(s.ullAvailVirtual),
-            );
+            return Some(s.ullAvailPhys.max(s.ullAvailPageFile.min(s.ullAvailPhys.saturating_mul(2))).min(s.ullAvailVirtual));
         }
         None
     }
     #[cfg(target_os = "linux")]
     {
         let s = std::fs::read_to_string("/proc/meminfo").ok()?;
-        let kb = s
-            .lines()
-            .find(|l| l.starts_with("MemAvailable:"))?
-            .split_whitespace()
-            .nth(1)?
-            .parse::<u64>()
-            .ok()?;
+        let kb = s.lines().find(|l| l.starts_with("MemAvailable:"))?.split_whitespace().nth(1)?.parse::<u64>().ok()?;
         Some(kb * 1024)
     }
     #[cfg(not(any(windows, target_os = "linux")))]
@@ -176,8 +152,4 @@ pub fn check_memory(bytes: u64, factor: f64, what: &str) -> Result<()> {
 }
 
 /// Largest decompressed stream accepted (protects against corrupt size fields).
-pub const MAX_STREAM: u64 = if cfg!(target_pointer_width = "64") {
-    8 << 30
-} else {
-    1 << 30
-};
+pub const MAX_STREAM: u64 = if cfg!(target_pointer_width = "64") { 8 << 30 } else { 1 << 30 };

@@ -49,12 +49,7 @@ enum Loc {
     /// OLE stream path (as given to cfb), plus whether it is `__ZLB` compressed.
     Ole { path: String, zlb: bool },
     /// Disguised ZIP record.
-    Zip {
-        data_off: usize,
-        comp: usize,
-        raw: usize,
-        method: u16,
-    },
+    Zip { data_off: usize, comp: usize, raw: usize, method: u16 },
 }
 
 /// A stream inside the container (logical name, without `__ZLB` suffix).
@@ -84,13 +79,7 @@ impl StreamInfo {
     /// Uncompressed size when the container records it (SW2015+ records).
     pub fn raw_size(&self) -> Option<u64> {
         match &self.loc {
-            Loc::Zip {
-                raw, method, comp, ..
-            } => Some(if *method == 0 {
-                *comp as u64
-            } else {
-                *raw as u64
-            }),
+            Loc::Zip { raw, method, comp, .. } => Some(if *method == 0 { *comp as u64 } else { *raw as u64 }),
             Loc::Ole { .. } => None,
         }
     }
@@ -148,23 +137,13 @@ impl Container {
         }
         if b[..8] == OLE_MAGIC {
             let streams = list_ole(b)?;
-            Ok(Container {
-                kind: ContainerKind::Ole,
-                data,
-                streams,
-            })
+            Ok(Container { kind: ContainerKind::Ole, data, streams })
         } else {
             let streams = list_zip(b, ctl)?;
             if streams.is_empty() {
-                return Err(Error::NotSolidWorks(
-                    "neither OLE nor SW2015+ container".into(),
-                ));
+                return Err(Error::NotSolidWorks("neither OLE nor SW2015+ container".into()));
             }
-            Ok(Container {
-                kind: ContainerKind::Sw2015,
-                data,
-                streams,
-            })
+            Ok(Container { kind: ContainerKind::Sw2015, data, streams })
         }
     }
 
@@ -182,9 +161,7 @@ impl Container {
 
     /// Find a stream by logical name (case-insensitive, `/` separated).
     pub fn find(&self, name: &str) -> Option<&StreamInfo> {
-        self.streams
-            .iter()
-            .find(|s| s.name.eq_ignore_ascii_case(name))
+        self.streams.iter().find(|s| s.name.eq_ignore_ascii_case(name))
     }
 
     pub fn has(&self, name: &str) -> bool {
@@ -210,21 +187,12 @@ impl Container {
         let b = self.data.bytes();
         let stage = "Décompression…";
         let prog = |done: usize, total: usize| {
-            let f = if total == 0 {
-                1.0
-            } else {
-                done as f32 / total as f32
-            };
+            let f = if total == 0 { 1.0 } else { done as f32 / total as f32 };
             ctl.report(range.0 + (range.1 - range.0) * f.clamp(0.0, 1.0), stage);
             ctl.bytes(done as u64, total as u64);
         };
         match &s.loc {
-            Loc::Zip {
-                data_off,
-                comp,
-                raw,
-                method,
-            } => {
+            Loc::Zip { data_off, comp, raw, method } => {
                 let src = b
                     .get(*data_off..data_off + comp)
                     .ok_or_else(|| Error::Corrupt(format!("{}: record out of bounds", s.name)))?;
@@ -240,26 +208,18 @@ impl Container {
                             return Ok(Vec::new());
                         }
                         // a size field close to 4 GiB may be a ZIP64 placeholder: do not trust it
-                        let limit = if *raw as u64 >= 0xFFFF_0000 {
-                            MAX_STREAM
-                        } else {
-                            (*raw as u64 + 1024).min(MAX_STREAM)
-                        };
-                        inflate(src, false, (*raw).min(limit as usize), limit, ctl, &prog).map_err(
-                            |e| match e {
-                                Error::Corrupt(m) => Error::Corrupt(format!("{}: {m}", s.name)),
-                                e => e,
-                            },
-                        )
+                        let limit = if *raw as u64 >= 0xFFFF_0000 { MAX_STREAM } else { (*raw as u64 + 1024).min(MAX_STREAM) };
+                        inflate(src, false, (*raw).min(limit as usize), limit, ctl, &prog).map_err(|e| match e {
+                            Error::Corrupt(m) => Error::Corrupt(format!("{}: {m}", s.name)),
+                            e => e,
+                        })
                     }
                 }
             }
             Loc::Ole { path, zlb } => {
                 let mut cf = cfb::CompoundFile::open(Cursor::new(b))
                     .map_err(|e| Error::Corrupt(format!("OLE: {e}")))?;
-                let mut st = cf
-                    .open_stream(path)
-                    .map_err(|e| Error::Corrupt(format!("{path}: {e}")))?;
+                let mut st = cf.open_stream(path).map_err(|e| Error::Corrupt(format!("{path}: {e}")))?;
                 let len = st.len() as usize;
                 let mut raw = Vec::new();
                 reserve(&mut raw, len, &s.name)?;
@@ -267,8 +227,7 @@ impl Container {
                 st.read_to_end(&mut raw)?;
                 ctl.check()?;
                 if *zlb {
-                    decode_zlb_ctl(&raw, ctl, &prog)?
-                        .ok_or_else(|| Error::Corrupt(format!("{}: bad __ZLB payload", s.name)))
+                    decode_zlb_ctl(&raw, ctl, &prog)?.ok_or_else(|| Error::Corrupt(format!("{}: bad __ZLB payload", s.name)))
                 } else {
                     Ok(raw)
                 }
@@ -278,31 +237,15 @@ impl Container {
 
     /// Decompress a stream piece by piece into `sink` without keeping it in memory (SW2015+
     /// ZIP records; other layouts are read whole then handed over). Returns the raw size.
-    pub fn stream_info(
-        &self,
-        s: &StreamInfo,
-        ctl: &Ctl,
-        range: (f32, f32),
-        stage: &str,
-        sink: &mut dyn FnMut(&[u8]) -> Result<()>,
-    ) -> Result<u64> {
+    pub fn stream_info(&self, s: &StreamInfo, ctl: &Ctl, range: (f32, f32), stage: &str, sink: &mut dyn FnMut(&[u8]) -> Result<()>) -> Result<u64> {
         let b = self.data.bytes();
         let prog = |done: usize, total: usize| {
-            let f = if total == 0 {
-                1.0
-            } else {
-                done as f32 / total as f32
-            };
+            let f = if total == 0 { 1.0 } else { done as f32 / total as f32 };
             ctl.report(range.0 + (range.1 - range.0) * f.clamp(0.0, 1.0), stage);
             ctl.bytes(done as u64, total as u64);
         };
         match &s.loc {
-            Loc::Zip {
-                data_off,
-                comp,
-                raw,
-                method,
-            } => {
+            Loc::Zip { data_off, comp, raw, method } => {
                 let src = b
                     .get(*data_off..data_off + comp)
                     .ok_or_else(|| Error::Corrupt(format!("{}: record out of bounds", s.name)))?;
@@ -325,17 +268,12 @@ impl Container {
             }
             Loc::Ole { path, zlb: true } => {
                 // keep only the compressed stream; inflate the `__ZLB` blocks one at a time
-                let mut cf = cfb::CompoundFile::open(Cursor::new(b))
-                    .map_err(|e| Error::Corrupt(format!("OLE: {e}")))?;
-                let mut st = cf
-                    .open_stream(path)
-                    .map_err(|e| Error::Corrupt(format!("{path}: {e}")))?;
+                let mut cf = cfb::CompoundFile::open(Cursor::new(b)).map_err(|e| Error::Corrupt(format!("OLE: {e}")))?;
+                let mut st = cf.open_stream(path).map_err(|e| Error::Corrupt(format!("{path}: {e}")))?;
                 let mut raw = Vec::new();
                 reserve(&mut raw, st.len() as usize, &s.name)?;
                 st.read_to_end(&mut raw)?;
-                if let Some(start) =
-                    memchr::memmem::find(&raw[..raw.len().min(64)], &ZLB_GUID).map(|i| i + 16)
-                {
+                if let Some(start) = memchr::memmem::find(&raw[..raw.len().min(64)], &ZLB_GUID).map(|i| i + 16) {
                     let mut i = start;
                     let mut total = 0u64;
                     while i + 8 <= raw.len() {
@@ -344,12 +282,7 @@ impl Container {
                         if cs == 0 || i + 8 + cs > raw.len() {
                             break;
                         }
-                        let Ok(v) = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(
-                            &raw[i + 8..i + 8 + cs],
-                            rs.max(1) + 4096,
-                        ) else {
-                            break;
-                        };
+                        let Ok(v) = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&raw[i + 8..i + 8 + cs], rs.max(1) + 4096) else { break };
                         total += v.len() as u64;
                         sink(&v)?;
                         i += 8 + cs;
@@ -375,8 +308,7 @@ impl Container {
 }
 
 fn list_ole(b: &[u8]) -> Result<Vec<StreamInfo>> {
-    let cf =
-        cfb::CompoundFile::open(Cursor::new(b)).map_err(|e| Error::Corrupt(format!("OLE: {e}")))?;
+    let cf = cfb::CompoundFile::open(Cursor::new(b)).map_err(|e| Error::Corrupt(format!("OLE: {e}")))?;
     let mut out: Vec<StreamInfo> = Vec::new();
     for e in cf.walk() {
         if !e.is_stream() {
@@ -392,48 +324,22 @@ fn list_ole(b: &[u8]) -> Result<Vec<StreamInfo>> {
             (logical_full.clone(), false)
         };
         // Preference order when both exist: `name__ZLB`, then `name`, then `name__Zip`.
-        let rank = |p: &str| {
-            if p.ends_with("__ZLB") {
-                0
-            } else if p.ends_with("__Zip") {
-                2
-            } else {
-                1
-            }
-        };
+        let rank = |p: &str| if p.ends_with("__ZLB") { 0 } else if p.ends_with("__Zip") { 2 } else { 1 };
         if let Some(existing) = out.iter_mut().find(|s| s.name == logical) {
-            let old_rank = match &existing.loc {
-                Loc::Ole { path, .. } => rank(path),
-                _ => 3,
-            };
+            let old_rank = match &existing.loc { Loc::Ole { path, .. } => rank(path), _ => 3 };
             if rank(&path) < old_rank {
-                *existing = StreamInfo {
-                    name: logical,
-                    stored_size: e.len(),
-                    loc: Loc::Ole { path, zlb },
-                };
+                *existing = StreamInfo { name: logical, stored_size: e.len(), loc: Loc::Ole { path, zlb } };
             }
             continue;
         }
-        out.push(StreamInfo {
-            name: logical,
-            stored_size: e.len(),
-            loc: Loc::Ole { path, zlb },
-        });
+        out.push(StreamInfo { name: logical, stored_size: e.len(), loc: Loc::Ole { path, zlb } });
     }
     Ok(out)
 }
 
 /// Streaming inflate (raw deflate or zlib) into a fallibly grown buffer, with progress and
 /// cancellation every few megabytes. `limit` caps the output size.
-fn inflate(
-    src: &[u8],
-    zlib: bool,
-    expect: usize,
-    limit: u64,
-    ctl: &Ctl,
-    prog: &dyn Fn(usize, usize),
-) -> Result<Vec<u8>> {
+fn inflate(src: &[u8], zlib: bool, expect: usize, limit: u64, ctl: &Ctl, prog: &dyn Fn(usize, usize)) -> Result<Vec<u8>> {
     let mut out: Vec<u8> = Vec::new();
     reserve(&mut out, expect, "décompression")?;
     inflate_into(src, zlib, limit, ctl, prog, &mut |chunk| {
@@ -461,11 +367,7 @@ fn inflate_into(
 ) -> Result<u64> {
     use miniz_oxide::inflate::stream::{inflate as step, InflateState};
     use miniz_oxide::{DataFormat, MZError, MZFlush, MZStatus};
-    let mut st = InflateState::new_boxed(if zlib {
-        DataFormat::Zlib
-    } else {
-        DataFormat::Raw
-    });
+    let mut st = InflateState::new_boxed(if zlib { DataFormat::Zlib } else { DataFormat::Raw });
     let mut buf = vec![0u8; 4 << 20];
     let mut pos = 0usize;
     let mut last = 0usize;
@@ -475,10 +377,7 @@ fn inflate_into(
         pos += r.bytes_consumed;
         if r.bytes_written > 0 {
             if total + r.bytes_written as u64 > limit {
-                return Err(Error::TooLarge(format!(
-                    "flux décompressé supérieur à {} Mo",
-                    limit >> 20
-                )));
+                return Err(Error::TooLarge(format!("flux décompressé supérieur à {} Mo", limit >> 20)));
             }
             total += r.bytes_written as u64;
             sink(&buf[..r.bytes_written])?;
@@ -511,9 +410,7 @@ fn inflate_into(
 /// Decode a `__ZLB` payload: GUID, then `[u32 raw][u32 comp][zlib]` blocks.
 /// Falls back to a plain zlib stream after a short header.
 pub fn decode_zlb(raw: &[u8]) -> Option<Vec<u8>> {
-    decode_zlb_ctl(raw, &Ctl::default(), &|_, _| {})
-        .ok()
-        .flatten()
+    decode_zlb_ctl(raw, &Ctl::default(), &|_, _| {}).ok().flatten()
 }
 
 fn decode_zlb_ctl(raw: &[u8], ctl: &Ctl, prog: &dyn Fn(usize, usize)) -> Result<Option<Vec<u8>>> {
@@ -532,15 +429,9 @@ fn decode_zlb_ctl(raw: &[u8], ctl: &Ctl, prog: &dyn Fn(usize, usize)) -> Result<
                 break;
             }
             if out.len() as u64 + rs as u64 > MAX_STREAM {
-                return Err(Error::TooLarge(format!(
-                    "flux décompressé supérieur à {} Mo",
-                    MAX_STREAM >> 20
-                )));
+                return Err(Error::TooLarge(format!("flux décompressé supérieur à {} Mo", MAX_STREAM >> 20)));
             }
-            match miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(
-                &raw[i + 8..i + 8 + cs],
-                rs.max(1) + 4096,
-            ) {
+            match miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&raw[i + 8..i + 8 + cs], rs.max(1) + 4096) {
                 Ok(v) => {
                     if out.capacity() - out.len() < v.len() {
                         let extra = v.len().max(out.len() / 4);
@@ -594,9 +485,7 @@ fn list_zip(b: &[u8], ctl: &Ctl) -> Result<Vec<StreamInfo>> {
     let mut pos = 4usize;
     let mut next_report = 32usize << 20;
     while pos < b.len() {
-        let Some(rel) = finder.find(&b[pos..]) else {
-            break;
-        };
+        let Some(rel) = finder.find(&b[pos..]) else { break };
         let p = pos + rel;
         pos = p + 1;
         if p >= next_report {
@@ -604,13 +493,9 @@ fn list_zip(b: &[u8], ctl: &Ctl) -> Result<Vec<StreamInfo>> {
             ctl.bytes(p as u64, b.len() as u64);
             ctl.check()?;
         }
-        let (Some(_crc), Some(cs), Some(us), Some(nl), Some(xl)) = (
-            rd_u32(b, p + 10),
-            rd_u32(b, p + 14),
-            rd_u32(b, p + 18),
-            rd_u16(b, p + 22),
-            rd_u16(b, p + 24),
-        ) else {
+        let (Some(_crc), Some(cs), Some(us), Some(nl), Some(xl)) =
+            (rd_u32(b, p + 10), rd_u32(b, p + 14), rd_u32(b, p + 18), rd_u16(b, p + 22), rd_u16(b, p + 24))
+        else {
             continue;
         };
         let (cs, us, nl, xl) = (cs as usize, us as usize, nl as usize, xl as usize);
@@ -623,37 +508,19 @@ fn list_zip(b: &[u8], ctl: &Ctl) -> Result<Vec<StreamInfo>> {
             continue;
         }
         let name = nibble_swap(&b[name_off..name_off + nl]);
-        if !name
-            .chars()
-            .all(|c| (' '..='~').contains(&c) || (c as u32) >= 0xA0)
-        {
+        if !name.chars().all(|c| (' '..='~').contains(&c) || (c as u32) >= 0xA0) {
             continue;
         }
         let method = rd_u16(b, p + 4).unwrap_or(8);
         let magic: [u8; 4] = b[p - 4..p].try_into().unwrap();
-        cands.push((
-            magic,
-            StreamInfo {
-                name,
-                stored_size: cs as u64,
-                loc: Loc::Zip {
-                    data_off,
-                    comp: cs,
-                    raw: us,
-                    method,
-                },
-            },
-        ));
+        cands.push((magic, StreamInfo { name, stored_size: cs as u64, loc: Loc::Zip { data_off, comp: cs, raw: us, method } }));
     }
     // Most frequent signature = the file's record magic.
     let mut counts: std::collections::HashMap<[u8; 4], usize> = std::collections::HashMap::new();
     for (m, _) in &cands {
         *counts.entry(*m).or_default() += 1;
     }
-    let best = counts
-        .iter()
-        .max_by_key(|(_, c)| **c)
-        .map(|(m, c)| (*m, *c));
+    let best = counts.iter().max_by_key(|(_, c)| **c).map(|(m, c)| (*m, *c));
     let mut out: Vec<StreamInfo> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let want = best.filter(|(_, n)| *n >= 2).map(|(m, _)| m);
