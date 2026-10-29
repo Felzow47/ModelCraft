@@ -1058,6 +1058,83 @@ fn append(out: &mut Mesh, m: &Mesh, t: &Trf) {
     out.tri.extend(m.tri.iter().map(|tr| if flip { [tr[0] + base, tr[2] + base, tr[1] + base] } else { [tr[0] + base, tr[1] + base, tr[2] + base] }));
 }
 
+/// A horizontal sheet made a slab down to `z0`: a copy at `z0` and the walls along the
+/// sheet's boundary (the edges of a single triangle).
+fn thicken_down(m: &mut Mesh, z0: f32) {
+    let n = m.pos.len() as u32;
+    let mut count: HashMap<(u32, u32), i32> = HashMap::new();
+    for t in &m.tri {
+        for k in 0..3 {
+            let (a, b) = (t[k], t[(k + 1) % 3]);
+            *count.entry((a.min(b), a.max(b))).or_default() += 1;
+        }
+    }
+    let tris = m.tri.clone();
+    for i in 0..n as usize {
+        let p = m.pos[i];
+        m.pos.push([p[0], p[1], z0]);
+    }
+    for t in &tris {
+        m.tri.push([t[0] + n, t[2] + n, t[1] + n]);
+        for k in 0..3 {
+            let (a, b) = (t[k], t[(k + 1) % 3]);
+            if count[&(a.min(b), a.max(b))] == 1 {
+                m.tri.push([a, b + n, b]);
+                m.tri.push([a, a + n, b + n]);
+            }
+        }
+    }
+}
+
+/// Roof slabs from their layer faces: the faces sharing a plane direction and an extent
+/// (the envelope, in plane coordinates) are the layers of one slope; the slope is the
+/// envelope's rectangle between the outermost layers. Mesh in metres.
+fn layer_slabs(planes: &[(V3, V3, V3, [f64; 4])]) -> Option<Mesh> {
+    let mut used = vec![false; planes.len()];
+    let mut m = Mesh::default();
+    for i in 0..planes.len() {
+        if used[i] {
+            continue;
+        }
+        let (o, x, y, env) = planes[i];
+        if !env.iter().all(|v| v.is_finite()) || (env[2] - env[0]).abs() < 1e-3 || (env[3] - env[1]).abs() < 1e-3 || (env[2] - env[0]).abs() > 3e3 || (env[3] - env[1]).abs() > 3e3 {
+            continue;
+        }
+        let Some(n) = norm(cross(x, y)) else { continue };
+        let (mut d0, mut d1) = (0.0f64, 0.0f64);
+        for j in i..planes.len() {
+            let (oj, xj, yj, ej) = planes[j];
+            if used[j] || dot(xj, x) < 0.999 || dot(yj, y) < 0.999 || (0..4).any(|k| (ej[k] - env[k]).abs() > 1e-3) {
+                continue;
+            }
+            let dd = sub(oj, o);
+            if dot(dd, x).abs() > 1e-3 || dot(dd, y).abs() > 1e-3 {
+                continue;
+            }
+            used[j] = true;
+            let d = dot(dd, n);
+            d0 = d0.min(d);
+            d1 = d1.max(d);
+        }
+        if d1 - d0 < 1e-3 {
+            continue; // a single face: no thickness known
+        }
+        let c = |u: f64, v: f64, d: f64| {
+            let p = add(add(o, add(mul(x, u), mul(y, v))), mul(n, d));
+            [(p[0] * FEET) as f32, (p[1] * FEET) as f32, (p[2] * FEET) as f32]
+        };
+        let base = m.pos.len() as u32;
+        for k in 0..8 {
+            m.pos.push(c(if k & 1 == 0 { env[0] } else { env[2] }, if k & 2 == 0 { env[1] } else { env[3] }, if k & 4 == 0 { d0 } else { d1 }));
+        }
+        for q in [[0, 1, 3, 2], [4, 6, 7, 5], [0, 4, 5, 1], [2, 3, 7, 6], [0, 2, 6, 4], [1, 5, 7, 3]] {
+            m.tri.push([base + q[0], base + q[1], base + q[2]]);
+            m.tri.push([base + q[0], base + q[2], base + q[3]]);
+        }
+    }
+    (!m.tri.is_empty()).then_some(m)
+}
+
 /// A wall along the polyline `path` (feet, its z ignored): the band `±half` about it in
 /// plan, from `z0` to `z1` (feet). Mesh in metres.
 fn swept_wall(path: &[V3], half: f64, z0: f64, z1: f64) -> Option<Mesh> {
@@ -1147,8 +1224,8 @@ fn param(tr: &Tree, id: i64) -> Option<f64> {
 
 impl Shapes {
     /// Element classes read.
-    const CLASSES: [&'static str; 24] = [
-        "TopRail", "HandRail", "BaseRailing", "StairsRun", "StairsLanding", "PartMaker", "ProfileRoof", "SWall", "Floor", "Ceiling", "BuildingPad", "RoofSoffit", "Toposolid", "ExtrusionElem", "RevolutionElem", "SweepElem", "BlendElem", "Family", "FamilyInstance", "FamilySymbol", "VarSketch", "Sketch", "SketchPlane", "Path3d",
+    const CLASSES: [&'static str; 25] = [
+        "Roof", "TopRail", "HandRail", "BaseRailing", "StairsRun", "StairsLanding", "PartMaker", "ProfileRoof", "SWall", "Floor", "Ceiling", "BuildingPad", "RoofSoffit", "Toposolid", "ExtrusionElem", "RevolutionElem", "SweepElem", "BlendElem", "Family", "FamilyInstance", "FamilySymbol", "VarSketch", "Sketch", "SketchPlane", "Path3d",
     ];
 
     /// Element classes read, by tag.
@@ -1248,6 +1325,11 @@ impl Shapes {
     fn element(&mut self, s: &Schema, cls: &str, tr: &Tree) {
         let id = tr.id;
         match cls {
+            "Roof" => {
+                if let Some(m) = layer_slabs(&planes_of(tr, "m_pRefLayerFaces")) {
+                    self.breps.push((id, m));
+                }
+            }
             "TopRail" | "HandRail" => {
                 if let Some(p) = tr.objs.iter().find(|o| s.name(o.tag) == "Path3dRailPathProvider").and_then(|o| o.int("m_path3dId")) {
                     self.rails.push((id, p));
@@ -1459,7 +1541,14 @@ impl Shapes {
             eprintln!("walls {} slabs {} forms {} sketches {} instances {} symbols {}", self.walls.len(), self.slabs.len(), self.forms.len(), self.sketch_planes.len(), self.instances.len(), self.symbols.len());
         }
         for (id, m) in &self.breps {
-            out.insert(*id, m.clone());
+            let mut m = m.clone();
+            // a flat sheet (a roof's top face) in a thicker box: thickened down to the box
+            if let (Some((lo, hi)), Some((blo, bhi))) = (m.bbox(), boxes.get(id)) {
+                if hi[2] - lo[2] < 0.01 && bhi[2] - blo[2] > 0.02 && (hi[2] as f64 - bhi[2]).abs() < 0.05 {
+                    thicken_down(&mut m, blo[2] as f32);
+                }
+            }
+            out.insert(*id, m);
         }
         for m in &self.mep {
             if let Some(x) = mep(m) {

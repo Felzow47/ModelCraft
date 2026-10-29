@@ -35,7 +35,7 @@ fn main() {
     println!("shapes off their box by >5 cm: {bad} (>30 cm: {big})");
     if let Ok(ids) = std::env::var("BOX_IDS") {
         for id in ids.split(',').filter_map(|x| x.parse::<i64>().ok()) {
-            if let Some(b) = boxes.iter().find(|b| b.id == id) { println!("  box {id} cat {} {:?} {:?} shaped {}", b.category, b.min, b.max, meshes.contains_key(&id)); }
+            if let Some(b) = boxes.iter().find(|b| b.id == id) { println!("  box {id} cat {} {:?} {:?} shape {:?}", b.category, b.min, b.max, meshes.get(&id).and_then(|m| m.bbox())); }
         }
     }
     if let Ok(p) = std::env::var("CATS_OUT") {
