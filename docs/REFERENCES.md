@@ -1,44 +1,43 @@
-# Projets étudiés pour inspiration (salle blanche)
+# Projects studied for inspiration (clean room)
 
-ModelCraft V4 s'est inspiré du **comportement** et des **idées** de deux projets open source
-indiqués par l'utilisateur. Règle suivie : lecture pour comprendre ce qu'ils font et comment ils
-s'organisent, puis réécriture complète en Rust par nous. **Aucune ligne de leur code n'a été
-copiée** dans ModelCraft (ni de rvt-rs, dont BIMCraft dérive en partie). Rien non plus d'eDrawings,
-SolidWorks ou Autodesk.
+ModelCraft V4 took inspiration from the **behaviour** and **ideas** of two open-source projects
+pointed out by the user. Rule followed: read them to understand what they do and how they are
+organised, then rewrite everything in Rust ourselves. **Not a single line of their code was
+copied** into ModelCraft (nor from rvt-rs, which BIMCraft partly derives from). Nothing from
+eDrawings, SolidWorks or Autodesk either.
 
 ## tangency-labs/solidcraft
 
-- **Nature** : CAO paramétrique en Rust / egui (esquisses, contraintes, fonctions). Pas de lecture
-  SLDPRT/SLDASM, ni des flux d'affichage SolidWorks ; imports STEP/IGES/3MF/STL/OBJ/glTF.
-- **Idées retenues (réimplémentées à notre façon)** :
-  - préréglages de navigation (style Blender / CAO) et raccourcis documentés dans l'application ;
-  - double-clic molette = tout cadrer ; rotations de vue par pas de 15° au clavier ;
-  - Ctrl+Z / Ctrl+Y sur l'état de la vue ;
-  - vue éclatée animée ;
-  - vrai installateur Windows avec menu Démarrer.
-- **Non repris** : son modèle paramétrique (hors sujet pour une visionneuse), son installateur MSI
-  (nous utilisons Inno Setup, généré depuis notre propre liste d'extensions).
+- **What it is**: parametric CAD in Rust / egui (sketches, constraints, features). It does not
+  read SLDPRT/SLDASM or the SolidWorks display streams; it imports STEP/IGES/3MF/STL/OBJ/glTF.
+- **Ideas kept (re-implemented our own way)**:
+  - navigation presets (Blender / CAD style) and shortcuts documented inside the application;
+  - middle double-click = zoom to fit; keyboard view rotations in 15° steps;
+  - Ctrl+Z / Ctrl+Y on the view state;
+  - animated exploded view;
+  - a real Windows installer with a Start menu entry.
+- **Not taken**: its parametric model (out of scope for a viewer), its MSI installer
+  (we use Inno Setup, generated from our own extension list).
 
-## IPedrax/BIMCraft (toutes les branches)
+## IPedrax/BIMCraft (all branches)
 
-- `main` est la branche la plus complète. Les 25 autres branches contiennent des versions
-  mineures ou plus anciennes de `crates/rvt`.
-- **Lecteur RVT** (Apache-2.0, en partie porté de rvt-rs) : reconstruction **sémantique** des
-  éléments (niveaux, murs, dalles/plafonds, toits, portes/fenêtres, poteaux, pièces), pas de
-  maillage Revit natif. Familles, escaliers et groupes sont ignorés.
-- **Faits de format notés** (faits, pas du code) : à partir de Revit 2024, un enregistrement
-  d'élément porte une boîte englobante de 6 `f64` (en pieds) à +0x58 et un `BuiltInCategory`
-  (`i64`) à +0x12.
-- **Piste V5 (non faite)** : un repli « boîtes d'éléments » pour les RVT, écrit par nous à
-  partir de ces faits, en restant en lecture streaming et mémoire bornée.
+- `main` is the most complete branch. The 25 other branches hold minor or older versions of
+  `crates/rvt`.
+- **RVT reader** (Apache-2.0, partly ported from rvt-rs): **semantic** reconstruction of the
+  elements (levels, walls, floors/ceilings, roofs, doors/windows, columns, rooms), no native Revit
+  mesh. Families, stairs and groups are ignored.
+- **Format facts noted** (facts, not code): from Revit 2024 on, an element record carries a
+  bounding box of 6 `f64` (feet) at +0x58 and a `BuiltInCategory` (`i64`) at +0x12.
+- **V5 lead (not done there)**: an "element boxes" fallback for RVT files, written by us from
+  these facts, keeping streaming reads and bounded memory.
 
-## Ce qui en est sorti dans la V4
+## What came out of it in V4
 
-| Idée | Implémentation ModelCraft |
+| Idea | ModelCraft implementation |
 |---|---|
-| Préréglages de navigation | `NavStyle` Blender (défaut) / SolidWorks / CAO, réglage « Raccourcis Blender » |
-| Pas de 15° au clavier, vue opposée | `view.orbit_*` (pavé 4/6/8/2), `view.flip` (pavé 9) |
-| Double-clic molette = tout cadrer | `viewer.rs`, gestion souris |
-| Annuler / rétablir | pile `ViewState` dans `document.rs` (positions, éclaté, opacités, masquage) |
-| Éclaté animé | `assembly.rs` : une direction radiale fixe par pièce, jamais inversée |
-| Installateur | `installer/gen_iss.py` → `installer/modelcraft.iss` (Inno Setup) |
+| Navigation presets | `NavStyle` Blender (default) / SolidWorks / CAD, "Blender shortcuts" setting |
+| 15° keyboard steps, opposite view | `view.orbit_*` (numpad 4/6/8/2), `view.flip` (numpad 9) |
+| Middle double-click = zoom to fit | `viewer.rs`, mouse handling |
+| Undo / redo | `ViewState` stack in `document.rs` (positions, explode, opacities, hiding) |
+| Animated explode | `assembly.rs`: one fixed radial direction per part, never reversed |
+| Installer | `installer/gen_iss.py` → `installer/modelcraft.iss` (Inno Setup) |

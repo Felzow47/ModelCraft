@@ -1,369 +1,363 @@
 <<<<<<< HEAD
+<<<<<<< HEAD
 # ModelCraft - la visionneuse 3D ultime (V4)
+=======
+# ModelCraft - the ultimate 3D viewer (V4)
+>>>>>>> 639014b (docs: English README with multi-format screenshots of public samples (SolidWorks, STEP, IFC, glTF, Revit); English NOTICE, references, Revit notes, installer strings and script comments)
 
-<p align="center"><img src="assets/logo/modelcraft_512.png" width="256" alt="Logo ModelCraft"></p>
+<p align="center"><img src="assets/logo/modelcraft_512.png" width="256" alt="ModelCraft logo"></p>
 
-> **NDA** : aucune capture de modèles clients / échantillons de test n'est publiée dans ce dépôt.
-> Les captures ci-dessous viennent uniquement des **projets d'exemple publics d'Autodesk** (`rac_basic_sample_project`,
-> `rst_basic_sample_project`) ouverts dans ModelCraft.
+A native, lightweight, instant viewer for **SolidWorks (`.SLDPRT` / `.SLDASM`), STEP, IGES, IFC,
+Revit (`.rvt` / `.rfa`), FBX, glTF/GLB, COLLADA, 3MF, PLY, STL, OBJ, VRML/X3D, USD, 3DS, 3DXML and
+eDrawings**, written in Rust (wgpu + egui). One `.exe` (or the `ModelCraft-Setup-0.4.0.exe`
+installer), no licence, fully offline. Neither SolidWorks, eDrawings nor Revit needs to be installed.
 
-| Feuille de titre (rendus intégrés) | Feuille de plans |
+## Screenshots
+
+All screenshots use **public sample files only** (credits below), in the English interface.
+
+| SolidWorks assembly (`.SLDASM`) | SolidWorks part with measurements (`.SLDPRT`) |
 |---|---|
-| ![Feuille de titre Revit](assets/captures/rvt_feuille_titre.png) | ![Feuille de plans Revit](assets/captures/rvt_feuille_plans.png) |
-| **Coupes, lignes cachées retirées** | **Vue 3D « From Yard »** |
-| ![Feuille de coupes Revit](assets/captures/rvt_feuille_coupes.png) | ![Vue 3D Revit](assets/captures/rvt_vue_3d.png) |
-| **Projet de structure (S201)** | |
-| ![Feuille de structure Revit](assets/captures/rvt_structure.png) | |
+| ![SolidWorks assembly](assets/captures/solidworks_assembly.png) | ![SolidWorks part with measurements](assets/captures/solidworks_part_measure.png) |
+| **STEP assembly (`.STEP`, OpenCascade)** | **IFC building (`.ifc`, web-ifc)** |
+| ![STEP assembly](assets/captures/step_assembly.png) | ![IFC house](assets/captures/ifc_house.png) |
+| **glTF scene (`.glb`)** | **Revit project, 3D view (`.rvt`)** |
+| ![glTF toy car](assets/captures/gltf_toycar.png) | ![Revit 3D view](assets/captures/revit_3d.png) |
+| **Revit title sheet (embedded renderings)** | **Revit plans sheet (views as edges, hidden lines removed)** |
+| ![Revit title sheet](assets/captures/revit_title_sheet.png) | ![Revit plans sheet](assets/captures/revit_sheet_plans.png) |
+| **Revit structural project, 3D view** | **Home page** |
+| ![Revit structure](assets/captures/revit_structure.png) | ![Home page](assets/captures/home.png) |
 
-Visionneuse native, légère et instantanée pour **SolidWorks (`.SLDPRT` / `.SLDASM`), STEP, IGES,
-IFC, FBX, glTF/GLB, COLLADA, 3MF, PLY, STL, OBJ, VRML/X3D, USD, 3DS, 3DXML, eDrawings et Revit (boîtes 3D)**, écrite en Rust (wgpu + egui). Un seul `.exe` (ou l'installateur
-`ModelCraft-Setup-0.4.0.exe`), sans licence, hors ligne.
+Sample files (not stored in this repository):
+- SolidWorks and STEP: [Mini Bento Arm](https://github.com/BLINCdev/Mini-Bento) by BLINC Lab, CC BY-SA 4.0.
+- IFC: *AC20-FZK-Haus* sample house, Karlsruhe Institute of Technology (KIT) IFC examples.
+- glTF: *ToyCar* from the [Khronos glTF sample assets](https://github.com/KhronosGroup/glTF-Sample-Assets), CC0 (Guido Odendahl, Eric Chadwick).
+- Revit: Autodesk's public sample projects `rac_basic_sample_project` (2021) and `rst_basic_sample_project` (2023).
 
-Interface dans l'esprit de la suite ArtCraft (disposition reprise de PdfCraft, sous licence
-MIT/Apache - voir `NOTICE.md`). ModelCraft est un projet **indépendant**, non affilié.
+The interface follows the ArtCraft suite style (layout taken from PdfCraft, MIT/Apache - see
+`NOTICE.md`). ModelCraft is an **independent** project, not affiliated with ArtCraft, Dassault
+Systèmes or Autodesk.
 
-> ModelCraft ne dépend **ni de SolidWorks ni d'eDrawings** : il lit directement le maillage
-> d'affichage enregistré dans les fichiers SolidWorks, et OpenCascade pour STEP/IGES.
-> Aucun code d'eDrawings n'a été utilisé.
+> ModelCraft depends **on neither SolidWorks nor eDrawings**: it reads the display mesh stored in
+> SolidWorks files directly, and uses OpenCascade for STEP/IGES. No eDrawings, SolidWorks or Revit
+> code was used.
 
 ## Formats
 
-| Format | Extensions | Support | Remarques |
+| Format | Extensions | Support | Notes |
 |---|---|---|---|
-| SolidWorks | `.sldprt` `.sldasm` | ✅ complet | maillage d'affichage enregistré, arbre d'assemblage, couleurs ; vignette si aucun maillage |
-| STEP | `.step` `.stp` | ✅ complet | via OpenCascade 7.8 : maillage des surfaces, arbre d'assemblage, couleurs |
-| IGES | `.iges` `.igs` | ✅ complet | via OpenCascade |
-| STL | `.stl` | ✅ | binaire et ASCII (unités : mm) |
-| OBJ | `.obj` (+ `.mtl`) | ✅ | groupes/objets → composants, couleurs `Kd`, textures `map_Kd` plaquées (UV), normales `vn`, n-gones concaves |
-| 3DS | `.3ds` | ✅ | objets et matériaux (couleur diffuse) |
-| 3DXML | `.3dxml` | ✅ | représentations tessellées, assemblages |
-| eDrawings | `.easm` `.eprt` | ⚠️ partiel | vignette intégrée seulement (géométrie HSF non décodée) |
-| Autodesk Revit | `.rvt` `.rfa` `.rte` `.rft` | ⚠️ partiel | boîtes 3D des éléments colorées par catégorie (Revit 2018 à 2026), vignette + informations du fichier et du projet ; pas encore la forme exacte, voir *Limites* |
-| IFC (BIM) | `.ifc` `.ifczip` | ✅ complet | IFC2x3 / IFC4 / IFC4x3 via web-ifc : niveaux → éléments, couleurs, transparence (export IFC de Revit, ArchiCAD, Tekla…) |
-| FBX | `.fbx` | ✅ | binaire et ASCII via assimp : arbre, couleurs, axe vertical du fichier (pas d'animation) |
-| glTF 2.0 | `.gltf` `.glb` | ✅ | nœuds, transformations, couleurs PBR |
-| COLLADA | `.dae` | ✅ | unités et axe vertical du fichier |
-| 3MF / AMF | `.3mf` `.amf` | ✅ | objets et couleurs (mm) |
-| PLY / OFF | `.ply` `.off` | ✅ | ASCII et binaire (mm) ; nuages de points seuls → message clair |
-| VRML 97 / X3D | `.wrl` `.vrml` `.wrz` `.x3dv` `.x3d` | ✅ | lecteur VRML intégré (DEF/USE, primitives, couleurs) ; X3D XML via assimp |
-| USD | `.usd` `.usda` `.usdc` `.usdz` | ⚠️ partiel | maillages et transformations (tinyusdz) |
-| DXF | `.dxf` | ⚠️ partiel | faces 3D et maillages seulement (pas les dessins 2D ni les solides ACIS) |
-| Blender | `.blend` | ⚠️ partiel | anciens fichiers 2.7x seulement (assimp). **Blender 2.8+ : Fichier › Exporter › Wavefront (.obj) avec matériaux, glTF 2.0 ou FBX**, puis ouvrir l'export |
-| Autres (assimp) | `.x` `.lwo` `.ac` `.ase` `.ms3d` `.md2`… | ⚠️ | via assimp |
-| Parasolid | `.x_t` `.x_b` | ❌ | message clair : aucun lecteur libre - exporter en STEP |
-| DWG / SketchUp / Rhino | `.dwg` `.skp` `.3dm` | ❌ | message clair : LibreDWG est GPL, SDK SketchUp propriétaire ; exporter en DXF/IFC, DAE/glTF, STEP/OBJ |
+| SolidWorks | `.sldprt` `.sldasm` | ✅ full | stored display mesh, assembly tree, colours; thumbnail when there is no mesh |
+| STEP | `.step` `.stp` | ✅ full | via OpenCascade 7.8: surface meshing, assembly tree, colours |
+| IGES | `.iges` `.igs` | ✅ full | via OpenCascade |
+| IFC (BIM) | `.ifc` `.ifczip` | ✅ full | IFC2x3 / IFC4 / IFC4x3 via web-ifc: levels → elements, colours, transparency (exports from Revit, ArchiCAD, Tekla…) |
+| Autodesk Revit | `.rvt` `.rfa` `.rte` `.rft` | ✅ most elements | elements rebuilt from their stored parameters (Revit 2018 to 2026), project browser, sheets and views drawn from the file; see *Known limits* |
+| STL | `.stl` | ✅ | binary and ASCII (units: mm) |
+| OBJ | `.obj` (+ `.mtl`) | ✅ | groups/objects → components, `Kd` colours, `map_Kd` textures (UV), `vn` normals, concave n-gons |
+| 3DS | `.3ds` | ✅ | objects and materials (diffuse colour) |
+| 3DXML | `.3dxml` | ✅ | tessellated representations, assemblies |
+| FBX | `.fbx` | ✅ | binary and ASCII via assimp: tree, colours, file up axis (no animation) |
+| glTF 2.0 | `.gltf` `.glb` | ✅ | nodes, transforms, PBR colours |
+| COLLADA | `.dae` | ✅ | file units and up axis |
+| 3MF / AMF | `.3mf` `.amf` | ✅ | objects and colours (mm) |
+| PLY / OFF | `.ply` `.off` | ✅ | ASCII and binary (mm); point clouds only → clear message |
+| VRML 97 / X3D | `.wrl` `.vrml` `.wrz` `.x3dv` `.x3d` | ✅ | built-in VRML reader (DEF/USE, primitives, colours); X3D XML via assimp |
+| eDrawings | `.easm` `.eprt` | ⚠️ partial | embedded thumbnail only (HSF geometry not decoded) |
+| USD | `.usd` `.usda` `.usdc` `.usdz` | ⚠️ partial | meshes and transforms (tinyusdz) |
+| DXF | `.dxf` | ⚠️ partial | 3D faces and meshes only (no 2D drawings, no ACIS solids) |
+| Blender | `.blend` | ⚠️ partial | old 2.7x files only (assimp). **Blender 2.8+: File › Export › Wavefront (.obj) with materials, glTF 2.0 or FBX**, then open the export |
+| Others (assimp) | `.x` `.lwo` `.ac` `.ase` `.ms3d` `.md2`… | ⚠️ | via assimp |
+| Parasolid | `.x_t` `.x_b` | ❌ | clear message: no free reader - export to STEP |
+| DWG / SketchUp / Rhino | `.dwg` `.skp` `.3dm` | ❌ | clear message: LibreDWG is GPL, the SketchUp SDK is proprietary; export to DXF/IFC, DAE/glTF, STEP/OBJ |
 
-### Nouveautés V4
+### Revit without Revit
 
-**Navigation et outils**
-- **Raccourcis Blender** par défaut (*Paramètres › Navigation › Raccourcis Blender*, désactivable) :
-  clic molette = pivoter, `Maj`+clic molette = déplacer la vue, `Ctrl`+clic molette = zoom,
-  pavé `1/3/7` (+`Ctrl` = vue opposée), `5` ortho, `2/4/6/8` = tourner de 15°, `9` vue opposée,
-  pavé `.` (ou `,`) = **cadrer la sélection**, `Origine` = tout cadrer, `G` déplacer, `R` tourner,
-  double-clic molette = tout cadrer. Tous les raccourcis sont listés dans *Aide › Raccourcis*.
-- **Outil Panoramique** (main, `Q`) : le clic gauche déplace la vue (translation pure).
-- **Déplacer** (`G`) et **Tourner** (`R`) une pièce avec un manipulateur : flèches X/Y/Z, anneaux
-  X/Y/Z (`Ctrl` = pas de 15°, angle affiché), ou glisser la pièce pour la faire pivoter librement
-  « comme en vrai ». **Réinitialiser** remet la sélection (sinon tout) à sa place.
-- **Pivot** du manipulateur (barre en bas de la vue) : centre de la boîte englobante (défaut),
-  centre de l'objet, **curseur 3D** (`Alt+clic` / `Alt+glisser` pour le poser sur la surface,
-  bouton « Curseur 3D sur la sélection ») ou origine du monde.
-- **Annuler / rétablir** (`Ctrl+Z`, `Ctrl+Y` / `Ctrl+Maj+Z`) : déplacements, rotations, éclaté,
-  opacités, masquage / isolement.
-- **Panneaux latéraux repliables** (boutons en haut des panneaux, `T` / `N`), état mémorisé.
-- **Survol synchronisé** : survoler une pièce dans la vue la surligne dans l'arbre, et inversement.
+`.rvt` and `.rfa` files are read directly (independent reader, see `docs/rvt-rea-notes.md`),
+read-only, without locks or synchronisation, workshared or not:
+- **Rebuilt 3D shapes** from the parameters stored in the file: straight and curved walls (edited
+  profiles, door and window openings), floors, ceilings, slabs, roofs (slopes and layers), stairs
+  (runs and landings), railings and balusters, curtain walls (mullions and panels), structural
+  framing, columns, footings, rebar, topography, masses, pipes, ducts, cable trays, doors and
+  windows sized from their type, and the solids of loaded families (extrusions, revolutions,
+  sweeps, blends, nested families). Planting and entourage (picture-based RPC content in Revit)
+  are drawn as simple stand-ins (trees, people, cars) fitted to their box.
+- **Project browser**: views, sheets, schedules, families. A plan, section, elevation or 3D view
+  opens with its direction, crop region and view range, like in Revit.
+- **Sheets** drawn flat from the 2D content of the file: title block with filled-in labels,
+  revision table, placed views with the edges of the elements they see (hidden lines removed),
+  dimensions (linear, radial, angular, spot), hatches, detail lines, text, tags and the embedded
+  renderings.
 
-**Affichage**
-- Vue **plus claire** (fond gris bleuté, éclairage « phare » qui suit la caméra) en gardant un
-  thème sombre lisible ; les anciens réglages par défaut sont migrés automatiquement.
-- **Arêtes stables** quel que soit l'angle de vue (plus de clignotement contre les faces).
-- **Vue éclatée corrigée** : chaque pièce s'éloigne du centre du modèle en ligne droite, sa
-  direction ne s'inverse jamais quand le curseur monte, et à 100 % deux pièces imbriquées
-  (étrier dans sa bride) sortent entièrement l'une de l'autre ; fonctionne aussi sur une **pièce
-  SLDPRT/STEP d'un seul corps** (éclatement par faces, ≤ 1500 faces). Bouton dans la barre
-  d'outils + panneau flottant 0-100 %, lignes d'éclatement discrètes.
-- Accueil : grille de formats qui s'adapte à la largeur (plus de texte caché sous « Ouvrir un fichier »).
+### V4 highlights
 
-**Formats et installation**
-- **Installateur Windows** (Inno Setup) : menu Démarrer, icône Bureau en option, liste
-  d'extensions à cocher (une case par extension), désinstallation propre.
-- OBJ + `.mtl` : opacité, **textures plaquées avec leurs UV** (`map_Kd`, découpe par l'alpha), normales et arêtes vives de Blender, n-gones concaves triangulés sans déformation (ear clipping), couleurs `Kd` de Blender converties linéaire → sRGB. Une texture citée par un chemin absolu d'un autre PC (`F:/…/texture.png`) est retrouvée à côté du `.obj`/`.mtl`.
+**Navigation and tools**
+- **Blender shortcuts** by default (*Settings › Navigation › Blender shortcuts*, can be turned
+  off): middle click = orbit, `Shift`+middle click = pan, `Ctrl`+middle click = zoom, numpad
+  `1/3/7` (+`Ctrl` = opposite view), `5` ortho, `2/4/6/8` = rotate by 15°, `9` opposite view,
+  numpad `.` (or `,`) = **frame the selection**, `Home` = frame all, `G` move, `R` rotate,
+  middle double-click = frame all. Every shortcut is listed in *Help › Shortcuts*.
+- **Pan tool** (hand, `Q`): left click pans the view.
+- **Move** (`G`) and **Rotate** (`R`) a part with a gizmo: X/Y/Z arrows, X/Y/Z rings (`Ctrl` =
+  15° steps, angle shown), or drag the part to spin it freely. **Reset** puts the selection
+  (otherwise everything) back.
+- Gizmo **pivot**: bounding box centre (default), object centre, **3D cursor** (`Alt+click` /
+  `Alt+drag` to place it on the surface) or world origin.
+- **Undo / redo** (`Ctrl+Z`, `Ctrl+Y` / `Ctrl+Shift+Z`): moves, rotations, explode, opacities,
+  hide / isolate.
+- **Collapsible side panels** (`T` / `N`), state remembered.
+- **Synchronised hover** between the 3D view and the tree.
 
-- **Plateau tournant** par défaut (comme Blender : l'axe vertical reste vertical, la vue ne penche jamais) ; *Paramètres › Navigation › Rotation* : Plateau tournant ou Libre (trackball, sans blocage aux pôles). Les anciens réglages « Libre » passent une fois au plateau tournant (V4.1). Boutons « pivoter de 90° » sur le cube de vue.
-- **Vue éclatée** : bouton de la barre d'outils, menu Affichage, menu contextuel et Ctrl+K ; panneau flottant (curseur 0-100 %, valeur, animer, réinitialiser). Fonctionne aussi sur une pièce à plusieurs corps (séparation automatique des corps) et sur chaque pièce d'un assemblage ; message si rien n'est éclatable.
-- **Opacité de la sélection** appliquée uniquement aux composants / corps sélectionnés.
-- **Nombres lisibles** : séparateurs de milliers et unités automatiques (`6 115 613,46 mm²` → `6,12 m²`), désactivables (*Paramètres › Unités automatiques*), respectent le nombre de décimales.
-- **Composants d'assemblage introuvables** : recherche élargie, sans tenir compte de la casse - chemin d'origine, arborescence du projet déplacée (dossiers d'origine recréés à côté de l'assemblage), puis tout le dossier du projet (2 niveaux au-dessus, recherche bornée).
-- **Revit** : le message propose l'export IFC (Fichier › Exporter › IFC), désormais lisible par ModelCraft.
+**Display**
+- Lighter view (blue-grey background, headlight that follows the camera) with a readable dark theme.
+- **Stable edges** from any angle.
+- **Exploded view**: each part moves away from the model centre in a straight line, never flips
+  direction; also works on a **single-body part** (explode by faces, ≤ 1500 faces). Toolbar button
+  + floating 0-100 % panel, discreet explode lines.
+- **Turntable** rotation by default (the vertical axis stays vertical); *Settings › Navigation ›
+  Rotation*: Turntable or Free (trackball).
+- **Readable numbers**: thousands separators and automatic units (`6,115,613.46 mm²` → `6.12 m²`).
+- **Missing assembly components**: wider, case-insensitive search (original path, moved project
+  tree, then the whole project folder, bounded).
 
-## Utilisation (Windows)
+**Formats and installation**
+- **Windows installer** (Inno Setup): Start menu, optional desktop icon, one checkbox per file
+  extension, clean uninstall.
+- OBJ + `.mtl`: opacity, **UV-mapped textures** (`map_Kd`, alpha cut-out), Blender sharp edges,
+  concave n-gons triangulated without distortion. A texture referenced by an absolute path from
+  another PC (`F:/…/texture.png`) is found next to the `.obj`/`.mtl`.
 
-**Installateur** : lancez `dist\ModelCraft-Setup-0.4.0.exe` (sans droits admin, installé pour
-l'utilisateur courant). Il crée l'entrée du menu Démarrer (ModelCraft + scanner) et propose une
-**case par extension** à associer (SolidWorks, STEP, IGES, 3DXML, eDrawings, IFC cochés ; STL,
-OBJ, FBX, glTF… décochés car souvent déjà ouverts par un autre logiciel). Désinstallation :
-*Paramètres Windows › Applications*.
+## Usage (Windows)
 
-**Version portable** : copiez `dist\modelcraft.exe` où vous voulez (ex. `C:\Outils\ModelCraft\`). Aucune DLL.
+**Installer**: run `dist\ModelCraft-Setup-0.4.0.exe` (no admin rights, installed for the current
+user). It creates the Start menu entries (ModelCraft + scanner) and offers **one checkbox per
+extension** to associate. Uninstall: *Windows Settings › Apps*.
 
-- **Ouvrir** : bouton **+ Ouvrir** / `Ctrl+O`, glisser-déposer (un dossier déposé est
-  *épinglé* sur l'accueil), ou `modelcraft.exe "F:\chemin\piece.step"`. Plusieurs fichiers
-  s'ouvrent dans des **onglets** (clic molette = fermer ; clic droit = fermer / recharger /
-  afficher dans l'explorateur / copier le chemin).
-- **Accueil** : formats pris en charge, **dossiers épinglés** (liste des modèles du dossier),
-  **récents** avec chemin et taille (clic droit : ouvrir / afficher dans l'explorateur /
-  copier le chemin / épingler le dossier / retirer).
-- **Associer les extensions** : *Paramètres → Général → Associations de fichiers → Associer*
-  (ou `modelcraft.exe --associate`). Ajoute ModelCraft à « Ouvrir avec » pour SLDPRT, SLDASM,
-  STEP, IGES, STL, OBJ, 3DS, 3DXML, EASM, RVT, RFA - utilisateur courant (HKCU), sans droits admin.
-- Chargement en arrière-plan dans une **fenêtre de progression** : nom et taille du fichier,
-  étape, octets lus / total, temps écoulé, bouton **Annuler**.
+**Portable**: copy `dist\modelcraft.exe` anywhere (e.g. `C:\Tools\ModelCraft\`). No DLLs.
 
-### Gros fichiers (plusieurs centaines de Mo)
+- **Open**: **+ Open** button / `Ctrl+O`, drag and drop (a dropped folder is *pinned* on the home
+  page), or `modelcraft.exe "F:\path\part.step"`. Several files open in **tabs** (middle click =
+  close; right click = close / reload / show in Explorer / copy path).
+- **Home**: supported formats, **pinned folders** (list of the folder's models), **recent files**
+  with path and size.
+- **File associations**: *Settings → General → File associations → Associate* (or
+  `modelcraft.exe --associate`). Adds ModelCraft to "Open with" for the current user (HKCU), no
+  admin rights.
+- Background loading with a **progress window**: file name and size, step, bytes read, elapsed
+  time, **Cancel** button.
 
-Le chargeur SolidWorks est **en flux et à mémoire bornée** :
-- le fichier reste projeté en mémoire (mmap) ; seul le flux `DisplayLists` est lu ;
-- au-delà de 128 Mo décompressés, il est décodé **directement depuis le décompresseur**, en deux
-  passes (1 : statistiques ; 2 : construction du maillage pré-alloué), sans jamais garder le flux
-  décompressé ni la liste des faces en mémoire ;
-- un **budget de sommets** est calculé selon la mémoire disponible (2 M à 40 M) ; au-delà, le
-  maillage est **simplifié pour l'affichage** (regroupement de sommets sur grille) et un
-  avertissement l'indique - le fichier n'est jamais modifié ;
-- les allocations sont faillibles : en cas de manque de mémoire, message clair au lieu d'un plantage.
+### Large files (hundreds of MB)
 
-Mesures (fichier synthétique de 836 Mo, 60 M sommets, 1,4 Go décompressés) : chargé en ~17 s,
-pic mémoire ~1,8 Go (simplifié à 12,5 M sommets) ; ~2,9 Go en affichage exact.
+The SolidWorks loader **streams with bounded memory**:
+- the file stays memory-mapped; only the `DisplayLists` stream is read;
+- above 128 MB decompressed, it is decoded **straight from the decompressor** in two passes
+  (statistics, then building the pre-allocated mesh), never keeping the decompressed stream;
+- a **vertex budget** is computed from the available memory (2 M to 40 M); above it the mesh is
+  **simplified for display** (vertex clustering) with a warning - the file is never modified;
+- allocations are fallible: out of memory gives a clear message instead of a crash.
 
-Variables d'environnement : `MODELCRAFT_MAX_VERTICES=100000000` (budget de sommets ; plus haut =
-plus exact, plus de mémoire), `MODELCRAFT_STREAM=1` (force le décodage en flux même pour les petits fichiers).
+Measured (synthetic 836 MB file, 60 M vertices, 1.4 GB decompressed): loaded in ~17 s, peak
+memory ~1.8 GB (simplified to 12.5 M vertices); ~2.9 GB when displayed exactly.
 
-### Diagnostic de chargement : `--diag`
+Environment variables: `MODELCRAFT_MAX_VERTICES=100000000` (vertex budget), `MODELCRAFT_STREAM=1`
+(forces streaming decode even for small files).
+
+### Load diagnostics: `--diag`
 
 ```powershell
-Start-Process -Wait "C:\chemin\modelcraft.exe" -ArgumentList '--diag','"F:\chemin\gros.SLDPRT"','--diag-out',"$env:USERPROFILE\Desktop\diag.txt"
+Start-Process -Wait "C:\path\modelcraft.exe" -ArgumentList '--diag','"F:\path\big.SLDPRT"','--diag-out',"$env:USERPROFILE\Desktop\diag.txt"
 Get-Content "$env:USERPROFILE\Desktop\diag.txt"
 ```
-Charge le fichier sans interface et écrit un rapport horodaté (vidé ligne par ligne, donc utile
-même en cas de plantage) : système, mémoire, liste des flux du conteneur, étapes, mémoire toutes
-les 2 s, résultat (CHARGÉ / ÉCHEC / PANIQUE), statistiques du maillage. Par défaut :
-`%APPDATA%\ModelCraft\diag-<nom>.txt`. Codes de sortie : 0 ok, 1 erreur de lecture,
-2 fichier invalide, 3 panique. En cas de plantage de l'application : `%APPDATA%\ModelCraft\crash.log`.
+Loads the file without a window and writes a timestamped report (flushed line by line, so useful
+even after a crash): system, memory, container streams, steps, memory every 2 s, result,
+mesh statistics. Default: `%APPDATA%\ModelCraft\diag-<name>.txt`. Exit codes: 0 ok, 1 read error,
+2 invalid file, 3 panic. If the application crashes: `%APPDATA%\ModelCraft\crash.log`.
 
-### Outils d'assemblage (visionneuse uniquement, rien n'est enregistré)
+### Assembly tools (viewer only, nothing is saved)
 
-- **Déplacer** un composant avec le manipulateur (flèches X/Y/Z), réinitialiser.
-- **Opacité** par composant et globale, mode transparent.
-- **Vue éclatée** (curseur 0-100 %, lignes d'éclatement).
-- Accessibles depuis le panneau *Assemblage*, le menu *Outils*, le clic droit et la palette Ctrl+K.
+- **Move** a component with the gizmo, reset.
+- **Opacity** per component and global, transparent mode.
+- **Exploded view** (0-100 % slider, explode lines).
+- From the *Assembly* panel, the *Tools* menu, right click and the Ctrl+K palette.
 
-### Menus, palette, menus contextuels
+### Menus, palette, context menus
 
-- Barre de menus **Fichier / Édition / Affichage / Outils / Aide** avec raccourcis.
-- **Ctrl+K** : palette de recherche de toutes les commandes et des fichiers récents.
-- Clic droit **dans la vue 3D** : masquer / isoler / zoom sur la sélection, afficher tout,
-  ajuster, vues standard, outils de mesure, projection, arêtes, boîte, coupe, grille, copier
-  les dimensions, capture PNG.
-- Clic droit **dans l'arbre** : masquer, isoler, afficher tout, zoom sur, copier le nom.
+- **File / Edit / View / Tools / Help** menu bar with shortcuts.
+- **Ctrl+K**: search palette for every command and the recent files.
+- Right click **in the 3D view**: hide / isolate / zoom to selection, show all, fit, standard
+  views, measuring tools, projection, edges, box, section, grid, copy dimensions, PNG capture.
+- Right click **in the tree**: hide, isolate, show all, zoom to, copy name.
 
-### Mesures (mode **Mesurer**)
+### Measurements (**Measure** mode)
 
-| Outil | Résultat |
+| Tool | Result |
 |---|---|
-| Boîte englobante | L × l × h en surimpression (`B`), copiable (`Ctrl+Maj+C`) |
-| Distance | entre deux points (accrochage sommets / milieux), avec ΔX ΔY ΔZ |
-| Arête | longueur d'une arête |
-| Diamètre | Ø d'un perçage / cylindre (ajustement sur la face) |
-| Angle | entre deux faces |
-| Face | surface de la face sélectionnée |
-| Volume / surface | du modèle, dans le panneau Dimensions |
-| Coupe | plan de coupe X/Y/Z réglable (`X`) |
+| Bounding box | L × W × H overlay (`B`), copyable (`Ctrl+Shift+C`) |
+| Distance | between two points (vertex / midpoint snapping), with ΔX ΔY ΔZ |
+| Edge | edge length |
+| Diameter | Ø of a hole / cylinder (fitted on the face) |
+| Angle | between two faces |
+| Face | area of the selected face |
+| Volume / area | of the model, in the Dimensions panel |
+| Section | adjustable X/Y/Z section plane (`X`) |
 
-Sélection de faces et de composants avec surbrillance ; le panneau de droite liste les mesures.
+### Mouse and keyboard ("Blender" navigation by default, configurable)
 
-### Souris et clavier (navigation « Blender » par défaut, modifiable dans les paramètres)
-
-| Action | Commande |
+| Action | Command |
 |---|---|
-| Pivoter | clic molette (ou clic gauche) + glisser |
-| Déplacer la vue | `Maj`+clic molette, clic droit, ou outil **Panoramique** (`Q`) + clic gauche |
-| Zoom (vers le curseur) | molette (inversible), `Ctrl`+clic molette |
-| Tout cadrer · cadrer la sélection | `Origine` / `F` / double-clic molette · pavé `.` / `,` |
-| Vues (pavé numérique ou rangée du haut) | `1` face · `3` droite · `7` dessus · `Ctrl+1/3/7` opposées · `0` iso · `9` vue opposée · `5` ortho · `2/4/6/8` tourner de 15° |
-| Déplacer · tourner une pièce | `G` · `R` (re-appuyer pour quitter), `Ctrl` = pas de 15° |
-| Annuler · rétablir | `Ctrl+Z` · `Ctrl+Y` / `Ctrl+Maj+Z` |
-| Masquer / isoler / tout afficher | `H` / `I` ou `/` / `Maj+H` ou `Alt+H` |
-| Arêtes · boîte · coupe · grille | `E` · `B` · `X` · `Maj+G` |
-| Arbre · panneau d'infos | `T` · `P` ou `N` |
-| Paramètres · palette · plein écran | `Ctrl+,` · `Ctrl+K` · `F11` |
+| Orbit | middle click (or left click) + drag |
+| Pan | `Shift`+middle click, right click, or the **Pan** tool (`Q`) + left click |
+| Zoom (to the cursor) | wheel (invertible), `Ctrl`+middle click |
+| Frame all · frame selection | `Home` / `F` / middle double-click · numpad `.` / `,` |
+| Views (numpad or top row) | `1` front · `3` right · `7` top · `Ctrl+1/3/7` opposite · `0` iso · `9` opposite view · `5` ortho · `2/4/6/8` rotate by 15° |
+| Move · rotate a part | `G` · `R` (press again to leave), `Ctrl` = 15° steps |
+| Undo · redo | `Ctrl+Z` · `Ctrl+Y` / `Ctrl+Shift+Z` |
+| Hide / isolate / show all | `H` / `I` or `/` / `Shift+H` or `Alt+H` |
+| Edges · box · section · grid | `E` · `B` · `X` · `Shift+G` |
+| Tree · info panel | `T` · `P` or `N` |
+| Settings · palette · full screen | `Ctrl+,` · `Ctrl+K` · `F11` |
 
-Styles de navigation : Blender (défaut), SolidWorks, CAO (AutoCAD/Inventor). Avec
-« Raccourcis Blender » désactivé, les anciens raccourcis reviennent (`0`-`6` = vues, `G` = grille,
-`R` = diamètre).
+Navigation styles: Blender (default), SolidWorks, CAD (AutoCAD/Inventor).
 
-### Paramètres (`%APPDATA%\ModelCraft\settings.json`)
+### Settings (`%APPDATA%\ModelCraft\settings.json`)
 
-- **Général** : langue **Français / English** (détection automatique de la langue de Windows),
-  thème clair / sombre / système, couleur d'accent, nombre de récents, associations.
-- **Affichage** : fond dégradé ou uni, éclairage (studio, doux, contrasté…), couleur par
-  défaut, arêtes (on/off, épaisseur, couleur), axes, grille, cube de vue.
-- **Navigation** : style, zoom inversé, perspective / orthographique, champ de vision, vue par défaut.
-- **Mesures** : unités (mm, cm, m, po), décimales.
-- **Performances** : anticrénelage MSAA, qualité du maillage STEP/IGES.
-- **Réinitialiser** remet toutes les valeurs par défaut.
+- **General**: language **English / Français** (follows the Windows language), light / dark /
+  system theme, accent colour, number of recent files, associations.
+- **Display**: gradient or plain background, lighting (studio, soft, contrast…), default colour,
+  edges (on/off, width, colour), axes, grid, view cube.
+- **Navigation**: style, inverted zoom, perspective / orthographic, field of view, default view.
+- **Measurements**: units (mm, cm, m, in), decimals.
+- **Performance**: MSAA anti-aliasing, STEP/IGES mesh quality.
+- **Reset** restores every default.
 
-Options de ligne de commande :
+Command line:
 ```
-modelcraft.exe [fichiers…] [--lang fr|en] [--theme dark|light] [--view iso|front|top|right|back|bottom|left]
-               [--size 1600x1000] [--no-edges] [--screenshot capture.png] [--ephemeral]
+modelcraft.exe [files…] [--lang en|fr] [--theme dark|light] [--view iso|front|top|right|back|bottom|left]
+               [--size 1600x1000] [--no-edges] [--show view:<name>|measure|settings|…] [--screenshot shot.png] [--ephemeral]
 modelcraft.exe --associate
-modelcraft.exe --diag fichier [--diag-out rapport.txt]
+modelcraft.exe --diag file [--diag-out report.txt]
 ```
 
-## Vérifier toute une archive : `swcraft-scan`
+## Checking a whole archive: `swcraft-scan`
 
 ```
-swcraft-scan.exe "F:\Dev\disneyAutoSorter\Sorted Archive IA" --csv C:\Temp\scan.csv --json C:\Temp\scan.json
+swcraft-scan.exe "F:\Archive" --csv C:\Temp\scan.csv --json C:\Temp\scan.json
 ```
 
-- Parcourt le dossier récursivement et **n'écrit jamais dedans** (lecture seule, liens non
-  suivis, fichiers `~$…` ignorés) ; un rapport ne peut pas être écrit dans le dossier scanné.
-- Tous les formats de ModelCraft sont vérifiés (SolidWorks, STEP, IGES, STL, OBJ, 3DS, 3DXML,
-  eDrawings, Revit, Parasolid) avec le même code que la visionneuse.
-- **Résistant aux plantages** : chaque fichier lourd ou suspect est lu dans un **processus
-  séparé** (limite mémoire via Job Object, délai max) ; un plantage d'un lecteur (ex. OpenCascade)
-  est noté `crash` et le scan continue. Journal de progression à côté du rapport.
-- Double-clic sur `swcraft-scan.exe` : mode interactif (demande le dossier).
-- Pour chaque fichier : format, `ok`, `partial` (composants sans maillage), `no_mesh`
-  (vignette seulement), `unsupported` (ex. `.x_t`), `error` + faces, triangles, composants,
-  temps, message. Résumé par format et temps médian / p95 / max.
-- Options : `--threads N`, `--timeout 120`, `--max-size 1G` (`too_large` au-delà),
-  `--mem-limit 8G`, `--isolate auto|all|none`, `--log fichier`, `--no-external`, `--quiet`. CSV séparé par `;` avec BOM (Excel FR).
+- Walks the folder recursively and **never writes into it** (read-only, links not followed,
+  `~$…` files skipped).
+- Every ModelCraft format is checked with the same code as the viewer.
+- **Crash-proof**: each heavy or suspicious file is read in a **separate process** (memory limit
+  via Job Object, timeout); a reader crash is reported as `crash` and the scan goes on.
+- Double-click `swcraft-scan.exe` for interactive mode (asks for the folder).
+- Per file: format, `ok`, `partial`, `no_mesh`, `unsupported`, `error` + faces, triangles,
+  components, time, message. Summary per format and median / p95 / max time.
+- Options: `--threads N`, `--timeout 120`, `--max-size 1G`, `--mem-limit 8G`,
+  `--isolate auto|all|none`, `--log file`, `--no-external`, `--quiet`. CSV separated by `;` with BOM.
 
-## Compiler depuis les sources
+## Building from source
 
-Prérequis : [Rust](https://rustup.rs) ≥ 1.95.
+Requirements: [Rust](https://rustup.rs) ≥ 1.95.
 
-Sous Windows (MSVC ou GNU) :
+Windows (MSVC or GNU):
 ```
 cargo build --release
 target\release\modelcraft.exe
 ```
 
-Sous Linux :
+Linux:
 ```
-sudo apt install libgtk-3-dev libxkbcommon-dev   # boîte de dialogue + clavier
+sudo apt install libgtk-3-dev libxkbcommon-dev   # file dialog + keyboard
 cargo build --release
-./target/release/modelcraft fichier.SLDPRT
-./target/release/swcraft-scan dossier/ --csv /tmp/scan.csv
+./target/release/modelcraft file.SLDPRT
+./target/release/swcraft-scan folder/ --csv /tmp/scan.csv
 ```
 
-**STEP / IGES** demandent la fonctionnalité `occt` et une compilation statique
-d'[OpenCascade 7.8.1](https://github.com/Open-Cascade-SAS/OCCT) (`BUILD_LIBRARY_TYPE=Static`) :
+**STEP / IGES** need the `occt` feature and a static build of
+[OpenCascade 7.8.1](https://github.com/Open-Cascade-SAS/OCCT) (`BUILD_LIBRARY_TYPE=Static`):
 ```
-OCCT_INC=/chemin/occt/include/opencascade OCCT_LIB=/chemin/occt/lib \
+OCCT_INC=/path/occt/include/opencascade OCCT_LIB=/path/occt/lib \
   cargo build --release -p swcraft -p swcraft-scan --features swcraft/occt,swcraft-scan/occt
 ```
-Sans `occt`, ModelCraft fonctionne pour tous les autres formats et affiche un message pour STEP/IGES.
+Without `occt`, ModelCraft works for every other format and shows a message for STEP/IGES.
 
-**FBX, glTF, 3MF…** demandent la fonctionnalité `assimp` (assimp 6.0.2 statique, `ASSIMP_DIR` =
-préfixe d'installation contenant `lib/libassimp.a` et `lib/libzlibstatic.a`, compilé avec
+**FBX, glTF, 3MF…** need the `assimp` feature (static assimp 6.0.2, `ASSIMP_DIR` = install prefix
+holding `lib/libassimp.a` and `lib/libzlibstatic.a`, built with
 `-DBUILD_SHARED_LIBS=OFF -DASSIMP_BUILD_VRML_IMPORTER=OFF -DASSIMP_BUILD_USD_IMPORTER=ON`).
-**IFC** demande la fonctionnalité `ifc` : web-ifc compilé en statique (`cmake --build <dossier> --target web-ifc-library`
-avec `-DCMAKE_CXX_FLAGS=-Dmapbox=wi_mapbox`), `WEBIFC_SRC=<web-ifc>/src/cpp` et `WEBIFC_BUILD=<dossier de build>`.
-Exemple complet : `--features swcraft/occt,swcraft/assimp,swcraft/ifc,swcraft-scan/occt,swcraft-scan/assimp,swcraft-scan/ifc`.
+**IFC** needs the `ifc` feature: web-ifc built statically (`cmake --build <dir> --target web-ifc-library`
+with `-DCMAKE_CXX_FLAGS=-Dmapbox=wi_mapbox`), `WEBIFC_SRC=<web-ifc>/src/cpp` and `WEBIFC_BUILD=<build dir>`.
+Full example: `--features swcraft/occt,swcraft/assimp,swcraft/ifc,swcraft-scan/occt,swcraft-scan/assimp,swcraft-scan/ifc`.
 
-Compilation croisée Linux → Windows (utilisée pour `dist/`, OCCT compilé avec mingw « posix ») :
+Cross-compiling Linux → Windows (used for `dist/`, OCCT built with mingw "posix"):
 ```
 rustup target add x86_64-pc-windows-gnu
 sudo apt install mingw-w64
 CXX_x86_64_pc_windows_gnu=x86_64-w64-mingw32-g++-posix \
-OCCT_INC=/chemin/occt/include/opencascade OCCT_LIB=/chemin/occt-mingw/win64/gcc/lib \
-  cargo build --release --target x86_64-pc-windows-gnu -p swcraft -p swcraft-scan --features swcraft/occt,swcraft-scan/occt
+OCCT_INC=/path/occt/include/opencascade OCCT_LIB=/path/occt-mingw/win64/gcc/lib \
+  cargo build --release --target x86_64-pc-windows-gnu -p swcraft --features swcraft/occt,swcraft/assimp,swcraft/ifc
 ```
-(`.cargo/config.toml` configure l'éditeur de liens mingw et la CRT statique ; l'icône
-et les infos de version sont intégrées via `windres`.)
+(`.cargo/config.toml` sets the mingw linker and the static CRT; the icon and version info are
+embedded with `windres`.)
 
-**Installateur Windows** ([Inno Setup](https://jrsoftware.org/isinfo.php) 6, gratuit) : après la
-compilation Windows et la copie des deux `.exe` dans `dist/`,
+**Windows installer** ([Inno Setup](https://jrsoftware.org/isinfo.php) 6, free): after the Windows
+build and copying both `.exe` into `dist/`,
 ```
-python3 installer/gen_iss.py            # génère installer/modelcraft.iss (extensions lues dans platform.rs, version dans Cargo.toml)
-iscc installer\modelcraft.iss           # Windows ; sous Linux : wine "C:\InnoSetup6\ISCC.exe" ...
+python3 installer/gen_iss.py            # writes installer/modelcraft.iss (extensions from platform.rs, version from Cargo.toml)
+iscc installer\modelcraft.iss           # Windows; on Linux: wine "C:\InnoSetup6\ISCC.exe" ...
 ```
-produit `dist/ModelCraft-Setup-<version>.exe`.
+produces `dist/ModelCraft-Setup-<version>.exe`.
 
-Outil de diagnostic : `cargo run --release -p sw-format --example swinfo -- fichier.SLDASM [--streams] [--obj sortie.obj]`.
+Diagnostic tool: `cargo run --release -p sw-format --example swinfo -- file.SLDASM [--streams] [--obj out.obj]`.
 
 ### Tests
 
-Les fichiers de test (SolidWorks, STEP, maillages…) ne sont **pas** dans le dépôt (`.gitignore`). Les tests
-d'intégration lisent le dossier indiqué par `SW_SAMPLES` et sont ignorés s'il est absent :
+Test files are **not** in the repository (`.gitignore`). Integration tests read the folder given
+by `SW_SAMPLES` (and `RVT_SAMPLES` for Revit) and are skipped when it is missing:
 ```
-SW_SAMPLES=/chemin/vers/echantillons SW_SAMPLES3=/chemin/vers/revit cargo test --release
+SW_SAMPLES=/path/to/samples RVT_SAMPLES=/path/to/revit cargo test --release
 ```
-Fichier synthétique géant pour tester le chargeur : `cargo run --release -p sw-format --example synth_big -- sortie.SLDPRT 60` (millions de sommets).
+Giant synthetic file for the loader: `cargo run --release -p sw-format --example synth_big -- out.SLDPRT 60`.
 
-## Rendu
+## Rendering
 
-wgpu (DirectX 12 / Vulkan / OpenGL selon la machine), MSAA réglable, éclairage studio,
-arêtes B-rep superposées, fond dégradé, surbrillance de sélection, plan de coupe. Si
-l'initialisation GPU échoue, ModelCraft se relance en Vulkan puis en OpenGL. Forcer un
-moteur : `WGPU_BACKEND=dx12|vulkan|gl`.
+wgpu (DirectX 12 / Vulkan / OpenGL depending on the machine), adjustable MSAA, studio lighting,
+B-rep edges overlay, gradient background, selection highlight, section plane. If GPU setup fails,
+ModelCraft restarts with Vulkan then OpenGL. Force a backend with `WGPU_BACKEND=dx12|vulkan|gl`.
 
-## Limites connues (V4)
+## Known limits (V4)
 
-- **eDrawings `.easm`** : seule la vignette est affichée (géométrie HSF non décodée).
-- **Revit `.rvt` / `.rfa`** : depuis la V7, les **murs droits** (profil modifié compris, ouvertures
-  rectangulaires des portes et fenêtres), **sols, plafonds, dalles**, **canalisations, gaines, chemins de
-  câbles** et les **solides des familles** (extrusions, révolutions, balayages le long d'un tracé 2D ou
-  3D, lissages ; fichiers `.rfa` et familles chargées dans le projet, familles imbriquées comprises,
-  placées à leur insertion et recalées sur la boîte Revit quand le type a d'autres cotes) sont affichés avec leur **forme reconstruite** à partir des paramètres stockés (la B-rep
-  Revit n'est pas enregistrée dans le fichier). Les autres éléments (une partie des raccords MEP dont
-  la forme dépend des cotes du type, murs-rideaux, portes, fenêtres, escaliers, garde-corps, toits,
-  murs courbes)
-  restent des **boîtes englobantes** colorées par catégorie (fichiers Revit 2018 à 2026, en travail
-  partagé ou non, ouverts en lecture seule sans verrou ni synchronisation ; voir
-  `docs/rvt-rea-notes.md`). Pour la géométrie complète : exporter en **IFC** depuis Revit, puis
-  l'ouvrir dans ModelCraft.
-- **Revit, feuilles et vues** : une feuille ouverte depuis le navigateur est dessinée à plat avec son
-  **contenu 2D lu dans le fichier** (cartouche : traits, textes et étiquettes remplies avec les
-  paramètres de la feuille et du projet, tableau des révisions ; vues placées avec leur titre et les
-  **arêtes** des éléments qu'elles voient, découpées par la zone cadrée ; textes ; images des rendus).
-  Les **annotations des vues** sont dessinées avec leur style : lignes de détail (épaisseur de plume,
-  couleur, motif de ligne), régions remplies (remplissage plein ou **hachures** du motif), **cotes**
-  linéaires (lignes d'attache, repères, valeurs dans l'unité du projet), textes et **étiquettes**
-  (pièces : nom et numéro ; étiquettes d'éléments : paramètres texte stockés) ; les vues de dessin
-  n'affichent que leurs annotations. Les **lignes cachées** des vues placées sont retirées (faces des
-  formes reconstruites ; les éléments encore en boîte ne cachent rien). Pas encore : épaisseurs par
-  catégorie des éléments du modèle, cotes angulaires / radiales / altimétriques, composants de
-  détail, valeurs calculées des étiquettes (surface…). Une vue de plan, coupe, élévation ou 3D s'ouvre avec **sa direction et son
-  orientation** (plans pivotés compris) et, quand sa zone cadrée est active, **cadrée dessus**. Ce que
-  la vue ne montre pas est **masqué comme dans Revit** : plage de vue des plans (plan de coupe,
-  profondeur, niveaux au-dessus / en dessous, plans de plafond regardant vers le haut), zone cadrée,
-  découpe lointaine des coupes et élévations, zone de coupe 3D des vues 3D ; les parties coupées sont
-  fermées en gris foncé. Les ciseaux de la pastille « Vue : … » affichent ou masquent le reste. La
-  navigation 3D (orbite, panoramique, zoom) reste celle de ModelCraft.
-- **Parasolid `.x_t`** : non supporté (aucun lecteur libre) ; exporter en STEP. Les fichiers SolidWorks
-  sans maillage d'affichage contiennent pourtant leur B-rep Parasolid (flux `Config-N-Partition`,
-  « TRANSMIT FILE » binaire) : un lecteur indépendant du format XT (documenté publiquement par
-  Siemens) relié à OpenCascade est envisageable, mais c'est un chantier de plusieurs semaines.
-- **Flux `MeshData/Config-N-Mesh-*`** (corps maillés des SolidWorks récents, souvent les seuls
-  présents dans les très gros fichiers issus de scans ou d'imports STL) : décodés en flux continu quand
-  `DisplayLists` est vide (12,8 M triangles lus en ~8 s sur un SLDPRT de 447 Mo). Seule la première
-  configuration est lue et les couleurs par corps ne sont pas encore reprises.
-- **Blender `.blend`** : seuls les anciens fichiers 2.7x passent (via assimp) ; le format interne
-  de Blender 2.8+ change à chaque version. Exporter en OBJ (+ `.mtl`), glTF ou FBX.
-- **DWG, SketchUp, Rhino** : non pris en charge (voir `NOTICE.md`).
-- SolidWorks : seul le maillage d'affichage enregistré est utilisé (pas de recalcul B-rep) ;
-  un fichier sans données graphiques n'affiche que sa vignette.
-- Les messages d'erreur des lecteurs de fichiers restent en français dans l'interface anglaise.
-- Mesures sur les maillages (STL/OBJ/3DS) : pas de diamètre exact (pas de faces analytiques).
-- Pas d'export (STEP, STL…) ni d'annotations sauvegardées : visionneuse uniquement.
+- **Revit**: shapes are rebuilt from the stored parameters (Revit does not store its B-rep in the
+  file), so joins and openings can differ slightly from Revit. A few elements without readable
+  geometry in the project still show as **bounding boxes** coloured by category: some
+  plumbing fixtures, specialty equipment, light fixtures, generic models and furniture whose
+  family geometry is not stored in a form ModelCraft decodes yet, a few corner mullions, and a few
+  stairs in the structural sample. Sheets: model element line weights per category, detail
+  components and calculated tag values (area…) are not drawn yet. For the exact geometry, export
+  to **IFC** from Revit and open the `.ifc` in ModelCraft.
+- **eDrawings `.easm`**: thumbnail only (HSF geometry not decoded).
+- **Parasolid `.x_t`**: not supported (no free reader); export to STEP. SolidWorks files without a
+  display mesh still hold their Parasolid B-rep; an independent XT reader is possible but is weeks
+  of work.
+- **`MeshData/Config-N-Mesh-*` streams** (mesh bodies of recent SolidWorks files, often the only
+  data in very large scan/STL-import files): streamed when `DisplayLists` is empty; only the first
+  configuration is read and per-body colours are not applied yet.
+- **Blender `.blend`**: old 2.7x files only; export OBJ, glTF or FBX from Blender 2.8+.
+- **DWG, SketchUp, Rhino**: not supported (see `NOTICE.md`).
+- SolidWorks: only the stored display mesh is used (no B-rep recompute); a file without graphics
+  data shows its thumbnail only.
+- Some file-reader error messages are still in French in the English interface.
+- Measurements on meshes (STL/OBJ/3DS): no exact diameter (no analytic faces).
+- No export and no saved annotations: viewer only.
 
 ## Licence
 
+<<<<<<< HEAD
 MIT pour le code de ModelCraft. Code d'interface adapté de PdfCraft (MIT/Apache-2.0),
 icônes Lucide (ISC), polices Inter et JetBrains Mono (OFL), OpenCascade (LGPL-2.1) :
 détails dans [`NOTICE.md`](NOTICE.md).
 =======
 # ModelCraft
 >>>>>>> 5acfdbd (Initial commit)
+=======
+MIT for ModelCraft's code. Interface code adapted from PdfCraft (MIT/Apache-2.0), Lucide icons
+(ISC), Inter and JetBrains Mono fonts (OFL), OpenCascade (LGPL-2.1), assimp (BSD-3), web-ifc
+(MPL-2.0): details in [`NOTICE.md`](NOTICE.md).
+>>>>>>> 639014b (docs: English README with multi-format screenshots of public samples (SolidWorks, STEP, IFC, glTF, Revit); English NOTICE, references, Revit notes, installer strings and script comments)

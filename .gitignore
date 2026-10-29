@@ -35,7 +35,7 @@
 # third-party reference screenshots (not ours)
 /ref
 /screenshots/tmp
-# captures faites avec les échantillons privés (samples2) : non versionnées
+# screenshots made with the private samples (samples2): not versioned
 /screenshots/v2/step_*.png
 /screenshots/v2/wine_step*.png
 /screenshots/v2/private_*.png
@@ -47,5 +47,5 @@
 *.rft
 /screenshots/v3/private_*.png
 
-# Captures (modèles de test sous NDA) - jamais versionner
+# Screenshots (test models under NDA) - never version them
 /screenshots/

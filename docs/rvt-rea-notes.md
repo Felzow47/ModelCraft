@@ -1,454 +1,489 @@
-# Revit (.rvt/.rfa) - notes de rétro-ingénierie, phase 1 (salle blanche)
+# Revit (.rvt/.rfa) - reverse-engineering notes (clean room)
 
-Date : 2026-10-28. But : lire la 3D des `.rvt` dans ModelCraft sans Revit à l'exécution.
-Règles suivies : aucune action sur la licence / le login / l'activation Autodesk, Revit jamais
-lancé par nous, rien modifié dans l'installation. Seulement des **observations d'octets** sur des
-fichiers d'exemple fournis par Autodesk avec l'installation, et les **noms exportés** (table
-d'export PE) d'une DLL. Pas de désassemblage ni de décompilation utilisés dans ces notes.
-Aucun fichier Autodesk ni modèle client (NDA) n'est versionné ici.
+Started 2026-10-28. Goal: read the 3D of `.rvt` files in ModelCraft without Revit at run time.
+Rules followed: no action on the Autodesk license / login / activation, Revit never launched by
+us, nothing modified in the installation. Only **byte observations** on sample files shipped by
+Autodesk with the installation or published by Autodesk, and the **exported names** (PE export
+table) of a DLL. No disassembly or decompilation was used for these notes.
+No Autodesk file and no customer model (NDA) is versioned here.
 
-## Installation observée (lecture seule)
+## Installation observed (read only)
 
-- Revit 2025 build 25.0.2.419, installé dans `D:\Programmes\AutoDesk\Launcher\Revit 2025\`
-  (~25 000 fichiers, 4,7 Go). Contenu (bibliothèques, gabarits) dans `C:\ProgramData\Autodesk\RVT 2025\`
-  et des gabarits de famille dans `D:\Programmes\AutoDesk\Revit2042\Family Templates\`.
-- DLL liées aux fichiers / à la géométrie (taille) : `RevitDB.dll` (44 Mo, base d'objets),
-  `PersistenceDB.dll` (7,6 Mo, stockage du fichier), `EssentialsDB.dll`, `FamilyDB.dll`,
-  `HostObjDB.dll`, `GeomUtil.dll`, `Graphics.dll`, `OGS*.dll` (affichage), `ASM*230A.dll`
-  (noyau de modélisation solide), `Revit.IFC.Export.dll` / `IntfIFC.dll` (export IFC).
-- Exemples disponibles : `Samples\*.rvt` (Snowdon Towers ×7, Golden Nugget ×2, 3 autres, 21-134 Mo),
-  `RVT 2025\Libraries\**` (~8 300 `.rfa`, quelques `.rvt` de bibliothèque), `DynamoSample_2025.rvt`
-  (6,6 Mo), `BatchPrintInitial.rvt` (156 Ko).
+- Revit 2025 build 25.0.2.419, installed in `D:\Programmes\AutoDesk\Launcher\Revit 2025\`
+  (~25,000 files, 4.7 GB). Content (libraries, templates) in `C:\ProgramData\Autodesk\RVT 2025\`
+  and family templates in `D:\Programmes\AutoDesk\Revit2042\Family Templates\`.
+- DLLs related to files / geometry (size): `RevitDB.dll` (44 MB, object database),
+  `PersistenceDB.dll` (7.6 MB, file storage), `EssentialsDB.dll`, `FamilyDB.dll`,
+  `HostObjDB.dll`, `GeomUtil.dll`, `Graphics.dll`, `OGS*.dll` (display), `ASM*230A.dll`
+  (solid modelling kernel), `Revit.IFC.Export.dll` / `IntfIFC.dll` (IFC export).
+- Samples available: `Samples\*.rvt` (Snowdon Towers ×7, Golden Nugget ×2, 3 others, 21-134 MB),
+  `RVT 2025\Libraries\**` (~8,300 `.rfa`, a few library `.rvt`), `DynamoSample_2025.rvt`
+  (6.6 MB), `BatchPrintInitial.rvt` (156 KB).
 
-## Conteneur (confirmé sur 3 fichiers)
+## Container (confirmed on 3 files)
 
-Fichiers lus : `BatchPrintInitial.rvt` (ancien format), `M_Chair-Desk.rfa` (2025), `DynamoSample_2025.rvt` (2025).
+Files read: `BatchPrintInitial.rvt` (old format), `M_Chair-Desk.rfa` (2025), `DynamoSample_2025.rvt` (2025).
 
-- Compound File (MS-CFB). Flux : `BasicFileInfo`, `Contents`, `Formats/Latest`,
+- Compound File (MS-CFB). Streams: `BasicFileInfo`, `Contents`, `Formats/Latest`,
   `Global/{ContentDocuments, DocumentIncrementTable, ElemTable, History, Latest, PartitionTable}`,
-  `Partitions/NN`, `RevitPreview4.0`, `TransmissionData`, plus `PartAtom` (famille) ou
-  `ProjectInformation` (projet). Un seul flux `Partitions/NN` par fichier ici (NN = 1, 70, 283 :
-  le numéro ne dit rien de la version).
-- `BasicFileInfo` : UTF-16LE `Clé: valeur`, 19 clés en 2025 (`Format: 2025`, `Build: 20240111_1515(x64)`,
-  `Locale when saved`, GUID du document…). L'ancien fichier n'a que 5 clés avec `Revit Build`.
-  `Last Save Path` contient un chemin utilisateur : à ne pas afficher par défaut (vie privée).
-- Pagination du stockage, retrouvée indépendamment : en retirant de chaque flux les octets d'offset
-  `o` tels que `o mod 65 249 >= 64 896`, **tous** les membres gzip vérifient leur CRC-32 / longueur
-  (1 seul échec sur 349 dans la partition de Dynamo, à examiner : sans doute le dernier membre).
-- `Global/*` : 8 octets puis un membre gzip. `Formats/Latest` : gzip à l'octet 0.
-  Partition 2025 : en-tête de 44 octets puis membres gzip d'~128 Kio décompressés
-  (Dynamo : 6,1 Mo stockés → 27,8 Mo décompressés).
+  `Partitions/NN`, `RevitPreview4.0`, `TransmissionData`, plus `PartAtom` (family) or
+  `ProjectInformation` (project). A single `Partitions/NN` stream per file here (NN = 1, 70, 283:
+  the number says nothing about the version).
+- `BasicFileInfo`: UTF-16LE `Key: value`, 19 keys in 2025 (`Format: 2025`, `Build: 20240111_1515(x64)`,
+  `Locale when saved`, document GUID…). The old file only has 5 keys, with `Revit Build`.
+  `Last Save Path` holds a user path: not shown by default (privacy).
+- Storage paging, found independently: after removing from each stream the bytes at offset
+  `o` such that `o mod 65,249 >= 64,896`, **all** gzip members pass their CRC-32 / length check
+  (a single failure out of 349 in the Dynamo partition, to look at: probably the last member).
+- `Global/*`: 8 bytes then one gzip member. `Formats/Latest`: gzip at byte 0.
+  2025 partition: 44-byte header then gzip members of ~128 KiB decompressed
+  (Dynamo: 6.1 MB stored → 27.8 MB decompressed).
 
-## Où est la géométrie
+## Where the geometry is
 
-- Pas de flux ACIS/SAT/SAB dans le fichier (aucune signature trouvée dans la partition décompressée
-  de la chaise), et pas de maillage d'affichage en cache évident.
-- Le schéma `Formats/Latest` (≈4 600 classes en 2025) nomme les classes de géométrie propre à Revit :
+- No ACIS/SAT/SAB stream in the file (no signature found in the chair's decompressed
+  partition), and no obvious cached display mesh.
+- The `Formats/Latest` schema (≈4,600 classes in 2025) names Revit's own geometry classes:
   `GBRep`, `BRep`, `ExternallyTaggedBRep`, `TaggedBReps`, `GFakeBRep`, `GPolyMesh`, `PolyMeshes`,
   `PartialPolyMeshes`, `TessLoop`, `Triangle`, `FaceTag*`, `EmbeddedSymbolGRep`.
-  ⇒ La vraie 3D des familles est une B-rep sérialisée par Revit (classes `G*Rep`) dans les partitions.
-  Les maillages `GPolyMesh` existent (toposolides, imports DWG/mesh) : piste la plus simple pour un
-  premier rendu triangulé.
-- `PersistenceDB.dll` (6 877 exports, noms seulement) : classes `RvtFileStorage`, `PartitionTable`,
+  ⇒ The real 3D of families is a B-rep serialised by Revit (`G*Rep` classes) in the partitions.
+  `GPolyMesh` meshes exist (toposolids, DWG/mesh imports): the simplest lead for a first
+  triangulated render.
+- `PersistenceDB.dll` (6,877 exports, names only): classes `RvtFileStorage`, `PartitionTable`,
   `PartitionInfo`, `StreamOpenOptions`, `CSimpleStorage`, `ElementStreamBuilder`, `SegmentIndex`,
-  `SegmentAddresses`. Aucun export de compression : la compression est ailleurs (probablement
-  bibliothèque statique). Importe `RevitDB.dll`, `Utility.dll`, `ole32.dll` (le stockage CFB).
+  `SegmentAddresses`. No compression export: compression lives elsewhere (probably a static
+  library). Imports `RevitDB.dll`, `Utility.dll`, `ole32.dll` (the CFB storage).
 
-## État de ModelCraft
+## ModelCraft status (V4)
 
-`crates/craft-formats/src/rvt.rs` (V4) lit `BasicFileInfo`, la vignette PNG de `RevitPreview4.0`
-et l'Atom de `PartAtom`/`ProjectInformation`. Aucune géométrie : `Support::Partial`.
+`crates/craft-formats/src/rvt.rs` (V4) read `BasicFileInfo`, the PNG thumbnail of `RevitPreview4.0`
+and the Atom of `PartAtom`/`ProjectInformation`. No geometry: `Support::Partial`.
 
-## Inspiration : BIMCraft (26 branches, `main` = la plus complète)
+## Inspiration: BIMCraft (26 branches, `main` = the most complete)
 
-`crates/rvt` (Apache-2.0, en partie porté de rvt-rs, github.com/DrunkOnJava/rvt-rs) : lit le
-schéma, `ElemTable`, les enregistrements d'éléments des partitions (catégorie `BuiltInCategory`
-à +0x12, boîte englobante 6×f64 en pieds à +0x58 depuis 2024), puis **reconstruit** murs, dalles,
-toits, portes/fenêtres, poteaux, pièces à partir des lignes de localisation, esquisses et types
-de couches. Pas de lecture des B-rep `G*Rep` : géométrie paramétrique reconstruite, pas le
-maillage réel. Sa doc `docs/rvt-provenance.md` liste sources acceptées et interdites (désassemblage
-des binaires Autodesk au-delà des noms d'export interdit) - même clôture adoptée ici.
-Rien n'est copié dans ModelCraft.
+`crates/rvt` (Apache-2.0, partly ported from rvt-rs, github.com/DrunkOnJava/rvt-rs): reads the
+schema, `ElemTable`, the element records of the partitions (`BuiltInCategory` category
+at +0x12, 6×f64 bounding box in feet at +0x58 since 2024), then **rebuilds** walls, floors,
+roofs, doors/windows, columns, rooms from location lines, sketches and layer types. It does not
+read the `G*Rep` B-reps: parametric geometry is rebuilt, not the real mesh. Its
+`docs/rvt-provenance.md` lists accepted and forbidden sources (disassembling Autodesk binaries
+beyond export names is forbidden) - the same fence is adopted here.
+Nothing is copied into ModelCraft.
 
-## Prochaines étapes proposées
+## Next steps proposed at the time
 
-1. **Lecteur conteneur robuste** dans `rvt.rs` : dépagination (65 249 / 64 896), membres gzip
-   bornés, lecture streaming de `Partitions/*` (mémoire bornée), test sur les 3 fichiers + Snowdon.
-2. **Schéma** : parser `Formats/Latest` (classes, tags, champs) pour obtenir les tags de
-   `GBRep`, `GPolyMesh`, `Outline`, `ElementParents` du fichier lui-même.
-3. **Repli « boîtes »** (V5 prévue) : une boîte par élément placé, colorée par catégorie -
-   premier affichage 3D réel, faible risque.
-4. **GPolyMesh** : localiser ses instances dans les partitions (familles simples, DirectShape,
-   toposolides) et décoder sommets/faces.
-5. **GBRep** : étudier sur des `.rfa` minuscules (cube, cylindre) générés par l'utilisateur dans
-   Revit 2025 (s'il veut bien en enregistrer : sans licence touchée par nous) : faces planes d'abord,
-   puis surfaces analytiques ; tessellation côté ModelCraft.
-6. Comparaison avec un export IFC fait par l'utilisateur depuis Revit pour valider positions/unités.
+1. **Robust container reader** in `rvt.rs`: de-paging (65,249 / 64,896), bounded gzip members,
+   streaming reads of `Partitions/*` (bounded memory), tests on the 3 files + Snowdon.
+2. **Schema**: parse `Formats/Latest` (classes, tags, fields) to get the tags of
+   `GBRep`, `GPolyMesh`, `Outline`, `ElementParents` from the file itself.
+3. **"Boxes" fallback** (planned for V5): one box per placed element, coloured by category -
+   first real 3D display, low risk.
+4. **GPolyMesh**: locate its instances in the partitions (simple families, DirectShape,
+   toposolids) and decode vertices/faces.
+5. **GBRep**: study it on tiny `.rfa` files (cube, cylinder) saved by the user in
+   Revit 2025 (if they agree to save some: no license touched by us): planar faces first,
+   then analytic surfaces; tessellation on the ModelCraft side.
+6. Compare with an IFC export made by the user from Revit to validate positions/units.
 
-## V5 : boîtes englobantes (implémenté, `crates/craft-formats/src/rvt_model.rs`)
+## V5: bounding boxes (implemented, `crates/craft-formats/src/rvt_model.rs`)
 
-Observations faites ici sur les trois exemples (pas de code repris de BIMCraft ni de rvt-rs) :
+Observations made here on the three samples (no code taken from BIMCraft or rvt-rs):
 
-- La chaîne d'enregistrements au début de la partition : `u64` id, `u32` taille, `u16` constante,
-  `u16` compte, corps, 16 octets dont le dernier `u32` répète la taille ; suivant à `o + taille + 16`.
-  Dynamo : 6 730 enregistrements = exactement les 6 730 ids de `Global/ElemTable` (id `u64` à +20
-  de chaque entrée de 40 octets) ; la chaîne s'arrête à 1,2 Mo sur 38 Mo (le reste : documents des
-  familles chargées), donc on arrête la décompression là.
-- Constante = 0x05c7 sur tous les enregistrements des deux fichiers 2025 ; + 12 = 0x05d3, la
-  valeur lue après la boîte.
-- `Formats/Latest` définit `Outline` en ligne : `59 81 00 00 07 00 "Outline"` → tag 0x159
-  (bit 0x8000 = définition en ligne). Fichier ancien (BatchPrintInitial) : 0xb1.
-- Marqueur `[0x159] ff ff ff ff [0x5d3]` à +0x50 d'une trame, catégorie `i64` à +0x12, genre `u32`
-  à +0x42 (`0xffffef7f` = instance placée), boîte 6×`f64` en pieds à +0x58 : **hypothèse
-  confirmée** sur 2025. Seules 4 des 38 trames de murs sont des enregistrements de premier niveau :
-  les autres sont imbriquées dans le corps d'un enregistrement, d'où la recherche du marqueur dans
-  toute la chaîne. Dans une famille (`.rfa`), les solides de la famille ont la catégorie -1.
-- Résultats : DynamoSample_2025.rvt → 235 boîtes (38 murs 0,2 m × 2,7 m de haut, 6 sols, 2 plafonds,
-  5 portes, 7 fenêtres, 118 meneaux, 36 panneaux, 3 escaliers, 7 garde-corps, 3 poteaux porteurs,
-  3 fondations, 3 topographie, 1 volume, 1 générique, 2 entourage) ; M_Chair-Desk.rfa → 4 boîtes
-  (assise, dossier, pied, piètement) ; BatchPrintInitial.rvt (format ancien) → 0, repli vignette.
-- Filtres : boîte finie, ordonnée, < 3e5 pieds, étendue dans au moins deux directions,
-  catégories physiques seulement (lignes, esquisses, niveaux, annotations ignorées), doublons retirés.
+- The record chain at the start of the partition: `u64` id, `u32` size, `u16` constant,
+  `u16` count, body, 16 bytes whose last `u32` repeats the size; next record at `o + size + 16`.
+  Dynamo: 6,730 records = exactly the 6,730 ids of `Global/ElemTable` (`u64` id at +20 of each
+  40-byte entry); the chain stops at 1.2 MB out of 38 MB (the rest: documents of the loaded
+  families), so decompression stops there.
+- Constant = 0x05c7 on all records of both 2025 files; + 12 = 0x05d3, the value read after the box.
+- `Formats/Latest` defines `Outline` inline: `59 81 00 00 07 00 "Outline"` → tag 0x159
+  (bit 0x8000 = inline definition). Old file (BatchPrintInitial): 0xb1.
+- Marker `[0x159] ff ff ff ff [0x5d3]` at +0x50 of a frame, `i64` category at +0x12, `u32` kind
+  at +0x42 (`0xffffef7f` = placed instance), 6×`f64` box in feet at +0x58: **hypothesis
+  confirmed** on 2025. Only 4 of the 38 wall frames are top-level records: the others are nested
+  in a record body, hence the marker search through the whole chain. In a family (`.rfa`), the
+  family solids have category -1.
+- Results: DynamoSample_2025.rvt → 235 boxes (38 walls 0.2 m × 2.7 m high, 6 floors, 2 ceilings,
+  5 doors, 7 windows, 118 mullions, 36 panels, 3 stairs, 7 railings, 3 structural columns,
+  3 foundations, 3 topography, 1 mass, 1 generic, 2 entourage); M_Chair-Desk.rfa → 4 boxes
+  (seat, back, leg, base); BatchPrintInitial.rvt (old format) → 0, thumbnail fallback.
+- Filters: finite, ordered box, < 3e5 feet, extended in at least two directions,
+  physical categories only (lines, sketches, levels, annotations ignored), duplicates removed.
 
-## Fichiers de l'utilisateur (sous NDA, jamais versionnés)
+## User files (under NDA, never versioned)
 
-Lus en lecture seule sur le PC, `BasicFileInfo` uniquement (aucun nom de fichier ni contenu noté) :
-15 `.rvt`, 0,4 à 330 Mo. 14 sont des Revit 2018 (13 en travail partagé « Central », 1 non partagé),
-1 est un Revit 2025 « Central ». Le format 2018 n'a pas le cadre d'élément de 2024+ : il reste en
-repli vignette/informations ; la piste suivante est le cadre « jusqu'à 2023 » (ids `u32`).
+Read only on the PC, `BasicFileInfo` only (no file name or content noted):
+15 `.rvt`, 0.4 to 330 MB. 14 are Revit 2018 (13 workshared "Central", 1 not shared),
+1 is a Revit 2025 "Central". The 2018 format does not have the 2024+ element frame: it stayed on
+the thumbnail/information fallback; the next lead was the "up to 2023" frame (`u32` ids).
 
-## V5.1 : fichiers d'avant 2024 (identifiants 32 bits)
+## V5.1: files older than 2024 (32-bit ids)
 
-Vérifié sur les projets d'exemple publiés par Autodesk (revit.downloads.autodesk.com, non versionnés) :
-`rst_basic_sample_project` 2018, `rstbasicsampleproject` 2023 et 2025, `rac_basic_sample_project`
-2018 et `racbasicsampleproject` 2021.
+Checked on the sample projects published by Autodesk (revit.downloads.autodesk.com, not versioned):
+`rst_basic_sample_project` 2018, `rstbasicsampleproject` 2023 and 2025, `rac_basic_sample_project`
+2018 and `racbasicsampleproject` 2021.
 
-- Revit 2024 est passé aux `ElementId` 64 bits. Avant : en-tête d'enregistrement `u32` id, `u32`
-  taille, `u16` constante, `u16` compte (12 octets), bloc de fin de 12 octets dont le dernier `u32`
-  répète la taille ; enregistrement suivant à `o + taille + 12` (contre `+ 16` en 2024+).
-- Le marqueur `[Outline] ff ff ff ff [tag]` reste, suivi des six `f64` ; tag `Outline` = 0x109 (2018),
-  0x13c (2023), 0x159 (2025), lu dans `Formats/Latest`. Le tag qui suit n'est plus « constante + 12 »
-  en 2018 (0x4f4 pour une constante 0x4eb) : on prend le plus fréquent après le marqueur.
-- Type de placement (`u32`) toujours 14 octets avant le marqueur ; catégorie `i32` 0x26 octets avant
-  (0x3e et `i64` en 2024+ : les six identifiants intermédiaires sont deux fois plus courts).
-- Même modèle, mêmes résultats d'une version à l'autre : rst 786 boîtes en 2018, 2023 et 2025 ;
-  rac 458 en 2018 et 2021.
-- Depuis 2019, le bloc `Clé: valeur` de `BasicFileInfo` est à un décalage impair : on prend
-  l'alignement qui contient les clés.
-- Les fichiers en travail partagé sont lus comme les autres (une partition par sous-projet), en
-  lecture seule : aucun verrou, aucun fichier temporaire, aucune synchronisation avec le central.
+- Revit 2024 moved to 64-bit `ElementId`s. Before: record header `u32` id, `u32`
+  size, `u16` constant, `u16` count (12 bytes), 12-byte trailer whose last `u32` repeats the
+  size; next record at `o + size + 12` (instead of `+ 16` in 2024+).
+- The `[Outline] ff ff ff ff [tag]` marker remains, followed by the six `f64`; `Outline` tag = 0x109
+  (2018), 0x13c (2023), 0x159 (2025), read from `Formats/Latest`. The following tag is no longer
+  "constant + 12" in 2018 (0x4f4 for a 0x4eb constant): the most frequent one after the marker is used.
+- Placement kind (`u32`) always 14 bytes before the marker; `i32` category 0x26 bytes before
+  (0x3e and `i64` in 2024+: the six intermediate ids are half as long).
+- Same model, same results from one version to the next: rst 786 boxes in 2018, 2023 and 2025;
+  rac 458 in 2018 and 2021.
+- Since 2019, the `Key: value` block of `BasicFileInfo` is at an odd offset: the alignment that
+  contains the keys is used.
+- Workshared files are read like the others (one partition per workset), read only: no lock, no
+  temporary file, no synchronisation with the central.
 
-## V6 : navigateur de projet (implémenté, `crates/craft-formats/src/rvt_browser.rs`)
+## V6: project browser (implemented, `crates/craft-formats/src/rvt_browser.rs`)
 
-Objectif : à l'ouverture d'un .rvt, le panneau de gauche montre le « Navigateur de projet » comme
-Revit (Vues par dossiers, Légendes, Nomenclatures/Quantités, Feuilles), en lecture seule.
-Observations sur les échantillons publics uniquement (2018, 2021, 2023, 2025), sans
-désassemblage.
+Goal: when a .rvt is opened, the left panel shows the "Project Browser" like Revit (Views by
+folders, Legends, Schedules/Quantities, Sheets), read only. Observations on the public samples only
+(2018, 2021, 2023, 2025), no disassembly.
 
-**Schéma (`/Formats/Latest`).** Chaque classe : `[u16 len][nom][u16 parent]` (si le parent a le
-bit 0x8000 : `00 00` puis sa définition en ligne), `[u32][u32 nb champs]`, les champs
-`[u32 len][nom][type]`, puis `u32 ng` et ng GUID de 16 octets. Type : `b0 b1 00 00`, puis
-`u32 n` si b1 = 0x10, puis `u16 classe` si b0 = 0x0e et b1 ∈ {0x00, 0x50, 0x10}.
-`0e 00 c` objet par valeur (c = ElementId : un id de 4 ou 8 octets), `0e 01/02` pointeur
-possédé, `0e 03` pointeur brut (u32), `0e 50 c` ensemble (u32 n puis n éléments),
-`0e 51` tableau de pointeurs, `08 60` chaîne UTF-16 (u32 longueur), `07` double, `04` int32,
-`01` booléen, `0b` 8 octets (2025, `TreeItemData`).
+**Schema (`/Formats/Latest`).** Each class: `[u16 len][name][u16 parent]` (if the parent has the
+0x8000 bit: `00 00` then its inline definition), `[u32][u32 field count]`, the fields
+`[u32 len][name][type]`, then `u32 ng` and ng 16-byte GUIDs. Type: `b0 b1 00 00`, then
+`u32 n` if b1 = 0x10, then `u16 class` if b0 = 0x0e and b1 ∈ {0x00, 0x50, 0x10}.
+`0e 00 c` object by value (c = ElementId: a 4- or 8-byte id), `0e 01/02` owned pointer,
+`0e 03` raw pointer (u32), `0e 50 c` set (u32 n then n items), `0e 51` pointer array,
+`08 60` UTF-16 string (u32 length), `07` double, `04` int32, `01` boolean, `0b` 8 bytes
+(2025, `TreeItemData`).
 
-**Éléments dans les partitions.** `[id][u32][u32 taille][u16 classe]`, le corps suit
-directement la classe ; champs de toute la chaîne de classes dans l'ordre du schéma (Element
-d'abord : `m_id`, `m_famId`, `m_ownerDBViewId`…). Pointeur non nul : `ff ff ff ff [u16 classe]`
-et son contenu est écrit après le corps, dans l'ordre de rencontre (file) ; `00000000` nul ;
-petite valeur = renvoi. On valide un élément quand `m_id` décodé = id de l'en-tête. Les vues
-sont au-delà de la fin de la chaîne d'enregistrements : on lit les partitions entières.
+**Elements in the partitions.** `[id][u32][u32 size][u16 class]`, the body follows the class
+directly; fields of the whole class chain in schema order (Element first: `m_id`, `m_famId`,
+`m_ownerDBViewId`…). Non-null pointer: `ff ff ff ff [u16 class]` and its content is written
+after the body, in encounter order (queue); `00000000` null; small value = back reference. An
+element is valid when the decoded `m_id` = the header id. Views are past the end of the record
+chain: the whole partitions are read.
 
-**Ce qu'on lit.** `DBView*` (nom, type, gabarit, vue principale pour les vues dépendantes,
-fenêtres sur feuille, numéro de feuille), leurs jeux de paramètres différés
-(`ParamValueSetInt/ElementId/AString/Double` : discipline -1005163, phase -1012102…),
-`DBViewType` (`m_systemFamilyIdx` : 0x66 3D, 0x68 rendu, 0x69 nomenclature, 0x6b feuille,
-0x6c dessin, 0x6d plan d'étage, 0x6e surface, 0x6f plafond, 0x70 coupe, 0x71 détail,
-0x72 élévation, 0x75 légende, 0x76 tableau, 0x77 poteaux graphiques, 0x78 structure ; nom
-du type dans `SymbolInfo`), `ProjectPhase`, `BrowserOrganization` (filtres, définitions de
-dossiers `{paramètre, nb de caractères}`, tri ; `m_type` 0 vues, 1 feuilles, 3
-nomenclatures) et, dans `/Global/Latest`, `BrowserOrganizationTracking` (organisation
-courante des vues, feuilles et nomenclatures ; sa table `m_folderNameToIdMap` contient les
-noms de dossiers de Revit, qui ont servi à vérifier la règle de nommage).
+**What is read.** `DBView*` (name, type, template, primary view for dependent views, viewports
+on sheets, sheet number), their deferred parameter sets (`ParamValueSetInt/ElementId/AString/Double`:
+discipline -1005163, phase -1012102…), `DBViewType` (`m_systemFamilyIdx`: 0x66 3D, 0x68 rendering,
+0x69 schedule, 0x6b sheet, 0x6c drafting, 0x6d floor plan, 0x6e area, 0x6f ceiling, 0x70 section,
+0x71 detail, 0x72 elevation, 0x75 legend, 0x76 table, 0x77 graphical column schedule,
+0x78 structural; type name in `SymbolInfo`), `ProjectPhase`, `BrowserOrganization` (filters,
+folder definitions `{parameter, character count}`, sorting; `m_type` 0 views, 1 sheets,
+3 schedules) and, in `/Global/Latest`, `BrowserOrganizationTracking` (current organisation of
+views, sheets and schedules; its `m_folderNameToIdMap` table holds Revit's folder names, which
+were used to check the naming rule).
 
-**Arbre.** Exclus : gabarits, vues de familles (`m_famId` ≠ -1), vues possédées par une feuille
-(nomenclatures de révisions), `DBViewProject`, navigateur de systèmes. Dossier « famille et
-type » : pluriel de la famille, plus « (type) » si le nom du type n'est pas le nom par
-défaut (« Coupes (Wall Section) », « Plans d'étage »). Les élévations d'avant 2019 sans type
-prennent le premier type de la famille élévation. Valeur vide : dossier « ??? ». Tri
-alphanumérique sans accents ; vues dépendantes sous leur vue principale ; feuilles « NUM -
-Nom ». Filtres : égal / différent seulement (« pas sur des feuilles » pris en charge).
+**Tree.** Excluded: templates, family views (`m_famId` ≠ -1), views owned by a sheet (revision
+schedules), `DBViewProject`, system browser. "Family and type" folder: the plural of the
+family, plus "(type)" when the type name is not the default name ("Sections (Wall Section)",
+"Floor Plans"). Elevations older than 2019 without a type take the first type of the elevation
+family. Empty value: "???" folder. Alphanumeric sort ignoring accents; dependent views under
+their primary view; sheets as "NUM - Name". Filters: equal / not equal only ("not on sheets"
+supported).
 
-**Reste inconnu.** Aucune légende ni paramètre de projet dans les échantillons (valeurs
-attendues dans `ParamValueSetAString` avec des id positifs) ; libellés des valeurs
-ElementId autres que les phases ; relations de filtre autres qu'égal/différent.
+**Still unknown.** No legend or project parameter in the samples (values expected in
+`ParamValueSetAString` with positive ids); labels of ElementId values other than phases;
+filter relations other than equal/not equal.
 
-### V6.1 : familles, groupes, liens Revit, mode simplifié
+### V6.1: families, groups, Revit links, simplified mode
 
-- Familles chargeables : `FamilySurrogate` (`m_name`, `m_categoryId` catégorie intégrée,
-  `m_elemId` = élément `Family`) et `FamSymSurrogate` (`m_name` du type, `m_famSurrogateId`).
-  Les familles in situ (`Family.m_inPlace`) sont exclues ; une même famille peut avoir plusieurs
-  substituts (fusionnés). Les noms de catégories ne sont pas stockés (localisés par l'interface) :
-  table des catégories intégrées courantes, annotations regroupées sous « Symboles d'annotation »,
-  le reste sous « Autres familles ». Les familles système (murs, canalisations…) ne sont pas encore
-  listées.
-- Groupes : `ElementGroupType` (nom dans `SymbolInfo`), détail si `m_viewType != 0` ou attaché
-  (`m_attachedParentId`, rangé sous son groupe de modèle). Hypothèse à confirmer sur un modèle
-  avec groupes de détail.
-- Liens Revit : `RvtLinkSymbol` (nom `SymbolInfo.m_name`, liens imbriqués exclus via
-  `m_parentSymbolId`), `RvtLinkInstance` (`m_name` = numéro d'instance, type via
-  `InstanceInfo.m_symbolId`). État au dernier enregistrement : flux `TransmissionData`
-  (u32 + XML UTF-16, `ExternalFileReference` de type « Revit Link », `LastSavedLoadState`
-  Loaded / Unloaded / NotFound…). Lien non chargé = icône rouge.
-- Décodeur : types `0x09` (GUID, 16 octets), `0x0d` (XYZ, 24 octets) et tableaux fixes d'objets
-  `0e 10`.
-- Interface : bouton près de l'arbre pour basculer entre le navigateur complet (comme Revit) et la
-  vue simplifiée (vues, légendes, nomenclatures, feuilles) ; préférence `browser_full` enregistrée
-  dans settings.json.
-- Catégories : identifiants vérifiés contre la liste publique `BuiltInCategory` de l'API Revit
-  (valeurs stables entre versions). Toutes les catégories d'étiquettes, têtes, symboles, repères,
-  titres de vue et conditions d'appui sont rangées sous « Symboles d'annotation ». Sur le parc local,
-  il ne reste plus de catégorie inconnue parmi celles relevées.
+- Loadable families: `FamilySurrogate` (`m_name`, `m_categoryId` built-in category,
+  `m_elemId` = `Family` element) and `FamSymSurrogate` (`m_name` of the type, `m_famSurrogateId`).
+  In-place families (`Family.m_inPlace`) are excluded; one family can have several surrogates
+  (merged). Category names are not stored (localised by the UI): a table of the common built-in
+  categories, annotations grouped under "Annotation Symbols", the rest under "Other families".
+  System families (walls, pipes…) are not listed yet.
+- Groups: `ElementGroupType` (name in `SymbolInfo`), detail group if `m_viewType != 0` or attached
+  (`m_attachedParentId`, filed under its model group). Hypothesis to confirm on a model with
+  detail groups.
+- Revit links: `RvtLinkSymbol` (name `SymbolInfo.m_name`, nested links excluded via
+  `m_parentSymbolId`), `RvtLinkInstance` (`m_name` = instance number, type via
+  `InstanceInfo.m_symbolId`). State at the last save: `TransmissionData` stream
+  (u32 + UTF-16 XML, `ExternalFileReference` of type "Revit Link", `LastSavedLoadState`
+  Loaded / Unloaded / NotFound…). Unloaded link = red icon.
+- Decoder: types `0x09` (GUID, 16 bytes), `0x0d` (XYZ, 24 bytes) and fixed object arrays `0e 10`.
+- UI: a button next to the tree switches between the full browser (like Revit) and the
+  simplified view (views, legends, schedules, sheets); the `browser_full` preference is saved in
+  settings.json.
+- Categories: ids checked against the public `BuiltInCategory` list of the Revit API (values
+  stable across versions). All tag, head, symbol, callout, view title and boundary condition
+  categories are filed under "Annotation Symbols". On the local file set, no unknown category is
+  left among those found.
 
-### V6.2 : vue de démarrage et ouverture des vues
+### V6.2: starting view and opening views
 
-- Vue de démarrage (Revit « Gérer > Vue de démarrage », API `StartingViewSettings`) : classe
-  `InitialViewSettings : Element`, un seul champ `m_initialViewId` (ElementId de la vue ou de la
-  feuille). Hypothèse « StartingView » écartée : aucune classe de ce nom dans `/Formats/Latest`
-  (3981 classes, Revit 2018 à 2025). L'élément est dans une partition, lu par le même balayage que
-  les vues. Absent ou -1 quand le projet n'a pas de vue de démarrage (Revit rouvre alors la
-  dernière vue active, non lue).
-- Vérifié sur 4 modèles du parc (noms non notés, NDA) : chacun ouvre sur une feuille, à la même
-  place dans le navigateur que dans Revit (capture de l'utilisateur), sous une organisation de
-  feuilles avec plusieurs niveaux de dossiers.
-- `BrowserNode` porte maintenant `id` (ElementId de la vue, -1 sinon) et `start`.
-- ModelCraft ouvre le fichier sur cette vue : ligne sélectionnée, dossiers parents dépliés, liste
-  défilée jusqu'à elle. Clic sur une vue ou une feuille du navigateur = l'ouvrir : plans (et plans
-  de plafond) vus de dessus, coupes / élévations / détails de face, en orthographique ; vues 3D
-  en isométrique ; feuilles, vues de dessin, légendes et nomenclatures affichées à plat (feuille
-  blanche avec l'aperçu `RevitPreview4.0` quand il existe, qui est souvent la feuille active au
-  dernier enregistrement). Pastille « Vue : … » dans la vue 3D, croix pour revenir à toute la
-  maquette.
-- Pas encore fait : contenu 2D des feuilles (lignes du cartouche, fenêtres, textes), cadrage
-  sur la zone de la vue (zone cadrée, plage de vue), filtrage des éléments par vue, orientation
-  réelle des coupes / élévations et des vues 3D enregistrées.
+- Starting view (Revit "Manage > Starting View", API `StartingViewSettings`): class
+  `InitialViewSettings : Element`, a single field `m_initialViewId` (ElementId of the view or
+  sheet). "StartingView" hypothesis rejected: no class of that name in `/Formats/Latest`
+  (3,981 classes, Revit 2018 to 2025). The element is in a partition, read by the same scan as the
+  views. Missing or -1 when the project has no starting view (Revit then reopens the last active
+  view, not read).
+- Checked on 4 models of the user's file set (names not noted, NDA): each one opens on a sheet,
+  at the same place in the browser as in Revit (user screenshot), under a sheet organisation
+  with several folder levels.
+- `BrowserNode` now carries `id` (ElementId of the view, -1 otherwise) and `start`.
+- ModelCraft opens the file on that view: row selected, parent folders expanded, list scrolled
+  to it. Clicking a view or sheet in the browser opens it: plans (and ceiling plans) seen from
+  above, sections / elevations / details from the front, orthographic; 3D views isometric;
+  sheets, drafting views, legends and schedules shown flat (white sheet with the
+  `RevitPreview4.0` preview when there is one, which is often the active sheet at the last
+  save). A "View: …" chip in the 3D view, with a cross to go back to the whole model.
+- Not done at the time: 2D sheet content (title block lines, viewports, texts), framing on the
+  view area (crop region, view range), per-view element filtering, real orientation of
+  sections / elevations and saved 3D views (all done later, see below).
 
-## V7 : formes reconstruites (implémenté, `rvt_geom.rs` + `rvt_shape.rs`)
+## V7: rebuilt shapes (implemented, `rvt_geom.rs` + `rvt_shape.rs`)
 
-Lecture objet par objet des éléments (décodeur générique piloté par `/Formats/Latest`), puis
-reconstruction paramétrique propre (aucune B-rep n'est stockée : `SnapshotData` / `GElement` vides).
+Elements are read object by object (generic decoder driven by `/Formats/Latest`), then rebuilt
+parametrically (most elements store no B-rep: `SnapshotData` / `GElement` are empty).
 
-Encodage complété (vérifié par égalité taille déclarée / taille consommée) :
-- type `b0 b1 00 00` : si `b1 & 0xf0 == 0x10`, un `u32 n` suit (tableau fixe : `10` valeurs,
-  `13` n pointeurs bruts de 4 octets, `11`/`12` n pointeurs possédés) ; `50` ensemble / vecteur
-  (`51` pointeurs possédés, `53` pointeurs bruts : `u32` compte + n × 4) ; `0d` sous-descripteur
-  `[u32 1][0x20][type élément]`. Exemple : les arêtes (`GEdgeBase`, `0e 13` + n) manquaient au schéma.
-- pointeur possédé : `u32 v` ; 0 = nul (4 octets) ; sinon `u16` classe (6 octets) ; `0xffffffff` =
-  nouvel objet différé (file FIFO) ; petit `v` = identifiant local (première mention : corps en file,
-  ensuite : référence) ; `v = 1` document, `v = 2` l'élément lui-même. Pointeur brut (`0e 03`) : 4 octets.
+Encoding completed (checked by declared size = consumed size):
+- type `b0 b1 00 00`: if `b1 & 0xf0 == 0x10`, a `u32 n` follows (fixed array: `10` values,
+  `13` n raw 4-byte pointers, `11`/`12` n owned pointers); `50` set / vector
+  (`51` owned pointers, `53` raw pointers: `u32` count + n × 4); `0d` sub-descriptor
+  `[u32 1][0x20][item type]`. Example: the edges (`GEdgeBase`, `0e 13` + n) were missing from the schema.
+- owned pointer: `u32 v`; 0 = null (4 bytes); otherwise `u16` class (6 bytes); `0xffffffff` =
+  new deferred object (FIFO queue); small `v` = local id (first mention: body queued,
+  afterwards: reference); `v = 1` document, `v = 2` the element itself. Raw pointer (`0e 03`): 4 bytes.
 
-Géométrie lue (pieds, repère projet) :
-- **Mur** (`SWall`) : `VWallDriver.m_pCrv` (`GLine` : `m_origin`, `m_dirVec`, `m_endParams`) ;
-  profil modifié `VWallExtrusionHelper.m_pCurveLoops` (plan vertical de la ligne de base) ; faces de
-  référence `m_pRefFaces` → `Plane` (`m_origin`, `m_xVec`, `m_yVec`, enveloppe `[umin,vmin,umax,vmax]`)
-  qui donnent épaisseur, bas, haut et extrémités ; `WallCutoutGStep` / `WallEmbedWallGStep.m_instId`
-  = inserts qui découpent (ouverture = boîte de l'insert projetée). Les raccords ne sont pas stockés
-  avec le mur : le long d'un axe, la boîte de l'élément les donne.
-- **Sol / plafond / dalle** : `m_bottom` / `m_top` (sols), contours `*ExtrusionHelper.m_pCurveLoops`
-  horizontaux ; sinon plans de référence horizontaux.
-- **Canalisation / gaine / chemin de câbles** (`RbsSingleCurve` et dérivées) : `m_pCurveDriver` →
-  `RbsCurveDriver.m_pCrv` (axe), `m_dWidthOrDiameter`, `m_dHeight`, `m_vNormal` (sens de la hauteur),
+Geometry read (feet, project frame):
+- **Wall** (`SWall`): `VWallDriver.m_pCrv` (`GLine`: `m_origin`, `m_dirVec`, `m_endParams`);
+  edited profile `VWallExtrusionHelper.m_pCurveLoops` (vertical plane of the base line); reference
+  faces `m_pRefFaces` → `Plane` (`m_origin`, `m_xVec`, `m_yVec`, envelope `[umin,vmin,umax,vmax]`)
+  which give the thickness, bottom, top and ends; `WallCutoutGStep` / `WallEmbedWallGStep.m_instId`
+  = inserts that cut (opening = projected insert box). Joins are not stored with the wall: along
+  an axis, the element box gives them.
+- **Floor / ceiling / slab**: `m_bottom` / `m_top` (floors), horizontal outlines
+  `*ExtrusionHelper.m_pCurveLoops`; otherwise horizontal reference planes.
+- **Pipe / duct / cable tray** (`RbsSingleCurve` and subclasses): `m_pCurveDriver` →
+  `RbsCurveDriver.m_pCrv` (axis), `m_dWidthOrDiameter`, `m_dHeight`, `m_vNormal` (height direction),
   `*DesignPropertyManager.m_sOverallSize`.
-- **Extrusion de famille** (`ExtrusionElem`) : `m_famId` (document famille), `m_cutting` (vide),
-  `m_paramSet` (`ParamValueSetDouble`) : `-1001800` début, `-1001801` fin ;
-  `ExtrusionElemExtrusionHelper.m_pCurveLoops` ; plan d'esquisse `VarSketch.m_pPlane`.
-- **Instance** (`FamilyInstance`) : `m_pInstanceInfo` → `InstanceInfo.m_Trf` (`m_3x3`, colonnes =
-  images de X, Y, Z ; `m_or`) et `m_symbolId` ; `FamilySymbol.m_famId` = document famille intégré
-  (sinon `m_familyId` / `m_partitionSurrogateId` : famille chargée dont la géométrie n'est pas dans
-  le projet, seule la boîte reste). Contrôle : chaque forme placée doit rester dans la boîte de
-  l'élément (sinon boîte).
+- **Family extrusion** (`ExtrusionElem`): `m_famId` (family document), `m_cutting` (void),
+  `m_paramSet` (`ParamValueSetDouble`): `-1001800` start, `-1001801` end;
+  `ExtrusionElemExtrusionHelper.m_pCurveLoops`; sketch plane `VarSketch.m_pPlane`.
+- **Instance** (`FamilyInstance`): `m_pInstanceInfo` → `InstanceInfo.m_Trf` (`m_3x3`, columns =
+  images of X, Y, Z; `m_or`) and `m_symbolId`; `FamilySymbol.m_famId` = embedded family document
+  (otherwise `m_familyId` / `m_partitionSurrogateId`: loaded family whose geometry is not in the
+  project, only the box remains). Check: each placed shape must stay inside the element box
+  (otherwise box).
 
-Validation (échantillons publics + fichier sous NDA, localement) : sur 5 660 formes reconstruites du
-fichier MEP sous NDA, 4 s'écartent de plus de 5 cm de la boîte Revit ; `M_Chair-Desk.rfa` : 4/4.
-Pas encore : murs courbes, toits, lissages / balayages / révolutions, raccords MEP (familles chargées).
+Validation (public samples + an NDA file, locally): out of 5,660 rebuilt shapes of the NDA MEP
+file, 4 are more than 5 cm off the Revit box; `M_Chair-Desk.rfa`: 4/4.
 
-### Solides des familles chargées (révolutions, balayages, lissages, familles imbriquées)
+### Solids of loaded families (revolutions, sweeps, blends, nested families)
 
-- Documents de famille stockés dans le projet : `/Global/ContentDocuments` (segments : balise
-  ContentMarker, GUID ContentKey, puis id racine après la balise NOBLE_SecondaryDataStorage). Les
-  éléments du document ont `m_famId` = racine. `Family.m_oFamDoc` : `m_contentDocGUID`,
-  `m_big2SmallMap2` (ids projet → ids du document : le propriétaire d'un id « first » donne la racine).
-- `FamilySymbol` : (`m_famId`, `m_familyId`) ; symboles imbriqués : `m_famId` = racine du document
-  qui les contient (ne pas s'en servir comme famille : auto-référence).
-- `RevolutionElem` : esquisse `m_sketchId`, angles -1001802 / -1001803. `SweepElem` :
-  `m_profileData.m_profileSketchId` + `m_pathSketchId`, ou `m_path3dId` → `Path3d`
-  (`m_curveLoops` → `CurveLoop.m_curves`, `m_userId` = le balayage) : c'est le cas des coudes MEP.
-  `BlendElem` : deux esquisses dont `m_userId` = le lissage, hauteurs -1001804 / -1001805.
-- Formes ignorées : paramètre entier -1006205 (« Visible ») = 0, ou présence d'un
-  `AddGeomToHostInFamEnvGStep` (hôte d'exemple 8 pi × 8 pi des gabarits hébergés). Les drapeaux 9 / 11
-  de `GeomStepList` ne distinguent pas l'hôte.
-- Placement : par solide ; on garde les solides dont la boîte placée tombe dans la boîte Revit de
-  l'instance s'ils la couvrent (≥ 60 % de chaque côté ≥ 10 cm), sinon mise à l'échelle uniforme autour
-  de l'insertion (rapport médian 0,1 à 10, côtés à 8 % près), sinon étirement par axe (placements
-  alignés sur les axes, 0,33 à 3). Le type peut avoir d'autres cotes que la famille enregistrée :
-  c'est une approximation.
-- Validation (fichier MEP sous NDA) : 9 721 formes (5 660 avant), 513 à plus de 5 cm de la boîte
-  Revit, 9 à plus de 30 cm. Raccords de canalisation 3 177 / 6 140, raccords de gaine 132 / 1 191, accessoires de canalisation
-  398 / 586 ; sprinkleurs et gaines souples : aucun.
+- Family documents stored in the project: `/Global/ContentDocuments` (segments: ContentMarker
+  tag, ContentKey GUID, then the root id after the NOBLE_SecondaryDataStorage tag). Elements of
+  the document have `m_famId` = root. `Family.m_oFamDoc`: `m_contentDocGUID`,
+  `m_big2SmallMap2` (project ids → document ids: the owner of a "first" id gives the root).
+- `FamilySymbol`: (`m_famId`, `m_familyId`); nested symbols: `m_famId` = root of the document
+  that holds them (do not use it as the family: self reference).
+- `RevolutionElem`: sketch `m_sketchId`, angles -1001802 / -1001803. `SweepElem`:
+  `m_profileData.m_profileSketchId` + `m_pathSketchId`, or `m_path3dId` → `Path3d`
+  (`m_curveLoops` → `CurveLoop.m_curves`, `m_userId` = the sweep): this is the case of MEP elbows.
+  `BlendElem`: two sketches whose `m_userId` = the blend, heights -1001804 / -1001805.
+- Ignored shapes: integer parameter -1006205 ("Visible") = 0, or an
+  `AddGeomToHostInFamEnvGStep` (8 ft × 8 ft sample host of hosted templates). The 9 / 11 flags of
+  `GeomStepList` do not single out the host.
+- Placement: per solid; the solids whose placed box falls in the instance's Revit box are kept if
+  they cover it (≥ 60 % of each side ≥ 10 cm), otherwise uniform scaling about the insertion
+  point (median ratio 0.1 to 10, sides within 8 %), otherwise per-axis stretching (axis-aligned
+  placements, 0.33 to 3), otherwise, when all solids lie inside a larger box (a light fixture
+  whose box also holds its light distribution), the solids as placed. The type can have other
+  sizes than the saved family: this is an approximation.
+- Validation (NDA MEP file): 9,721 shapes (5,660 before), 513 more than 5 cm off the Revit box,
+  9 more than 30 cm. Pipe fittings 3,177 / 6,140, duct fittings 132 / 1,191, pipe accessories
+  398 / 586; sprinklers and flex ducts: none.
 
+## Sheets (2D content) and view framing
 
-## Feuilles (contenu 2D) et cadrage des vues
+Read by `crates/craft-formats/src/rvt_sheet.rs`, in the same pass as the browser and the shapes.
 
-Lu par `crates/craft-formats/src/rvt_sheet.rs`, dans la même passe que le navigateur et les formes.
-
-- Éléments possédés par une feuille : `m_ownerDBViewId` = id de la `DBViewSheet`.
-- Cartouche et symboles 2D : `FamilyInstance` (`m_pInstanceInfo.m_Trf` : `m_3x3`, `m_or`, pieds),
-  symbole `FamilySymbol` : courbes `m_nonBRepGeomPtrs` (toutes à z = 0, `m_outline.m_minmax` plat),
-  textes `m_textNoteData`, étiquettes `m_tagNoteData` (valeur = paramètre de la feuille, du projet
-  `ProjectInfo` ou intégré : -1007400 nom, -1007401 numéro, -1007402 échelle), tableaux
-  `AllScheduleInstanceRegenData` (tableau des révisions).
-- Textes : `TextNote` (texte riche RTF réduit en texte simple, `\'hh` Windows-1252, `\uN`) ;
-  `m_height` = boîte : lignes × taille × ~1,57.
-- Vues placées : `Viewport` (`m_offset` centre sur la feuille, `m_scale`, `m_dbViewId`,
-  `m_labelOrigin` / `m_labelLength` ligne de titre, `m_detailNumber`). Zone cadrée :
-  `Viewer.m_boundedSpace` (`m_orig`, `m_basis` 3×3 = axes u, v, profondeur, `m_boundOffset` 6 :
-  u max, u min, v max, v min, loin, près ; `m_boundActive`). Les coupes, élévations
-  (`Section`, `InteriorElevArrow`…) sont des sous-classes de `Viewer` : tester `isa("Viewer")`.
-  La vue 3D a la classe `DBView3d`. Plage de vue des plans (`DBView`, pieds) : valeurs absolues
-  `m_cutPlaneElev`, `m_topClipElev`, `m_bottomClipElev`, `m_depthClipElev` quand elles sont
-  remplies, sinon `PlanViewRange2.m_offsets` (coupe, haut, bas, profondeur) relatifs à
-  `m_levelPos` (0 = niveau de la vue `m_genElemId`, 1 = niveau au-dessus, -1 = illimité ; -1
-  l'emporte sur une valeur stockée à 0, vu sur un plan de masse). L'ancien `PlanViewRange` peut
-  être tout à 0. Plan regardant vers le haut (plan de plafond, `m_viewDir.z < 0` ou profondeur
-  au-dessus de la coupe) : de la coupe à la profondeur ; sinon de min(profondeur, bas) à la coupe.
-  Coupes : la coupe est toujours au trait (`off[5]` appliqué), la découpe lointaine `off[4]`
-  seulement si active. Zone de coupe 3D : `ModelClipBox` (`m_isOn`, `m_viewer3dId` → `Viewer`
-  de la vue 3D, `m_boundedSpace`). `ViewFrame.clip` : boîte orientée (axes, bornes, ±1e7 pour
-  illimité) appliquée par le shader (masquage + fermeture des faces coupées) et par la sélection,
-  et utilisée pour couper les arêtes des vues placées sur les feuilles (Liang-Barsky 3D). Images des rendus : `ImageInstance` → `ImageSymbol` (`m_widthInFeet`, `m_heightInFeet`)
+- Elements owned by a sheet: `m_ownerDBViewId` = id of the `DBViewSheet`.
+- Title block and 2D symbols: `FamilyInstance` (`m_pInstanceInfo.m_Trf`: `m_3x3`, `m_or`, feet),
+  `FamilySymbol` symbol: curves `m_nonBRepGeomPtrs` (all at z = 0, flat `m_outline.m_minmax`),
+  texts `m_textNoteData`, labels `m_tagNoteData` (value = a parameter of the sheet, of the project
+  `ProjectInfo` or built in: -1007400 name, -1007401 number, -1007402 scale), tables
+  `AllScheduleInstanceRegenData` (revision table).
+- Texts: `TextNote` (RTF rich text reduced to plain text, `\'hh` Windows-1252, `\uN`);
+  `m_height` = box: lines × size × ~1.57.
+- Placed views: `Viewport` (`m_offset` centre on the sheet, `m_scale`, `m_dbViewId`,
+  `m_labelOrigin` / `m_labelLength` title line, `m_detailNumber`). Crop region:
+  `Viewer.m_boundedSpace` (`m_orig`, `m_basis` 3×3 = u, v, depth axes, `m_boundOffset` 6:
+  u max, u min, v max, v min, far, near; `m_boundActive`). Sections, elevations
+  (`Section`, `InteriorElevArrow`…) are subclasses of `Viewer`: test `isa("Viewer")`.
+  The 3D view has the `DBView3d` class. Plan view range (`DBView`, feet): absolute values
+  `m_cutPlaneElev`, `m_topClipElev`, `m_bottomClipElev`, `m_depthClipElev` when they are filled,
+  otherwise `PlanViewRange2.m_offsets` (cut, top, bottom, depth) relative to
+  `m_levelPos` (0 = level of the view `m_genElemId`, 1 = level above, -1 = unlimited; -1 wins
+  over a value stored as 0, seen on a site plan). The old `PlanViewRange` can be all zeros. Plan
+  looking up (ceiling plan, `m_viewDir.z < 0` or depth above the cut): from the cut to the depth;
+  otherwise from min(depth, bottom) to the cut. Sections: the cut is always applied
+  (`off[5]`), the far clip `off[4]` only when active. 3D section box: `ModelClipBox` (`m_isOn`,
+  `m_viewer3dId` → `Viewer` of the 3D view, `m_boundedSpace`). `ViewFrame.clip`: oriented box
+  (axes, bounds, ±1e7 for unlimited) applied by the shader (hiding + capping of cut faces) and by
+  selection, and used to clip the edges of the views placed on sheets (3D Liang-Barsky).
+  Rendering images: `ImageInstance` → `ImageSymbol` (`m_widthInFeet`, `m_heightInFeet`)
   → `ImageHolder.m_pRasterImage.m_compressedImage` (PNG / JPEG / BMP / GIF).
-- Annotations des vues (`rvt_annot.rs`, éléments du projet `m_famId = -1` dont
-  `m_ownerDBViewId` est la vue ou la feuille) :
-  - lignes de détail : `CurveElem` (`m_detail = 1`), courbe `m_pCurveDriver` →
-    `CurveElemDriver.m_pCrv` (`GLine`, `GArc`… en pieds, coordonnées du modèle) ; style
-    `m_categoryId` → `GStyleElem.m_pGStyle` (`m_penNumber`, `m_color` rouge dans l'octet bas,
-    `m_linePatternId` : -3000010 trait plein, -1 « lignes invisibles », sinon `LinePatternElem` →
-    `LinePattern.m_segs` : `m_type` 0 trait, 1 espace, 2 point, `m_data` longueur papier en pieds).
-    Les styles utilisateur sont des sous-catégories de -2000051 (`CategoryElem.m_parentCategoryId`).
-  - plumes : `PenWidthTableElem` (id 2) → `PenWidthTable.m_draftPenInfo.m_pens` (16 épaisseurs
-    papier en pieds, annotations) ; `m_modelPenInfo` par échelle (`m_invertedScale`) pour le modèle.
-  - régions remplies : `FilledRegion` (`m_sketchId`, `m_attrId` → `FilledRegionAttributes.
-    m_fillPatternElemId` → `FillPatternElem.m_pFillPattern`) ; contour = les `CurveElem` dont
-    `SketchMembership.m_groupId` = `m_sketchId` (données `FilledRegionCurveData`, souvent en lignes
-    invisibles). `FillPattern` : `m_name`, `m_scale`, `m_fpTarget` (0 dessin, tailles papier),
-    `m_gridsArr` → `FillGrid` (`m_angle` rad, `m_origin`, `m_deltas` = [décalage le long, espacement],
-    `m_segs` traits / espaces) ; sans grille = remplissage plein. Hachures découpées pair-impair.
-  - cotes linéaires : `LinearDimString` (`m_refPnts` liste xyz à plat, ligne de cote = l'objet
-    `GLine` de l'arbre `m_origin` / `m_dirVec`, `m_ArrSegInfo[].m_origin` position du texte de
-    chaque segment, `m_values[0].m_value` valeur en pieds) ; longueur recalculée par projection
-    des points sur la ligne. Unité : `UnitsElem`, entrée `autodesk.spec.aec:length-1.0.0` →
-    `m_unitTypeId.m_typeId` (`autodesk.unit.unit:millimeters-1.0.1`…) et `m_accuracy`.
-  - étiquettes : `IndependentTag` (`m_symbolId`, `m_oTagOrientationCell` → `TagOrientationCell.
-    m_headLocation` (modèle), `m_rotationAngle` ; élément étiqueté `TaggedElem.m_taggedId.
+- View annotations (`rvt_annot.rs`, project elements with `m_famId = -1` whose
+  `m_ownerDBViewId` is the view or the sheet):
+  - detail lines: `CurveElem` (`m_detail = 1`), curve `m_pCurveDriver` →
+    `CurveElemDriver.m_pCrv` (`GLine`, `GArc`… in feet, model coordinates); style
+    `m_categoryId` → `GStyleElem.m_pGStyle` (`m_penNumber`, `m_color` red in the low byte,
+    `m_linePatternId`: -3000010 solid, -1 "invisible lines", otherwise `LinePatternElem` →
+    `LinePattern.m_segs`: `m_type` 0 dash, 1 space, 2 dot, `m_data` paper length in feet).
+    User styles are subcategories of -2000051 (`CategoryElem.m_parentCategoryId`).
+  - pens: `PenWidthTableElem` (id 2) → `PenWidthTable.m_draftPenInfo.m_pens` (16 paper widths
+    in feet, annotations); `m_modelPenInfo` per scale (`m_invertedScale`) for the model.
+  - filled regions: `FilledRegion` (`m_sketchId`, `m_attrId` → `FilledRegionAttributes.
+    m_fillPatternElemId` → `FillPatternElem.m_pFillPattern`); outline = the `CurveElem`s whose
+    `SketchMembership.m_groupId` = `m_sketchId` (`FilledRegionCurveData` data, often invisible
+    lines). `FillPattern`: `m_name`, `m_scale`, `m_fpTarget` (0 drafting, paper sizes),
+    `m_gridsArr` → `FillGrid` (`m_angle` rad, `m_origin`, `m_deltas` = [shift along, spacing],
+    `m_segs` dashes / spaces); no grid = solid fill. Hatching clipped even-odd.
+  - linear dimensions: `LinearDimString` (`m_refPnts` flat xyz list, dimension line = the
+    `GLine` object of the tree `m_origin` / `m_dirVec`, `m_ArrSegInfo[].m_origin` text position of
+    each segment, `m_values[0].m_value` value in feet); length recomputed by projecting the points
+    on the line. Unit: `UnitsElem`, entry `autodesk.spec.aec:length-1.0.0` →
+    `m_unitTypeId.m_typeId` (`autodesk.unit.unit:millimeters-1.0.1`…) and `m_accuracy`.
+  - tags: `IndependentTag` (`m_symbolId`, `m_oTagOrientationCell` → `TagOrientationCell.
+    m_headLocation` (model), `m_rotationAngle`; tagged element `TaggedElem.m_taggedId.
     m_linkInstOrHostId`), `RoomTag` (`m_point`, `m_symbolId`, `m_taggedRoomElemId.
-    m_linkInstOrHostId`). Le symbole est une `FamilySymbol` 2D (tailles papier) dont les
-    `m_tagNoteData` nomment les paramètres : pièce -1006900 nom, -1006901 numéro (chaînes de
-    `RoomElem`), -1006902 surface (calculée, non stockée).
-  - vues de dessin : classe `DBViewAnonDrafting`, zone cadrée par défaut (±100, inactive) : pas
-    de modèle, cadre = étendue des annotations.
-- Direction des vues (`DBView`) : `m_viewDir` vers l'observateur (comme `View.ViewDirection` de
-  l'API), `m_vertDir` haut de l'écran, `m_horzDir` droite ; vérifié sur les élévations Nord (+y) /
-  Sud (-y) et les plans (+z). `Scene.view_frames` : direction, haut et boîte de la zone cadrée ×
-  profondeur (bornée à la maquette) ; la visionneuse en tire lacet / tangage de l'orbite type
-  Blender (plans pivotés : lacet tiré du haut).
+    m_linkInstOrHostId`). The symbol is a 2D `FamilySymbol` (paper sizes) whose
+    `m_tagNoteData` name the parameters: room -1006900 name, -1006901 number (strings of
+    `RoomElem`), -1006902 area (computed, not stored).
+  - drafting views: class `DBViewAnonDrafting`, default crop region (±100, inactive): no
+    model, frame = extent of the annotations.
+- View direction (`DBView`): `m_viewDir` towards the viewer (like `View.ViewDirection` in the
+  API), `m_vertDir` screen up, `m_horzDir` right; checked on North (+y) / South (-y) elevations
+  and plans (+z). `Scene.view_frames`: direction, up and crop box × depth (bounded to the model);
+  the viewer derives the yaw / pitch of the Blender-style orbit from them (rotated plans: yaw
+  taken from up).
 
-### Lignes cachées des vues placées (`rvt_hlr.rs`)
+### Hidden lines of placed views (`rvt_hlr.rs`)
 
-Pas de donnée Revit : calcul fait par ModelCraft. Repère de la vue : u = `m_horzDir` (ou axe x
-de la zone cadrée), v = haut, w = `m_viewDir` (vers l'observateur ; l'axe z de la zone cadrée
-d'une coupe pointe à l'opposé, la profondeur lointaine `off[4]` y est positive). Les faces des
-formes reconstruites (pas les boîtes englobantes : murs-rideaux, escaliers, pièces y seraient
-pleins) sont découpées par ce que garde la vue (zone cadrée, plage de vue, coupe 3D), puis
-dessinées dans un tampon de profondeur (2 400 px sur le grand côté). Une arête garde les
-parties devant la face la plus proche (minimum des 3 × 3 pixels voisins, tolérance 0,02 pi
-+ ¼ pixel). `RVT_NO_HLR=1` : toutes les arêtes.
+No Revit data: computed by ModelCraft. View frame: u = `m_horzDir` (or the crop x axis),
+v = up, w = `m_viewDir` (towards the viewer; the crop z axis of a section points the other way,
+the far depth `off[4]` is positive along it). The faces of the rebuilt shapes (not the bounding
+boxes: curtain walls, stairs, rooms would be solid) are clipped by what the view keeps (crop
+region, view range, 3D section box), then drawn into a depth buffer (2,400 px on the long side).
+An edge keeps the parts in front of the closest face (minimum over the 3 × 3 neighbouring
+pixels, tolerance 0.02 ft + ¼ pixel). `RVT_NO_HLR=1`: all edges.
 
-### Éléments et catégories masqués par vue
+### Elements and categories hidden per view
 
-Dans l'enregistrement de la vue (`DBView…`) : `HiddenElementsViewSettings.m_hiddenElements`
-(ids des éléments masqués dans la vue) et, parmi les `m_oaDrawFilters`,
-`IckyExcludedCategoriesSetPtrWrapper.m_categoryIds` (catégories décochées dans la visibilité de
-la vue, ids négatifs des catégories intégrées) avec `m_analyticalModelsExcluded`,
-`m_modelsExcluded`, `m_annotationsExcluded`. Exemple public rst_2023, vue 3D « Central Pile »
-sans zone cadrée ni zone de coupe : seules les fondations restent, le reste de la structure est
-dans des catégories masquées. Appliqué aux vues placées sur les feuilles (pas encore à la vue 3D
-interactive, dont les composants regroupent plusieurs éléments).
-`ExtentElem` (`m_extentElemId` de la vue) : `m_idExtents` vide sur les échantillons.
+In the view record (`DBView…`): `HiddenElementsViewSettings.m_hiddenElements`
+(ids of the elements hidden in the view) and, among the `m_oaDrawFilters`,
+`IckyExcludedCategoriesSetPtrWrapper.m_categoryIds` (categories unchecked in the view's
+visibility, negative built-in category ids) with `m_analyticalModelsExcluded`,
+`m_modelsExcluded`, `m_annotationsExcluded`. Public example rst_2023, 3D view "Central Pile"
+without crop region or section box: only the foundations remain, the rest of the structure is in
+hidden categories. Applied to the views placed on sheets (not yet to the interactive 3D view,
+whose components group several elements).
+`ExtentElem` (`m_extentElemId` of the view): `m_idExtents` empty on the samples.
 
-## Cotes radiales, angulaires et altimétriques
+## Radial, angular and spot dimensions
 
-- `RadialDim` : `m_center` = centre de l'arc, `m_refPnts[0]` = point sur l'arc,
-  `m_ArrSegInfo[0].m_values[0].m_value` = rayon (pieds), `m_ArrSegInfo[0].m_origin` = position du texte.
-  Dessin : trait du centre vers le point (prolongé jusqu'au texte), flèche sur l'arc, texte « R <rayon> ».
-- `AngularDim` : deux points sur l'arc de cote dans `m_refPnts`, centre et rayon dans l'objet `GArc`
-  associé, `m_planeNormal` = plan de la cote, valeur en radians. Précision lue dans `UnitsElem`
-  (spec `autodesk.spec.aec:angle-1.0.0`). Aucun exemple public n'en contient dans une vue de projet :
-  non validé visuellement.
-- `SpotElevation` : `m_refPnts` = point coté, `m_bendOrPosPtOffset` = coude de la ligne de repère,
-  `m_horizLeaderLength` = épaulement, valeurs = [altitude, est, nord]. La présence d'un objet
-  `SpotCoordinateState` signale une coordonnée ponctuelle (texte « N … » / « E … »).
-  Vérifié sur rst_2023 S101 (E 13062 / N 2799).
+- `RadialDim`: `m_center` = arc centre, `m_refPnts[0]` = point on the arc,
+  `m_ArrSegInfo[0].m_values[0].m_value` = radius (feet), `m_ArrSegInfo[0].m_origin` = text position.
+  Drawing: line from the centre to the point (extended to the text), arrow on the arc, text "R <radius>".
+- `AngularDim`: two points on the dimension arc in `m_refPnts`, centre and radius in the associated
+  `GArc` object, `m_planeNormal` = dimension plane, value in radians. Accuracy read from `UnitsElem`
+  (spec `autodesk.spec.aec:angle-1.0.0`). No public sample has one in a project view: not
+  validated visually.
+- `SpotElevation`: `m_refPnts` = dimensioned point, `m_bendOrPosPtOffset` = leader elbow,
+  `m_horizLeaderLength` = shoulder, values = [elevation, east, north]. A `SpotCoordinateState`
+  object marks a spot coordinate (text "N …" / "E …"). Checked on rst_2023 S101 (E 13062 / N 2799).
 
-## Cadrage des annotations
+## Annotation crop
 
-- Porté par l'élément `Viewer` de la vue (et non par `DBView`) : `m_bAnnotationCropActive` et
-  `m_pAnnotationCropOffsets` → objet avec `m_leftRightTopBottomOffsets` (gauche, droite, haut, bas),
-  en pieds **papier** au-delà de la zone cadrée (valeur par défaut 0,0833 = 25,4 mm).
-- Comme dans Revit, une annotation entièrement hors du cadre n'est pas dessinée ; une annotation qui
-  le touche reste entière (pas de découpe). Appliqué seulement aux vues cadrées.
-- Sur les exemples publics toutes les annotations sont déjà dans le cadre : aucun changement visible.
+- Carried by the view's `Viewer` element (not by `DBView`): `m_bAnnotationCropActive` and
+  `m_pAnnotationCropOffsets` → object with `m_leftRightTopBottomOffsets` (left, right, top, bottom),
+  in **paper** feet beyond the crop region (default 0.0833 = 25.4 mm).
+- As in Revit, an annotation entirely outside the frame is not drawn; an annotation that touches
+  it stays whole (no clipping). Applied to cropped views only.
+- On the public samples every annotation is already inside the frame: no visible change.
 
-## Styles de cotes et repères de fin
+## Dimension styles and terminators
 
-- Une cote (`LinearDimString`, `RadialDim`, `AngularDim`) pointe son type par `m_styleSymbolId`
-  → `DimensionStyle`. Celui-ci donne le repère de fin `m_arrowHeadStyleId` → `LeaderStyle`, et la
-  taille du texte dans le paramètre double -1006433 (pieds papier ; 0,0078 = 3/32", 0,00787 = 2,4 mm).
-  Autres paramètres vus (-1006465, -1006431, -1006407, -1006405, -1006404, -1006401) : non identifiés
-  avec certitude (écarts et prolongements des lignes d'attache), non utilisés.
-- `LeaderStyle` : `m_tickType` 0 = trait oblique, 8 = flèche ; `m_arrowFilled`, `m_arrowClosed` ;
-  paramètre -1006426 = angle d'ouverture de la flèche (radians, 0,5236 = 30°), -1006414 = taille
-  (pieds papier ; « Diagonal 3mm » = 0,00984).
-- Dessin : trait oblique à 45° de la taille donnée ; flèche pointe sur la ligne d'attache, corps vers
-  l'intérieur du segment (deux flèches dos à dos sur les attaches intermédiaires), pleine, fermée ou
-  ouverte selon le type.
+- A dimension (`LinearDimString`, `RadialDim`, `AngularDim`) points to its type through
+  `m_styleSymbolId` → `DimensionStyle`. That gives the terminator `m_arrowHeadStyleId` →
+  `LeaderStyle`, and the text size in double parameter -1006433 (paper feet; 0.0078 = 3/32",
+  0.00787 = 2.4 mm). Other parameters seen (-1006465, -1006431, -1006407, -1006405, -1006404,
+  -1006401): not identified with certainty (witness line gaps and extensions), not used.
+- `LeaderStyle`: `m_tickType` 0 = oblique tick, 8 = arrow; `m_arrowFilled`, `m_arrowClosed`;
+  parameter -1006426 = arrow opening angle (radians, 0.5236 = 30°), -1006414 = size
+  (paper feet; "Diagonal 3mm" = 0.00984).
+- Drawing: oblique tick at 45° of the given size; the arrow tip is on the witness line, its body
+  towards the inside of the segment (two arrows back to back on intermediate witness lines),
+  filled, closed or open depending on the type.
 
-## Lignes de coupe
+## Cut lines
 
-- Le plan de coupe d'une vue est la borne de la boîte conservée du côté de l'observateur
-  (plans : hauteur de coupe de la plage de vue ; coupes et élévations : leur ligne). Les maillages
-  reconstruits qui le traversent y sont sectionnés (intersection triangle/plan) et le contour est
-  dessiné en trait épais (0,35 mm), jamais masqué.
-- Les catégories que Revit ne coupe pas (mobilier, appareils sanitaires, luminaires, équipements,
-  plantes, entourage, stationnement, site, topographie) restent en projection.
-- Limite : l'épaisseur ne vient pas encore des styles d'objet du projet (les catégories intégrées
-  n'ont pas de `GStyleElem` dans le fichier ; leurs styles restent à localiser), une seule
-  épaisseur de coupe est utilisée, les lignes en projection restent fines.
+- The cut plane of a view is the bound of the kept box on the viewer's side (plans: cut height
+  of the view range; sections and elevations: their line). Rebuilt meshes that cross it are
+  sectioned there (triangle/plane intersection) and the outline is drawn as a thick line
+  (0.35 mm), never hidden.
+- Categories that Revit does not cut (furniture, plumbing fixtures, lighting fixtures,
+  equipment, planting, entourage, parking, site, topography) stay in projection.
+- Limit: the line weight does not come from the project's object styles yet (built-in
+  categories have no `GStyleElem` in the file; their styles remain to be located), a single cut
+  weight is used, projection lines stay thin.
 
-## Ossature, meneaux et panneaux de mur-rideau
+## Framing, mullions and curtain wall panels
 
-Les poutres et contreventements (`FamilyInstance` avec `m_pCurveDriver` → `FamInstCurveDriver`)
-portent leur ligne de positionnement : `m_pCrv` → `GLine` (`m_origin`, `m_dirVec`, `m_endParams`),
-avec les retraits `m_setbacks` aux deux extrémités. Quand les solides de la famille ne sont pas
-retrouvés (profils paramétrés par la longueur de l'instance), on construit une boîte le long de
-cette ligne : la largeur et la hauteur de la section sont résolues (moindres carrés) à partir de la
-boîte englobante de l'élément, chaque étendue monde valant `L·|n_i| + w·|y_i| + h·|z_i|` ; la section
-est centrée sur la boîte englobante (décalages de justification), la longueur sur la ligne.
+Beams and braces (`FamilyInstance` with `m_pCurveDriver` → `FamInstCurveDriver`) carry their
+location line: `m_pCrv` → `GLine` (`m_origin`, `m_dirVec`, `m_endParams`), with the setbacks
+`m_setbacks` at both ends. When the family solids are not found (profiles driven by the
+instance length), a box is built along that line: the width and height of the section are solved
+(least squares) from the element's bounding box, each world extent being
+`L·|n_i| + w·|y_i| + h·|z_i|`; the section is centred on the bounding box (justification offsets),
+the length on the line.
 
-Les meneaux (`MullionFamRef`) et panneaux (`CurtainCellFamRef`) sont des boîtes dans les axes de
-leur `m_Trf` : les arêtes résolvent `e_i = Σ_j |u_j[i]| · l_j` (Cramer), refusé si le système est
-dégénéré (rotation à 45°) ou une arête négative.
+Mullions (`MullionFamRef`) and panels (`CurtainCellFamRef`) are boxes in the axes of their
+`m_Trf`: the edges solve `e_i = Σ_j |u_j[i]| · l_j` (Cramer), rejected when the system is
+degenerate (45° rotation) or an edge is negative.
 
-Limites : section rectangulaire seulement (pas de profil en I ni de tube), pas de coupes d'onglet,
-meneaux d'angle et panneaux non rectangulaires restent approchés.
+Limits: rectangular sections only (no I profile or tube), no mitre cuts, corner mullions and
+non-rectangular panels stay approximate.
+
+## V8: stored B-reps and the remaining element types (`rvt_shape.rs`)
+
+Checked on the public samples only (rac 2018/2021, rst 2018/2023/2025).
+
+- **Stored B-rep**: some elements do keep a planar B-rep in their tree (stairs runs and
+  landings, profile roofs, parts, masses). `Face` → `m_pFirstLoop` → `EdgeLoop` (`m_next` = local
+  id of an edge, `m_nextLoop`) → `Edge` (`m_pFace` = the two faces, `m_next` = next edge of the
+  ring, which comes back to the loop, `m_firstAndLastEdgePnts` = `[u0, v0, u1, v1]` per side in
+  the face's `Plane` parameters, feet). Local ids are mapped to tree objects (`Tree.local`).
+  Parts (`PartMaker` → `DPartData.m_oGeometry`) and masses (`FamilyInstance` holding its own
+  `Geometry`) use the same reader.
+- **Roofs** (`Roof`): the reference layer faces `m_pRefLayerFaces` (planes) are grouped by
+  direction and envelope; the thickness is the offset between parallel faces.
+- **Doors and windows**: the family's default-type solids stretched to the type's width and
+  height (`FamilySymbol` → `FamilyParams`: -1001301 width, -1001300 height, feet).
+- **Railings**: `BaseRailing` (`m_sketchId` = path, `m_continuousRailIds` = top rail and
+  handrails); `TopRail` / `HandRail` → `Path3dRailPathProvider.m_path3dId` → `Path3d` (z = top of
+  the rail), swept as a rectangular band.
+- **Curved walls**: the location arc swept by twice `m_keyRefOffset`, from the bottom to the top
+  reference planes (unit test only: no public sample has one).
+- **Topography** (`SiteSurface`): `m_drivers` → `m_pMementos` (last one) →
+  `m_fixedVerts.m_loc` and `m_boundary`; ModelCraft triangulates (Delaunay, clipped to the
+  boundary).
+- **Rebar**: `Rebar` → `RebarInstance`: `m_oCacheData` → `RebarInstCache`
+  (`m_noSelfIntersectingCenterlineCurves`, else `m_selfIntersectingCenterlineCurves`) →
+  `OneBarCenterlineCurves.m_centerlineCurves` (`GLine` / `GArc`, world feet) = the first bar;
+  bar k = that line through `m_individualBarsTrf[k]` then `m_barPositionsRelativeToFirstBarArr[k]`,
+  skipped when `m_includedBars[k] = 0`; diameter `RebarBarType.m_barModelDiameter` (feet).
+  Area / path reinforcement: `RebarInSystem` (`m_systemId`, `m_key {m_index, m_layer}`) →
+  `RebarSystem.m_layers[layer]` (`m_uncutCurves` one line per bar, `m_individualLineTrf`,
+  `m_includedUncutBars`, `m_barType`); the layer's `m_uncutRebarInstances` split its lines in
+  consecutive runs of `m_numberOfBarPositions`, run `m_index` = the element. Bars are drawn as
+  hexagonal tubes. rst 2023/2025: 334 / 334, all within 5 cm of their box.
+- **Foundations**: wall footings (`ContFooting` → `ContFootingSegment.m_pProfile` (closed loop,
+  world feet) swept along `m_pDriverCurve`); the driver stops at the wall ends, the footing at its
+  joins, so an axis-aligned footing takes its length from its box. Isolated rectangular footings
+  without family solids: the type's `m_outline` when it matches the type's
+  STRUCTURAL_FOUNDATION_WIDTH / _LENGTH (-1001568 / -1001569). rst: 36 / 36.
+
+Still boxes (or missing) on the public samples: stairs supports (`StairsSupport`, 2: the
+stringer planes do not match the element box), planting and entourage (RPC content, no geometry
+in the file), some families whose content document is not in the project (some plumbing
+fixtures, a few mullions), and windows placed at an angle whose solids fall outside their box.

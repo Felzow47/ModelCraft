@@ -17,7 +17,7 @@ const DISALLOWED_DASHES = [
 ];
 const DASH_REGEX = /[\u2014\u2013\u2011\u2012\u2015\u2212\u2010\uFE58\uFE63\uFF0D]/u;
 
-/** Repertoires ignores lors du parcours (nom de dossier, toute profondeur). */
+/** Folders skipped while walking (folder name, any depth). */
 const SKIP_DIR_NAMES = new Set([
   'node_modules',
   '.git',
@@ -36,14 +36,14 @@ const SKIP_DIR_NAMES = new Set([
   '.pack-cache',
 ]);
 
-/** Chemins relatifs de dossiers a ignorer entierement. */
+/** Relative folder paths skipped entirely. */
 const SKIP_DIR_PATHS = [
   'packages/backend/data',
-  // Profil Firefox de test de l'extension (web-ext) : fichiers du navigateur, verrouillés quand il tourne.
+  // Firefox test profile of the extension (web-ext): browser files, locked while it runs.
   'extension/.firefox-profile',
 ];
 
-/** Extensions binaires - pas de scan texte. */
+/** Binary extensions - no text scan. */
 const BINARY_EXTENSIONS = new Set([
   'png', 'jpg', 'jpeg', 'gif', 'webp', 'ico', 'icns', 'apk', 'aab', 'exe', 'dll',
   'so', 'dylib', 'jar', 'class', 'zip', 'gz', '7z', 'rar', 'pdf', 'woff', 'woff2',
