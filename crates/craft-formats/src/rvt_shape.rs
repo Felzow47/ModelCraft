@@ -1088,6 +1088,96 @@ fn thicken_down(m: &mut Mesh, z0: f32) {
     }
 }
 
+/// Terrain: the Delaunay triangulation (in plan) of surveyed points (feet), kept within
+/// the boundary polygon (indices into `pts`) when there is one. Mesh in metres.
+fn terrain(pts: &[V3], bnd: &[usize]) -> Option<Mesh> {
+    if pts.len() < 3 || pts.len() > 20000 {
+        return None;
+    }
+    let p2: Vec<[f64; 2]> = pts.iter().map(|p| [p[0], p[1]]).collect();
+    let tri = delaunay(&p2);
+    let poly: Vec<[f64; 2]> = bnd.iter().filter_map(|&k| p2.get(k).copied()).collect();
+    let mut m = Mesh::default();
+    m.pos = pts.iter().map(|p| [(p[0] * FEET) as f32, (p[1] * FEET) as f32, (p[2] * FEET) as f32]).collect();
+    for t in tri {
+        let c = [(p2[t[0]][0] + p2[t[1]][0] + p2[t[2]][0]) / 3.0, (p2[t[0]][1] + p2[t[1]][1] + p2[t[2]][1]) / 3.0];
+        if poly.len() >= 3 && !inside(c, &poly) {
+            continue;
+        }
+        m.tri.push([t[0] as u32, t[1] as u32, t[2] as u32]);
+    }
+    (!m.tri.is_empty()).then_some(m)
+}
+
+/// Delaunay triangulation (Bowyer–Watson) of points in the plane: triangles of indices,
+/// counter-clockwise. Duplicate points are skipped.
+fn delaunay(p: &[[f64; 2]]) -> Vec<[usize; 3]> {
+    let n = p.len();
+    let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+    for q in p {
+        for a in 0..2 {
+            lo[a] = lo[a].min(q[a]);
+            hi[a] = hi[a].max(q[a]);
+        }
+    }
+    let span = (hi[0] - lo[0]).max(hi[1] - lo[1]).max(1e-9);
+    let c = [(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5];
+    let mut v: Vec<[f64; 2]> = p.to_vec();
+    v.push([c[0] - 20.0 * span, c[1] - 10.0 * span]);
+    v.push([c[0] + 20.0 * span, c[1] - 10.0 * span]);
+    v.push([c[0], c[1] + 20.0 * span]);
+    let ccw = |a: [f64; 2], b: [f64; 2], c: [f64; 2]| (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+    // triangles with their circumcircle (centre, squared radius)
+    let circ = |t: [usize; 3], v: &[[f64; 2]]| {
+        let (a, b, c) = (v[t[0]], v[t[1]], v[t[2]]);
+        let d = 2.0 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]));
+        let (a2, b2, c2) = (a[0] * a[0] + a[1] * a[1], b[0] * b[0] + b[1] * b[1], c[0] * c[0] + c[1] * c[1]);
+        let ux = (a2 * (b[1] - c[1]) + b2 * (c[1] - a[1]) + c2 * (a[1] - b[1])) / d;
+        let uy = (a2 * (c[0] - b[0]) + b2 * (a[0] - c[0]) + c2 * (b[0] - a[0])) / d;
+        ([ux, uy], (a[0] - ux).powi(2) + (a[1] - uy).powi(2))
+    };
+    let mut tris: Vec<([usize; 3], [f64; 2], f64)> = Vec::new();
+    let st = [n, n + 1, n + 2];
+    let (cc, r2) = circ(st, &v);
+    tris.push((st, cc, r2));
+    let eps = 1e-12 * span * span;
+    let mut seen: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
+    for i in 0..n {
+        let q = v[i];
+        let key = ((q[0] / (span * 1e-9)).round() as i64, (q[1] / (span * 1e-9)).round() as i64);
+        if !seen.insert(key) {
+            continue;
+        }
+        let mut edges: Vec<[usize; 2]> = Vec::new();
+        tris.retain(|(t, c, r2)| {
+            if (q[0] - c[0]).powi(2) + (q[1] - c[1]).powi(2) < r2 - eps {
+                edges.extend([[t[0], t[1]], [t[1], t[2]], [t[2], t[0]]]);
+                false
+            } else {
+                true
+            }
+        });
+        // the boundary of the cavity: the edges of a single removed triangle
+        let mut count: HashMap<(usize, usize), i32> = HashMap::new();
+        for e in &edges {
+            *count.entry((e[0].min(e[1]), e[0].max(e[1]))).or_default() += 1;
+        }
+        for e in edges {
+            if count[&(e[0].min(e[1]), e[0].max(e[1]))] == 1 {
+                let mut t = [e[0], e[1], i];
+                if ccw(v[t[0]], v[t[1]], v[t[2]]) < 0.0 {
+                    t.swap(0, 1);
+                }
+                let (cc, r2) = circ(t, &v);
+                if r2.is_finite() {
+                    tris.push((t, cc, r2));
+                }
+            }
+        }
+    }
+    tris.into_iter().map(|(t, ..)| t).filter(|t| t.iter().all(|&k| k < n)).collect()
+}
+
 /// Roof slabs from their layer faces: the faces sharing a plane direction and an extent
 /// (the envelope, in plane coordinates) are the layers of one slope; the slope is the
 /// envelope's rectangle between the outermost layers. Mesh in metres.
@@ -1226,8 +1316,8 @@ fn param(tr: &Tree, id: i64) -> Option<f64> {
 
 impl Shapes {
     /// Element classes read.
-    const CLASSES: [&'static str; 25] = [
-        "Roof", "TopRail", "HandRail", "BaseRailing", "StairsRun", "StairsLanding", "PartMaker", "ProfileRoof", "SWall", "Floor", "Ceiling", "BuildingPad", "RoofSoffit", "Toposolid", "ExtrusionElem", "RevolutionElem", "SweepElem", "BlendElem", "Family", "FamilyInstance", "FamilySymbol", "VarSketch", "Sketch", "SketchPlane", "Path3d",
+    const CLASSES: [&'static str; 26] = [
+        "SiteSurface", "Roof", "TopRail", "HandRail", "BaseRailing", "StairsRun", "StairsLanding", "PartMaker", "ProfileRoof", "SWall", "Floor", "Ceiling", "BuildingPad", "RoofSoffit", "Toposolid", "ExtrusionElem", "RevolutionElem", "SweepElem", "BlendElem", "Family", "FamilyInstance", "FamilySymbol", "VarSketch", "Sketch", "SketchPlane", "Path3d",
     ];
 
     /// Element classes read, by tag.
@@ -1327,6 +1417,26 @@ impl Shapes {
     fn element(&mut self, s: &Schema, cls: &str, tr: &Tree) {
         let id = tr.id;
         match cls {
+            "SiteSurface" => {
+                // the surveyed points of the latest triangulation of each driver
+                let mut m = Mesh::default();
+                for d in tr.root.ptrs("m_drivers").iter().filter_map(|&i| tr.objs.get(i)) {
+                    let Some(mm) = d.ptrs("m_pMementos").last().and_then(|&i| tr.objs.get(i)) else { continue };
+                    let pts: Vec<V3> = mm.list("m_fixedVerts").iter().filter_map(|v| v3(v.fs("m_loc"))).collect();
+                    let bnd: Vec<usize> = mm.list("m_boundary").first().map(|b| match b.get("m_boundary") {
+                        Some(G::Is(v)) => v.iter().filter_map(|&k| usize::try_from(k).ok()).collect(),
+                        _ => vec![],
+                    }).unwrap_or_default();
+                    if let Some(t) = terrain(&pts, &bnd) {
+                        let base = m.pos.len() as u32;
+                        m.pos.extend(t.pos);
+                        m.tri.extend(t.tri.iter().map(|x| [x[0] + base, x[1] + base, x[2] + base]));
+                    }
+                }
+                if !m.tri.is_empty() {
+                    self.breps.push((id, m));
+                }
+            }
             "Roof" => {
                 if let Some(m) = layer_slabs(&planes_of(tr, "m_pRefLayerFaces")) {
                     self.breps.push((id, m));
@@ -2202,6 +2312,18 @@ pub fn classes() -> &'static [&'static str] {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn delaunay_grid() {
+        let p: Vec<[f64; 2]> = (0..25).map(|k| [(k % 5) as f64, (k / 5) as f64 + 0.01 * (k % 3) as f64]).collect();
+        let t = super::delaunay(&p);
+        // the triangles tile the convex hull (about 4 x 4), counter-clockwise
+        let area: f64 = t.iter().map(|t| {
+            let (a, b, c) = (p[t[0]], p[t[1]], p[t[2]]);
+            0.5 * ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]))
+        }).inspect(|&a| assert!(a > 0.0)).sum();
+        assert!((area - 16.0).abs() < 0.1, "{area}");
+    }
+
     #[test]
     fn curved_wall_band() {
         // quarter circle of radius 10 ft, 1 ft thick, 10 ft high
