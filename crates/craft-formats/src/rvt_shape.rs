@@ -2211,20 +2211,30 @@ impl Shapes {
             }
             // else the solids in the box (else all) stretched onto it, axis by axis, when
             // the placement keeps the axes
-            if !t.axis_aligned() {
-                continue;
-            }
-            let mut m = Mesh::default();
-            for k in 0..parts.len() {
-                if keep.is_empty() || keep.contains(&k) {
-                    append(&mut m, &parts[k], &t);
+            if t.axis_aligned() {
+                let mut m = Mesh::default();
+                for k in 0..parts.len() {
+                    if keep.is_empty() || keep.contains(&k) {
+                        append(&mut m, &parts[k], &t);
+                    }
+                }
+                if let Some(b) = m.bbox() {
+                    if fit(&mut m, b, (blo, bhi)) {
+                        st[5] += 1;
+                        out.insert(id, m);
+                        continue;
+                    }
                 }
             }
-            if let Some(b) = m.bbox() {
-                if fit(&mut m, b, (blo, bhi)) {
-                    st[5] += 1;
-                    out.insert(id, m);
+            // else, when every solid lies in the box (a box that also holds a light's
+            // throw or a fixture's clearance), the solids as placed
+            if keep.len() == parts.len() && !self.framing.iter().any(|f| f.0 == id) && !self.curtain.iter().any(|c| c.0 == id) {
+                let mut m = Mesh::default();
+                for p in parts.iter() {
+                    append(&mut m, p, &t);
                 }
+                st[5] += 1;
+                out.insert(id, m);
             }
         }
         if dbg {
