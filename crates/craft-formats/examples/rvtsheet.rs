@@ -8,7 +8,7 @@ fn main() {
     if std::env::var_os("FRAMES").is_some() {
         for f in &s.view_frames {
             let name = s.browser.iter().find(|r| r.id == f.id).map(|r| format!("{:?} {:?}", r.kind, r.label)).unwrap_or_default();
-            eprintln!("frame {} {name}: dir {:?} up {:?} region {:?}", f.id, f.dir, f.up, f.region);
+            eprintln!("frame {} {name}: dir {:?} up {:?} region {:?} clip {:?}", f.id, f.dir, f.up, f.region, f.clip.map(|c| (c.lo, c.hi)));
         }
     }
     let only: Option<i64> = a.get(2).and_then(|x| x.parse().ok());

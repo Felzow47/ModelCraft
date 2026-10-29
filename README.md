@@ -320,9 +320,12 @@ moteur : `WGPU_BACKEND=dx12|vulkan|gl`.
   **arêtes** des éléments qu'elles voient, découpées par la zone cadrée ; textes ; images des rendus).
   Pas encore : masquage des arêtes cachées, hachures, cotes, étiquettes et symboles des vues placées,
   styles de ligne. Une vue de plan, coupe, élévation ou 3D s'ouvre avec **sa direction et son
-  orientation** (plans pivotés compris) et, quand sa zone cadrée est active, **cadrée dessus** ; la
-  plage de vue et la zone cadrée ne masquent pas encore le reste de la maquette. La navigation 3D
-  (orbite, panoramique, zoom) reste celle de ModelCraft.
+  orientation** (plans pivotés compris) et, quand sa zone cadrée est active, **cadrée dessus**. Ce que
+  la vue ne montre pas est **masqué comme dans Revit** : plage de vue des plans (plan de coupe,
+  profondeur, niveaux au-dessus / en dessous, plans de plafond regardant vers le haut), zone cadrée,
+  découpe lointaine des coupes et élévations, zone de coupe 3D des vues 3D ; les parties coupées sont
+  fermées en gris foncé. Les ciseaux de la pastille « Vue : … » affichent ou masquent le reste. La
+  navigation 3D (orbite, panoramique, zoom) reste celle de ModelCraft.
 - **Parasolid `.x_t`** : non supporté (aucun lecteur libre) ; exporter en STEP. Les fichiers SolidWorks
   sans maillage d'affichage contiennent pourtant leur B-rep Parasolid (flux `Config-N-Partition`,
   « TRANSMIT FILE » binaire) : un lecteur indépendant du format XT (documenté publiquement par

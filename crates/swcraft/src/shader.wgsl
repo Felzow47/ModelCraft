@@ -21,6 +21,12 @@ struct Globals {
     fwd: vec4<f32>,
     // x: headlight
     light3: vec4<f32>,
+    // view clip box (Revit crop / view range / section box): axes with lower bound in w,
+    // upper bounds in xyz, w > 0.5 when on
+    box_a0: vec4<f32>,
+    box_a1: vec4<f32>,
+    box_a2: vec4<f32>,
+    box_hi: vec4<f32>,
 };
 
 struct Pass {
@@ -82,8 +88,17 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
     return pow(c, vec3<f32>(2.2));
 }
 
+fn boxed(p: vec3<f32>) -> bool {
+    if (g.box_hi.w < 0.5) {
+        return false;
+    }
+    let d = vec3<f32>(dot(p, g.box_a0.xyz), dot(p, g.box_a1.xyz), dot(p, g.box_a2.xyz));
+    let lo = vec3<f32>(g.box_a0.w, g.box_a1.w, g.box_a2.w);
+    return any(d < lo) || any(d > g.box_hi.xyz);
+}
+
 fn cut(p: vec3<f32>) -> bool {
-    return g.params.y > 0.5 && dot(p, g.clip.xyz) > g.clip.w;
+    return (g.params.y > 0.5 && dot(p, g.clip.xyz) > g.clip.w) || boxed(p);
 }
 
 @fragment
@@ -105,7 +120,7 @@ fn fs_mesh(i: VsOut, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32> 
     let own = mix(g.base_color.rgb, i.color.rgb * texel.rgb, i.color.a);
     let base_srgb = mix(own, i.tint.rgb, i.tint.a);
     // inside of a sectioned solid: flat cap colour
-    if (g.params.y > 0.5 && dot(n, v) < 0.0) {
+    if ((g.params.y > 0.5 || g.box_hi.w > 0.5) && dot(n, v) < 0.0) {
         return vec4<f32>(srgb_to_linear(g.cap.rgb), i.opacity);
     }
     if (dot(n, v) < 0.0) {

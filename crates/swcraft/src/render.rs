@@ -62,6 +62,12 @@ struct Globals {
     eye: [f32; 4],
     fwd: [f32; 4],
     light3: [f32; 4],
+    /// view clip box: three axes (xyz) with their lower bound (w), upper bounds (xyz) and
+    /// on flag (w)
+    box_a0: [f32; 4],
+    box_a1: [f32; 4],
+    box_a2: [f32; 4],
+    box_hi: [f32; 4],
 }
 
 /// Largest single GPU buffer we create. wgpu's default `max_buffer_size` is 256 MiB and many
@@ -449,6 +455,9 @@ pub struct ViewSettings {
     pub light: Light,
     /// Section plane (normal, offset) when active.
     pub section: Option<([f32; 3], f32)>,
+    /// What the opened view keeps (Revit crop, view range, section box): (axes, lower
+    /// bounds, upper bounds) of an oriented box in world space, bounds along each axis.
+    pub view_clip: Option<([[f32; 3]; 3], [f32; 3], [f32; 3])>,
     pub cap_color: [f32; 3],
     /// Edges are drawn this far (world units) closer to the camera than the faces, so they
     /// never sink into the surface at some angles.
@@ -720,6 +729,10 @@ impl Renderer {
                 [b.x, b.y, b.z, vs.edge_push]
             },
             light3: [l.head, 0.0, 0.0, 0.0],
+            box_a0: vs.view_clip.map_or([1.0, 0.0, 0.0, 0.0], |c| [c.0[0][0], c.0[0][1], c.0[0][2], c.1[0]]),
+            box_a1: vs.view_clip.map_or([0.0, 1.0, 0.0, 0.0], |c| [c.0[1][0], c.0[1][1], c.0[1][2], c.1[1]]),
+            box_a2: vs.view_clip.map_or([0.0, 0.0, 1.0, 0.0], |c| [c.0[2][0], c.0[2][1], c.0[2][2], c.1[2]]),
+            box_hi: vs.view_clip.map_or([0.0; 4], |c| [c.2[0], c.2[1], c.2[2], 1.0]),
         };
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&g));
         // pixel offsets for thick edges: a small disc of passes

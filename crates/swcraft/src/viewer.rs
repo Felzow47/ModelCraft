@@ -770,7 +770,9 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
         bg_bottom,
         light: Light::preset(st.lighting),
         section: doc.section_plane(),
-        cap_color: col_f(t.accent.lerp_to_gamma(Color32::BLACK, 0.25)),
+        view_clip: doc.active_view_clip(),
+        // Revit shows what a view cuts as dark poché; the section tool keeps the accent colour
+        cap_color: if doc.active_view_clip().is_some() && doc.section_plane().is_none() { [0.16, 0.16, 0.18] } else { col_f(t.accent.lerp_to_gamma(Color32::BLACK, 0.25)) },
         // about two pixels' worth of depth at the focus distance: enough to beat rasterisation
         // differences between lines and faces, small enough not to show hidden edges
         edge_push: 2.0 * doc.camera.distance * (doc.camera.fov_y * 0.5).tan() / rect.height().max(1.0) * (1.5 + st.edge_width),
@@ -833,12 +835,25 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
     if let Some(r) = doc.view_ctx.and_then(|i| doc.scene.as_ref().and_then(|s| s.browser.get(i))).cloned() {
         let label = browser_label(&r.label, r.kind);
         let g = ui.painter().layout_no_wrap(format!("{} : {label}", tr("Vue")), theme::medium(12.5), t.text);
-        let chip = Rect::from_min_size(rect.left_top() + vec2(12.0, 12.0), vec2(g.size().x + 44.0, 26.0));
+        let clips = doc.view_clip.is_some();
+        let extra = if clips { 24.0 } else { 0.0 };
+        let chip = Rect::from_min_size(rect.left_top() + vec2(12.0, 12.0), vec2(g.size().x + 44.0 + extra, 26.0));
         ui.painter().rect(chip, CornerRadius::same(13), t.card.gamma_multiply(0.94), Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
         ui.painter().galley(egui::pos2(chip.left() + 12.0, chip.center().y - g.size().y * 0.5), g, t.text);
         let close = Rect::from_center_size(egui::pos2(chip.right() - 15.0, chip.center().y), vec2(18.0, 18.0));
         let cr = ui.interact(close, egui::Id::new(("leave-view", doc.id)), Sense::click()).on_hover_text(tr("Revenir à toute la maquette en 3D"));
         icons::paint(ui, close, "x", 13.0, if cr.hovered() { t.text } else { t.text_muted });
+        if clips {
+            // Revit crop region / view range: hide what the view does not show, or show it all
+            let tog = Rect::from_center_size(egui::pos2(chip.right() - 39.0, chip.center().y), vec2(18.0, 18.0));
+            let on = !doc.view_clip_off;
+            let tip = if on { tr("Afficher toute la maquette (ignorer cadrage et plage de vue)") } else { tr("Appliquer le cadrage et la plage de vue de la vue") };
+            let tg = ui.interact(tog, egui::Id::new(("view-clip", doc.id)), Sense::click()).on_hover_text(tip);
+            icons::paint(ui, tog, "scissors", 13.0, if on { t.accent } else if tg.hovered() { t.text } else { t.text_muted });
+            if tg.clicked() {
+                doc.view_clip_off = on;
+            }
+        }
         if cr.clicked() {
             doc.leave_view();
         }

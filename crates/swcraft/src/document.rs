@@ -140,6 +140,11 @@ pub struct Document {
     /// The open Revit view's region (crop region × depth, display coordinates): fitting frames
     /// it instead of the whole model, as Revit opens a cropped view on its crop.
     pub view_box: Option<(Vec3, Vec3)>,
+    /// What the opened Revit view keeps of the model (crop region, plan view range, depth
+    /// clips, 3D section box), display space: (axes, lower bounds, upper bounds).
+    pub view_clip: Option<([[f32; 3]; 3], [f32; 3], [f32; 3])>,
+    /// Show the whole model while a view is open (the view clip is ignored).
+    pub view_clip_off: bool,
     pub needs_fit: bool,
     pub cam_goal: Option<(f32, f32)>,
     pub tree_filter: String,
@@ -303,6 +308,8 @@ impl Document {
             sheet_tex: Default::default(),
             sheet_cam: (1.0, egui::Vec2::ZERO),
             view_box: None,
+            view_clip: None,
+            view_clip_off: false,
             needs_fit: true,
             cam_goal: None,
             tree_filter: String::new(),
@@ -485,6 +492,8 @@ impl Document {
         };
         // the view's own direction and crop region when the file gives them
         self.view_box = None;
+        self.view_clip = None;
+        self.view_clip_off = false;
         let id = self.scene.as_ref().and_then(|s| s.browser.get(row)).map_or(-1, |r| r.id);
         let up_z = self.scene.as_ref().is_some_and(|s| s.up_z);
         let frame = self.scene.as_ref().and_then(|s| s.view_frames.iter().find(|f| f.id == id)).cloned();
@@ -498,6 +507,12 @@ impl Document {
             self.view_box = f.region.map(|(a, b)| {
                 let (a, b) = (disp(a), disp(b));
                 (a.min(b), a.max(b))
+            });
+            self.view_clip = f.clip.map(|c| {
+                let o = disp(c.orig);
+                let ax = c.axes.map(|a| disp(a).normalize_or_zero());
+                let base: [f32; 3] = std::array::from_fn(|k| o.dot(ax[k]));
+                (ax.map(|a| a.to_array()), std::array::from_fn(|k| base[k] + c.lo[k]), std::array::from_fn(|k| base[k] + c.hi[k]))
             });
         }
         if let Some(((y, p), ortho)) = goal {
@@ -517,6 +532,8 @@ impl Document {
     pub fn leave_view(&mut self) {
         self.view_ctx = None;
         self.view_box = None;
+        self.view_clip = None;
+        self.view_clip_off = false;
         self.cam_goal = Some((45f32.to_radians(), 35.264f32.to_radians()));
         self.needs_fit = true;
     }
@@ -1028,10 +1045,30 @@ impl Document {
             .collect()
     }
 
+    /// The opened view's clip box when it applies (a view is open and not shown whole).
+    pub fn active_view_clip(&self) -> Option<([[f32; 3]; 3], [f32; 3], [f32; 3])> {
+        self.view_clip.filter(|_| self.view_ctx.is_some() && !self.view_clip_off)
+    }
+
     pub fn pick(&self, o: Vec3, d: Vec3) -> Option<measure::Hit> {
         let s = self.scene.as_ref()?;
         let meshes: Vec<&sw_format::TriMesh> = s.meshes.iter().map(|m| &m.mesh).collect();
         let mut items = self.pick_items();
+        // the opened view hides what is outside its box: step past hidden hits
+        if let Some((ax, lo, hi)) = self.active_view_clip() {
+            let inside = |p: Vec3| (0..3).all(|k| (lo[k] - 1e-4..=hi[k] + 1e-4).contains(&p.dot(Vec3::from(ax[k]))));
+            let sec = self.section_plane();
+            let ok = |p: Vec3| inside(p) && sec.is_none_or(|s| p.dot(Vec3::from(s.0)) <= s.1);
+            let mut from = o;
+            for _ in 0..24 {
+                let h = measure::pick(&meshes, &items, from, d)?;
+                if ok(h.point) {
+                    return Some(h);
+                }
+                from = h.point + d.normalize() * 1e-4;
+            }
+            return None;
+        }
         // the section plane hides part of the model: ignore hits there
         if let Some(sec) = self.section_plane() {
             let h = measure::pick(&meshes, &items, o, d);

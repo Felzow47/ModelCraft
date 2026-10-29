@@ -253,6 +253,17 @@ struct ViewInfo {
     image: i64,
     /// Plan cut plane height above the level (`PlanViewRange.m_offsets[0]`).
     cut: Option<f64>,
+    /// Plan view range as stored, absolute elevations (feet; ±infinity = unlimited, None =
+    /// not stored): cut plane, top, bottom, view depth (`m_cutPlaneElev`, `m_topClipElev`,
+    /// `m_bottomClipElev`, `m_levelBelowElev`).
+    range_abs: [Option<f64>; 4],
+    /// Plan view range relative to the view's level (`PlanViewRange2` offsets: cut, top,
+    /// bottom, depth) and where each is measured from (`PlanViewRange.m_levelPos`: 0 the
+    /// view's level, 1 the level above, -1 unlimited).
+    range_rel: Option<([f64; 4], [i64; 4])>,
+    /// The view's level (`m_genElemId`) and its viewer element (`m_viewerId`).
+    level: i64,
+    viewer: i64,
     strs: HashMap<i64, String>,
 }
 
@@ -265,6 +276,89 @@ struct Vp {
     scale: f64,
     view: i64,
     number: String,
+}
+
+/// A `BoundedSpace` (crop region, section box): origin, basis rows, the six offsets and
+/// which of them are active.
+fn bounded(b: &Obj) -> Option<Crop> {
+    let (orig, m, off) = (v3(b.fs("m_orig"))?, b.fs("m_basis")?, b.fs("m_boundOffset")?);
+    if m.len() != 9 || off.len() != 6 || !m.iter().chain(off.iter()).all(|x| x.is_finite()) {
+        return None;
+    }
+    let act: Vec<i64> = match b.get("m_boundActive") {
+        Some(G::Is(v)) => v.clone(),
+        _ => vec![0; 6],
+    };
+    Some(Crop {
+        orig,
+        bx: [m[0], m[1], m[2]],
+        by: [m[3], m[4], m[5]],
+        bz: [m[6], m[7], m[8]],
+        off: off.try_into().ok()?,
+        active: std::array::from_fn(|k| act.get(k).copied().unwrap_or(0) != 0),
+    })
+}
+
+/// What a view keeps of the model, in feet: an oriented box (origin, axes u, v, depth;
+/// bounds along each axis, ±infinity when unlimited).
+#[derive(Debug, Clone, Copy)]
+struct Clip {
+    orig: V3,
+    ax: [V3; 3],
+    lo: V3,
+    hi: V3,
+}
+
+impl Clip {
+    fn coords(&self, p: V3) -> V3 {
+        let d = sub(p, self.orig);
+        [dot(d, self.ax[0]), dot(d, self.ax[1]), dot(d, self.ax[2])]
+    }
+    /// The part of segment a-b (clip coordinates) inside the box.
+    fn segment(&self, a: V3, b: V3) -> Option<(V3, V3)> {
+        let (mut t0, mut t1) = (0.0f64, 1.0f64);
+        for k in 0..3 {
+            let d = b[k] - a[k];
+            for (p, q) in [(-d, a[k] - self.lo[k]), (d, self.hi[k] - a[k])] {
+                if !q.is_finite() {
+                    continue; // unlimited side
+                }
+                if p.abs() < 1e-15 {
+                    if q < 0.0 {
+                        return None;
+                    }
+                    continue;
+                }
+                let t = q / p;
+                if p < 0.0 {
+                    t0 = t0.max(t);
+                } else {
+                    t1 = t1.min(t);
+                }
+                if t0 > t1 {
+                    return None;
+                }
+            }
+        }
+        let at = |t: f64| std::array::from_fn(|k| a[k] + (b[k] - a[k]) * t);
+        Some((at(t0), at(t1)))
+    }
+    /// Range of the box lo..hi (feet, model axes) along each clip axis.
+    fn box_range(&self, lo: V3, hi: V3) -> (V3, V3) {
+        let (mut a, mut b) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+        for k in 0..8 {
+            let c = self.coords([if k & 1 == 0 { lo[0] } else { hi[0] }, if k & 2 == 0 { lo[1] } else { hi[1] }, if k & 4 == 0 { lo[2] } else { hi[2] }]);
+            for i in 0..3 {
+                a[i] = a[i].min(c[i]);
+                b[i] = b[i].max(c[i]);
+            }
+        }
+        (a, b)
+    }
+    fn misses(&self, lo: V3, hi: V3) -> bool {
+        let (a, b) = self.box_range(lo, hi);
+        (0..3).any(|k| a[k] > self.hi[k] || b[k] < self.lo[k])
+    }
 }
 
 /// Collects the sheet content, partition by partition (see [`Sheets::take`]).
@@ -289,9 +383,26 @@ pub struct Sheets {
     holder_bytes: usize,
     project: HashMap<i64, String>,
     levels: Vec<f64>,
+    /// level id → elevation (feet)
+    level_z: HashMap<i64, f64>,
+    /// 3D section boxes (`ModelClipBox` switched on), by viewer element id
+    section_boxes: HashMap<i64, Crop>,
 }
 
-const CLASSES: [&str; 11] = ["FamilySymbol", "FamilyInstance", "Viewport", "TextNote", "ScheduleInstance", "Viewer", "ImageSymbol", "ImageInstance", "ImageHolder", "ProjectInfo", "Level"];
+const CLASSES: [&str; 12] = [
+    "FamilySymbol",
+    "FamilyInstance",
+    "Viewport",
+    "TextNote",
+    "ScheduleInstance",
+    "Viewer",
+    "ImageSymbol",
+    "ImageInstance",
+    "ImageHolder",
+    "ProjectInfo",
+    "Level",
+    "ModelClipBox",
+];
 /// Most bytes of saved images kept.
 const MAX_IMAGES: usize = 96 << 20;
 
@@ -320,7 +431,7 @@ impl Sheets {
             }
         }
         for &t in s.classes.keys() {
-            if s.isa(t, "DBView") {
+            if s.isa(t, "DBView") || s.isa(t, "Viewer") {
                 want[t as usize] = true;
             }
         }
@@ -383,21 +494,21 @@ impl Sheets {
                 let Some(o) = r.obj("origin_XYZ").and_then(|o| v3(o.fs("m_xyz"))).or_else(|| v3(r.fs("m_origin"))) else { return };
                 self.sched_inst.push((owner, o, r.int("m_scheduleId").unwrap_or(-1)));
             }
-            "Viewer" => {
-                let Some(b) = r.obj("m_boundedSpace") else { return };
-                let (Some(orig), Some(m), Some(off)) = (v3(b.fs("m_orig")), b.fs("m_basis"), b.fs("m_boundOffset")) else { return };
-                if m.len() != 9 || off.len() != 6 {
+            _ if cls == "Viewer" || s.isa(t, "Viewer") => {
+                // Viewer and its kinds (Section, InteriorElevArrow…)
+                let (Some(c), Some(view)) = (r.obj("m_boundedSpace").and_then(bounded), r.int("m_dbViewId")) else {
                     return;
-                }
-                let act: Vec<i64> = match b.get("m_boundActive") {
-                    Some(G::Is(v)) => v.clone(),
-                    _ => vec![0; 6],
                 };
-                let Some(view) = r.int("m_dbViewId") else { return };
-                self.crops.insert(
-                    view,
-                    Crop { orig, bx: [m[0], m[1], m[2]], by: [m[3], m[4], m[5]], bz: [m[6], m[7], m[8]], off: off.try_into().unwrap(), active: std::array::from_fn(|k| act.get(k).copied().unwrap_or(0) != 0) },
-                );
+                self.crops.insert(view, c);
+            }
+            "ModelClipBox" => {
+                // 3D view section box: only when switched on
+                let Some(b) = r.obj("m_boundedSpace").filter(|b| b.int("m_isOn").unwrap_or(0) != 0) else {
+                    return;
+                };
+                if let (Some(c), Some(viewer)) = (bounded(b), r.int("m_viewer3dId")) {
+                    self.section_boxes.insert(viewer, c);
+                }
             }
             "ImageSymbol" => {
                 if let (Some(h), Some(w), Some(hh)) = (r.int("m_idImageHolder"), num(r, "m_widthInFeet"), num(r, "m_heightInFeet")) {
@@ -421,10 +532,37 @@ impl Sheets {
             "Level" => {
                 if let Some(z) = r.ptr("m_pSurface").and_then(|i| tr.objs.get(i)).and_then(|p| v3(p.fs("m_origin"))) {
                     self.levels.push(z[2]);
+                    self.level_z.insert(tr.id, z[2]);
                 }
             }
             _ if s.isa(t, "DBView") => {
-                let cut = tr.objs.iter().find(|o| s.name(o.tag) == "PlanViewRange").and_then(|o| o.fs("m_offsets")).and_then(|v| v.first().copied()).filter(|v| v.is_finite() && *v > 0.3); // 0: not the cut plane (seen on upper levels)
+                let pvr = tr.objs.iter().find(|o| s.name(o.tag) == "PlanViewRange");
+                let cut = pvr.and_then(|o| o.fs("m_offsets")).and_then(|v| v.first().copied()).filter(|v| v.is_finite() && *v > 0.3); // 0: not the cut plane (seen on upper levels)
+                                                                                                                                      // absolute elevations kept with the view; ±1e9 = unlimited
+                let abs = |k: &str| match r.get(k) {
+                    Some(G::F(v)) if v.is_finite() => Some(if *v <= -1e8 {
+                        f64::NEG_INFINITY
+                    } else if *v >= 1e8 {
+                        f64::INFINITY
+                    } else {
+                        *v
+                    }),
+                    _ => None,
+                };
+                let range_abs = [abs("m_cutPlaneElev"), abs("m_topClipElev"), abs("m_bottomClipElev"), abs("m_levelBelowElev")];
+                let rel = tr
+                    .objs
+                    .iter()
+                    .find(|o| s.name(o.tag) == "PlanViewRange2")
+                    .and_then(|o| o.fs("m_offsets").or_else(|| o.fs("m_viewDepthPlaneOffsets")))
+                    .or_else(|| pvr.and_then(|o| o.fs("m_offsets")));
+                let pos: Vec<i64> = match pvr.and_then(|o| o.get("m_levelPos")) {
+                    Some(G::Is(v)) => v.clone(),
+                    _ => vec![],
+                };
+                let range_rel = rel
+                    .filter(|v| v.len() >= 4 && v[..4].iter().all(|x| x.is_finite()))
+                    .map(|v| ([v[0], v[1], v[2], v[3]], std::array::from_fn(|k| pos.get(k).copied().unwrap_or(0))));
                 self.views.insert(
                     tr.id,
                     ViewInfo {
@@ -435,6 +573,10 @@ impl Sheets {
                         dir: v3(r.fs("m_viewDir")),
                         image: r.int("m_imageInstanceId").unwrap_or(-1),
                         cut,
+                        range_abs,
+                        range_rel,
+                        level: r.int("m_genElemId").unwrap_or(-1),
+                        viewer: r.int("m_viewerId").unwrap_or(-1),
                         strs: strings(tr),
                     },
                 );
@@ -462,9 +604,95 @@ impl Sheets {
         sheet_ids.iter().map(|(id, number, name)| self.sheet(*id, number, name, &edges)).filter(|s| !s.lines.is_empty() || !s.texts.is_empty() || !s.images.is_empty() || !s.views.is_empty()).collect()
     }
 
-    /// How the views look at the model: direction and up of each view, and for the cropped
-    /// plans, sections and elevations the region they show (crop region × depth clip, or the
-    /// level up to the cut plane for plans), clamped to the model's box `lo`..`hi` (metres).
+    /// A plan's view range as absolute elevations (feet): what it keeps, from the bottom of
+    /// the view depth up to the cut plane (looking down), or from the cut plane up to the
+    /// view depth (reflected ceiling plans). Infinite ends are unlimited.
+    fn plan_range(&self, v: &ViewInfo) -> Option<(f64, f64)> {
+        let lz = self.level_z.get(&v.level).copied();
+        let above = lz.and_then(|z| self.levels.iter().copied().filter(|l| *l > z + 0.01).reduce(f64::min));
+        // relative value k: None = unlimited
+        let rel = |k: usize| -> Option<Option<f64>> {
+            let (off, pos) = v.range_rel?;
+            Some(match pos[k] {
+                -1 => None,
+                1 => above.map(|z| z + off[k]),
+                _ => Some(lz? + off[k]),
+            })
+        };
+        let cut = v.range_abs[0].filter(|x| x.is_finite()).or_else(|| rel(0).flatten())?;
+        // "unlimited" in the relative range wins over a stored elevation (seen at 0)
+        let unlimited = |k: usize| v.range_rel.is_some_and(|r| r.1[k] == -1);
+        let depth: Option<f64> = if unlimited(3) { None } else { v.range_abs[3].or_else(|| rel(3).flatten()) };
+        let bottom: Option<f64> = if unlimited(2) { None } else { v.range_abs[2].or_else(|| rel(2).flatten()) };
+        let up = v.dir.is_some_and(|d| d[2] < -0.5) || depth.is_some_and(|d| d > cut + 1e-6);
+        if up {
+            Some((cut, depth.unwrap_or(f64::INFINITY)))
+        } else {
+            let lo = match (depth, bottom) {
+                (Some(d), Some(b)) => d.min(b),
+                (Some(d), None) => d,
+                _ => f64::NEG_INFINITY,
+            };
+            Some((lo.min(cut), cut))
+        }
+    }
+
+    /// What view `id` keeps of the model (feet): the 3D section box; for plans the crop
+    /// region and the view range; for sections, elevations and details the crop region and
+    /// the far / near clips. None: the whole model.
+    fn clip_of(&self, id: i64, v: &ViewInfo) -> Option<Clip> {
+        const INF: f64 = f64::INFINITY;
+        let class = v.class.to_ascii_lowercase();
+        if class.contains("3d") || class.contains("perspective") || class.contains("rendering") {
+            let c = self.section_boxes.get(&v.viewer)?;
+            let b = |k: usize| {
+                if c.active[k] {
+                    c.off[k]
+                } else if k % 2 == 0 {
+                    INF
+                } else {
+                    -INF
+                }
+            };
+            return Some(Clip { orig: c.orig, ax: [c.bx, c.by, c.bz], lo: [b(1), b(3), b(5)], hi: [b(0), b(2), b(4)] });
+        }
+        let crop = self.crops.get(&id);
+        let uv = crop.filter(|c| c.active[..4].iter().all(|a| *a));
+        let (mut lo, mut hi) =
+            ([uv.map_or(-INF, |c| c.off[1]), uv.map_or(-INF, |c| c.off[3]), -INF], [uv.map_or(INF, |c| c.off[0]), uv.map_or(INF, |c| c.off[2]), INF]);
+        let clip = if class.contains("plan") {
+            let (o, ax) = match crop {
+                Some(c) if c.bz[2].abs() > 0.9 => (c.orig, [c.bx, c.by, c.bz]),
+                _ => ([0.0; 3], [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
+            };
+            let range = self.plan_range(v).or_else(|| {
+                // no stored range: the level below the crop origin up to the cut plane
+                let c = crop?;
+                let lv = self.levels.iter().copied().filter(|z| *z <= c.orig[2] + 0.01).fold(f64::NEG_INFINITY, f64::max);
+                let lv = if lv.is_finite() && c.orig[2] - lv < 20.0 { lv } else { c.orig[2] };
+                Some((lv - 0.05, lv + v.cut.unwrap_or(4.0)))
+            });
+            if let Some((zl, zh)) = range {
+                let s = ax[2][2].signum();
+                let (a, b) = ((zl - o[2]) * s, (zh - o[2]) * s);
+                (lo[2], hi[2]) = (a.min(b), a.max(b));
+            }
+            Clip { orig: o, ax, lo, hi }
+        } else {
+            let c = crop?;
+            // sections and elevations always cut at their line (near offset), far clip if set
+            lo[2] = c.off[5];
+            if c.active[4] {
+                hi[2] = c.off[4];
+            }
+            Clip { orig: c.orig, ax: [c.bx, c.by, c.bz], lo, hi }
+        };
+        lo.iter().chain(hi.iter()).any(|x| x.is_finite()).then_some(clip)
+    }
+
+    /// How the views look at the model: direction and up of each view, and what it keeps of
+    /// the model (crop region, plan view range, depth clips, 3D section box), with the box
+    /// that encloses it clamped to the model's box `lo`..`hi` (metres).
     pub fn frames(&self, lo: [f64; 3], hi: [f64; 3]) -> Vec<ViewFrame> {
         let unit = |v: V3| {
             let l = dot(v, v).sqrt();
@@ -477,52 +705,43 @@ impl Sheets {
             if v.class == "DBViewSchedule" || v.class.contains("Sheet") || v.class.contains("Drafting") {
                 continue;
             }
-            let (Some(dir), Some(up)) = (v.dir.and_then(unit), v.vert.and_then(unit)) else { continue };
+            let (Some(dir), Some(up)) = (v.dir.and_then(unit), v.vert.and_then(unit)) else {
+                continue;
+            };
+            let clip = self.clip_of(id, v);
             let mut region = None;
-            let three_d = v.class.contains("3D") || v.class.contains("Perspective");
-            if let Some(c) = self.crops.get(&id).filter(|c| !three_d && c.active[0] && c.active[1] && c.active[2] && c.active[3]) {
-                let at = |u: f64, w: f64, d: f64| [c.orig[0] + c.bx[0] * u + c.by[0] * w + c.bz[0] * d, c.orig[1] + c.bx[1] * u + c.by[1] * w + c.bz[1] * d, c.orig[2] + c.bx[2] * u + c.by[2] * w + c.bz[2] * d];
-                // depth along bz: the model's extent, narrowed by the far / near clips
-                let mut dr = (f64::INFINITY, f64::NEG_INFINITY);
-                for k in 0..8 {
-                    let p = [if k & 1 == 0 { flo[0] } else { fhi[0] }, if k & 2 == 0 { flo[1] } else { fhi[1] }, if k & 4 == 0 { flo[2] } else { fhi[2] }];
-                    let d = dot(sub(p, c.orig), c.bz);
-                    dr = (dr.0.min(d), dr.1.max(d));
-                }
-                let plan = v.class.contains("Plan") && c.bz[2] < -0.9;
-                if plan {
-                    // level below the view origin up to the cut plane
-                    let lv = self.levels.iter().copied().filter(|z| *z <= c.orig[2] + 0.01).fold(f64::NEG_INFINITY, f64::max);
-                    let lv = if lv.is_finite() && c.orig[2] - lv < 20.0 { lv } else { c.orig[2] };
-                    let top = lv + v.cut.unwrap_or(4.0);
-                    // bz points down: depth = orig.z - z
-                    dr = (dr.0.max(c.orig[2] - top), dr.1.min(c.orig[2] - lv + 0.05));
-                } else {
-                    if c.active[4] {
-                        dr.1 = dr.1.min(c.off[4]);
-                    }
-                    if c.active[5] {
-                        dr.0 = dr.0.max(c.off[5]);
-                    }
-                }
-                if dr.0 < dr.1 {
+            let mut vclip = None;
+            if let Some(c) = clip {
+                // the box narrowed to the model, then its enclosing box
+                let (mr0, mr1) = c.box_range(flo, fhi);
+                let l: V3 = std::array::from_fn(|k| c.lo[k].max(mr0[k]));
+                let h: V3 = std::array::from_fn(|k| c.hi[k].min(mr1[k]));
+                if (0..3).all(|k| l[k] <= h[k]) {
                     let (mut a, mut b) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
                     for k in 0..8 {
-                        let p = at(if k & 1 == 0 { c.off[1] } else { c.off[0] }, if k & 2 == 0 { c.off[3] } else { c.off[2] }, if k & 4 == 0 { dr.0 } else { dr.1 });
+                        let (u, w, d) = (if k & 1 == 0 { l[0] } else { h[0] }, if k & 2 == 0 { l[1] } else { h[1] }, if k & 4 == 0 { l[2] } else { h[2] });
                         for i in 0..3 {
-                            a[i] = a[i].min(p[i]);
-                            b[i] = b[i].max(p[i]);
+                            let p = c.orig[i] + c.ax[0][i] * u + c.ax[1][i] * w + c.ax[2][i] * d;
+                            a[i] = a[i].min(p);
+                            b[i] = b[i].max(p);
                         }
                     }
-                    // clamped to the model, kept only when something is left
                     let a: V3 = std::array::from_fn(|i| a[i].max(flo[i]) * FEET);
                     let b: V3 = std::array::from_fn(|i| b[i].min(fhi[i]) * FEET);
                     if (0..3).all(|i| b[i] > a[i] - 1e-6) && (0..3).any(|i| b[i] - a[i] > 0.01) {
                         region = Some((f32s(a), f32s(b)));
                     }
                 }
+                let far = |x: f64| {
+                    if x.is_finite() {
+                        (x * FEET) as f32
+                    } else {
+                        x.signum() as f32 * sw_format::CLIP_FAR
+                    }
+                };
+                vclip = Some(sw_format::ViewClip { orig: f32s(c.orig.map(|x| x * FEET)), axes: c.ax.map(f32s), lo: c.lo.map(far), hi: c.hi.map(far) });
             }
-            out.push(ViewFrame { id, dir: f32s(dir), up: f32s(up), region });
+            out.push(ViewFrame { id, dir: f32s(dir), up: f32s(up), region, clip: vclip });
         }
         out.sort_by_key(|f| f.id);
         out
@@ -717,7 +936,7 @@ impl Sheets {
     fn draw_view(&self, out: &mut Sheet2d, view: &ViewInfo, vp: &Vp, edges: &Edges) -> Option<[f64; 4]> {
         let crop = self.crops.get(&vp.view);
         // view axes: the crop basis, else the view directions
-        let (o, bx, by, bz) = match crop {
+        let (o, bx, by, _bz) = match crop {
             Some(c) => (c.orig, c.bx, c.by, c.bz),
             None => (
                 [0.0; 3],
@@ -726,43 +945,32 @@ impl Sheets {
                 view.dir.map(|d| [-d[0], -d[1], -d[2]])?,
             ),
         };
-        let plan = view.class.contains("Plan") && bz[2] < -0.9;
-        // depth range (feet along bz from o) and crop (u, v)
-        let mut depth = (f64::NEG_INFINITY, f64::INFINITY);
-        let mut z_range = (f64::NEG_INFINITY, f64::INFINITY);
-        if plan {
-            // level below the view origin, up to the cut plane
-            let lv = self.levels.iter().copied().filter(|z| *z <= o[2] + 0.01).fold(f64::NEG_INFINITY, f64::max);
-            let lv = if lv.is_finite() && o[2] - lv < 20.0 { lv } else { o[2] };
-            z_range = (lv - 0.05, lv + view.cut.unwrap_or(4.0));
-        } else if let Some(c) = crop {
-            if c.active[4] {
-                depth.1 = c.off[4];
-            }
-            if c.active[5] {
-                depth.0 = c.off[5].min(depth.1);
-            }
-        }
+        // what the view keeps (crop, view range, depth clips), segments clipped to it
+        let keep = self.clip_of(vp.view, view);
         let mut uv_box = crop.filter(|c| c.active[0] && c.active[1] && c.active[2] && c.active[3]).map(|c| [c.off[1], c.off[3], c.off[0], c.off[2]]);
         let mut segs: Vec<[P2; 2]> = Vec::new();
-        let proj = |p: V3| -> (P2, f64) {
-            let d = sub([p[0] / FEET, p[1] / FEET, p[2] / FEET], o);
-            ([dot(d, bx), dot(d, by)], dot(d, bz))
+        let ft = |p: V3| [p[0] / FEET, p[1] / FEET, p[2] / FEET];
+        let proj = |p: V3| -> P2 {
+            let d = sub(p, o);
+            [dot(d, bx), dot(d, by)]
         };
         for (lo, hi, list) in edges.items.iter() {
-            if plan && (lo[2] / FEET > z_range.1 || hi[2] / FEET < z_range.0) {
+            if keep.is_some_and(|k| k.misses(ft(*lo), ft(*hi))) {
                 continue;
             }
-            if !plan && (depth.0.is_finite() || depth.1.is_finite()) {
-                // box depth range along bz
-                let corners = (0..8).map(|k| proj([if k & 1 == 0 { lo[0] } else { hi[0] }, if k & 2 == 0 { lo[1] } else { hi[1] }, if k & 4 == 0 { lo[2] } else { hi[2] }]).1);
-                let (dmin, dmax) = corners.fold((f64::INFINITY, f64::NEG_INFINITY), |a, d| (a.0.min(d), a.1.max(d)));
-                if dmin > depth.1 || dmax < depth.0 {
-                    continue;
-                }
-            }
             for e in list {
-                let (a, b) = (proj(e[0]).0, proj(e[1]).0);
+                let (p, q) = (ft(e[0]), ft(e[1]));
+                let (p, q) = match &keep {
+                    Some(k) => {
+                        let Some((a, b)) = k.segment(k.coords(p), k.coords(q)) else {
+                            continue;
+                        };
+                        let back = |c: V3| std::array::from_fn(|i| k.orig[i] + k.ax[0][i] * c[0] + k.ax[1][i] * c[1] + k.ax[2][i] * c[2]);
+                        (back(a), back(b))
+                    }
+                    None => (p, q),
+                };
+                let (a, b) = (proj(p), proj(q));
                 if (a[0] - b[0]).abs() + (a[1] - b[1]).abs() > 1e-4 {
                     segs.push([a, b]);
                 }

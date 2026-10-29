@@ -314,9 +314,20 @@ Lu par `crates/craft-formats/src/rvt_sheet.rs`, dans la même passe que le navig
 - Vues placées : `Viewport` (`m_offset` centre sur la feuille, `m_scale`, `m_dbViewId`,
   `m_labelOrigin` / `m_labelLength` ligne de titre, `m_detailNumber`). Zone cadrée :
   `Viewer.m_boundedSpace` (`m_orig`, `m_basis` 3×3 = axes u, v, profondeur, `m_boundOffset` 6 :
-  u max, u min, v max, v min, loin, près ; `m_boundActive`). Plans : de l'étage sous l'origine jusqu'au
-  plan de coupe `PlanViewRange.m_offsets[0]` (0 vu sur des étages supérieurs : ignoré, 4 pi par
-  défaut). Images des rendus : `ImageInstance` → `ImageSymbol` (`m_widthInFeet`, `m_heightInFeet`)
+  u max, u min, v max, v min, loin, près ; `m_boundActive`). Les coupes, élévations
+  (`Section`, `InteriorElevArrow`…) sont des sous-classes de `Viewer` : tester `isa("Viewer")`.
+  La vue 3D a la classe `DBView3d`. Plage de vue des plans (`DBView`, pieds) : valeurs absolues
+  `m_cutPlaneElev`, `m_topClipElev`, `m_bottomClipElev`, `m_depthClipElev` quand elles sont
+  remplies, sinon `PlanViewRange2.m_offsets` (coupe, haut, bas, profondeur) relatifs à
+  `m_levelPos` (0 = niveau de la vue `m_genElemId`, 1 = niveau au-dessus, -1 = illimité ; -1
+  l'emporte sur une valeur stockée à 0, vu sur un plan de masse). L'ancien `PlanViewRange` peut
+  être tout à 0. Plan regardant vers le haut (plan de plafond, `m_viewDir.z < 0` ou profondeur
+  au-dessus de la coupe) : de la coupe à la profondeur ; sinon de min(profondeur, bas) à la coupe.
+  Coupes : la coupe est toujours au trait (`off[5]` appliqué), la découpe lointaine `off[4]`
+  seulement si active. Zone de coupe 3D : `ModelClipBox` (`m_isOn`, `m_viewer3dId` → `Viewer`
+  de la vue 3D, `m_boundedSpace`). `ViewFrame.clip` : boîte orientée (axes, bornes, ±1e7 pour
+  illimité) appliquée par le shader (masquage + fermeture des faces coupées) et par la sélection,
+  et utilisée pour couper les arêtes des vues placées sur les feuilles (Liang-Barsky 3D). Images des rendus : `ImageInstance` → `ImageSymbol` (`m_widthInFeet`, `m_heightInFeet`)
   → `ImageHolder.m_pRasterImage.m_compressedImage` (PNG / JPEG / BMP / GIF).
 - Direction des vues (`DBView`) : `m_viewDir` vers l'observateur (comme `View.ViewDirection` de
   l'API), `m_vertDir` haut de l'écran, `m_horzDir` droite ; vérifié sur les élévations Nord (+y) /

@@ -497,6 +497,8 @@ pub static EN: &[(&str, &str)] = &[
     ("vue de démarrage", "starting view"),
     ("Voir la maquette en 3D", "Show the model in 3D"),
     ("Revenir à toute la maquette en 3D", "Back to the whole model in 3D"),
+    ("Afficher toute la maquette (ignorer cadrage et plage de vue)", "Show the whole model (ignore crop and view range)"),
+    ("Appliquer le cadrage et la plage de vue de la vue", "Apply the view's crop and view range"),
     ("Vue de démarrage du projet (Revit s'ouvre sur cette vue)", "Project starting view (Revit opens on this view)"),
     ("Contenu 2D (cartouche, vues placées, textes) pas encore lu", "2D content (title block, placed views, texts) not read yet"),
     ("double-clic pour ouvrir la vue", "double-click to open the view"),

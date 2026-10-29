@@ -192,7 +192,23 @@ pub struct ViewFrame {
     pub dir: [f32; 3],
     pub up: [f32; 3],
     pub region: Option<([f32; 3], [f32; 3])>,
+    /// What the view hides (crop region, plan view range, depth clip, 3D section box), when
+    /// the file gives it: only the model inside this box is drawn.
+    pub clip: Option<ViewClip>,
 }
+
+/// An oriented box in model coordinates (metres, z up): a point `p` is kept when, for each
+/// axis `k`, `lo[k] <= dot(p - orig, axes[k]) <= hi[k]`. Unlimited sides are ±[`CLIP_FAR`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ViewClip {
+    pub orig: [f32; 3],
+    pub axes: [[f32; 3]; 3],
+    pub lo: [f32; 3],
+    pub hi: [f32; 3],
+}
+
+/// Bound of an unlimited side of a [`ViewClip`] (metres).
+pub const CLIP_FAR: f32 = 1.0e7;
 
 /// What is drawn on a sheet, in paper metres (x right, y up): title block lines and texts,
 /// the placed views (frame, title, their model edges or saved image), texts and schedules.
