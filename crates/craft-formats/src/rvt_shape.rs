@@ -914,6 +914,14 @@ pub struct Shapes {
     sym_size: HashMap<i64, (f64, f64)>,
     /// Meshes of the boundary representations stored by stairs, landings, parts and roofs.
     breps: Vec<(i64, Mesh)>,
+    /// Rebar: id, bar type, bars (centre lines, feet).
+    rebar: Vec<(i64, i64, Vec<Vec<V3>>)>,
+    /// Bars of rebar systems: (system id, layer, index) → (bar type, centre line).
+    system_bars: HashMap<(i64, i64, i64), (i64, Vec<Vec<V3>>)>,
+    /// Bars in systems: id, system id, layer, index.
+    bars_in_system: Vec<(i64, i64, i64, i64)>,
+    /// Bar diameters (feet) by bar type.
+    bar_diam: HashMap<i64, f64>,
     /// Stair runs and landings: id, id of their stairs.
     stair_parts: Vec<(i64, i64)>,
     /// Curved walls: id, location curve points (feet), half thickness, reference planes.
@@ -1084,6 +1092,60 @@ fn thicken_down(m: &mut Mesh, z0: f32) {
                 m.tri.push([a, b + n, b]);
                 m.tri.push([a, a + n, b + n]);
             }
+        }
+    }
+}
+
+/// Appends the points of a curve to a polyline, skipping the shared end point and
+/// reversing the curve when its far end is the one that touches.
+fn chain_onto(line: &mut Vec<V3>, mut pts: Vec<V3>) {
+    let d2 = |a: V3, b: V3| dot(sub(a, b), sub(a, b));
+    if let (Some(&last), Some(&first), Some(&end)) = (line.last(), pts.first(), pts.last()) {
+        if d2(last, end) < d2(last, first) {
+            pts.reverse();
+        }
+        if d2(last, pts[0]) < 1e-8 {
+            pts.remove(0);
+        }
+    }
+    line.extend(pts);
+}
+
+/// Appends a hexagonal tube of radius `r` along the polyline `line` (feet) to `m` (metres).
+fn tube(m: &mut Mesh, line: &[V3], r: f64) {
+    let line: Vec<V3> = line.iter().copied().filter(|p| p.iter().all(|x| x.is_finite())).collect();
+    if line.len() < 2 {
+        return;
+    }
+    const K: usize = 6;
+    let mut prev_u: Option<V3> = None;
+    let base = m.pos.len() as u32;
+    let mut rings = 0u32;
+    for i in 0..line.len() {
+        let a = line[i.saturating_sub(1)];
+        let b = line[(i + 1).min(line.len() - 1)];
+        let Some(t) = norm(sub(b, a)) else { continue };
+        // a frame carried along the line (no twist)
+        let u = prev_u
+            .and_then(|u| norm(sub(u, mul(t, dot(u, t)))))
+            .or_else(|| norm(cross(t, [0.0, 0.0, 1.0])))
+            .or_else(|| norm(cross(t, [1.0, 0.0, 0.0])));
+        let Some(u) = u else { continue };
+        let v = cross(t, u);
+        prev_u = Some(u);
+        for k in 0..K {
+            let ang = std::f64::consts::TAU * k as f64 / K as f64;
+            let q = add(line[i], add(mul(u, r * ang.cos()), mul(v, r * ang.sin())));
+            m.pos.push([(q[0] * FEET) as f32, (q[1] * FEET) as f32, (q[2] * FEET) as f32]);
+        }
+        rings += 1;
+    }
+    for i in 0..rings.saturating_sub(1) {
+        for k in 0..K as u32 {
+            let (a, b) = (base + i * K as u32 + k, base + i * K as u32 + (k + 1) % K as u32);
+            let (c, d) = (a + K as u32, b + K as u32);
+            m.tri.push([a, b, d]);
+            m.tri.push([a, d, c]);
         }
     }
 }
@@ -1316,8 +1378,8 @@ fn param(tr: &Tree, id: i64) -> Option<f64> {
 
 impl Shapes {
     /// Element classes read.
-    const CLASSES: [&'static str; 26] = [
-        "SiteSurface", "Roof", "TopRail", "HandRail", "BaseRailing", "StairsRun", "StairsLanding", "PartMaker", "ProfileRoof", "SWall", "Floor", "Ceiling", "BuildingPad", "RoofSoffit", "Toposolid", "ExtrusionElem", "RevolutionElem", "SweepElem", "BlendElem", "Family", "FamilyInstance", "FamilySymbol", "VarSketch", "Sketch", "SketchPlane", "Path3d",
+    const CLASSES: [&'static str; 30] = [
+        "Rebar", "RebarInSystem", "RebarSystem", "RebarBarType", "SiteSurface", "Roof", "TopRail", "HandRail", "BaseRailing", "StairsRun", "StairsLanding", "PartMaker", "ProfileRoof", "SWall", "Floor", "Ceiling", "BuildingPad", "RoofSoffit", "Toposolid", "ExtrusionElem", "RevolutionElem", "SweepElem", "BlendElem", "Family", "FamilyInstance", "FamilySymbol", "VarSketch", "Sketch", "SketchPlane", "Path3d",
     ];
 
     /// Element classes read, by tag.
@@ -1417,6 +1479,107 @@ impl Shapes {
     fn element(&mut self, s: &Schema, cls: &str, tr: &Tree) {
         let id = tr.id;
         match cls {
+            "RebarBarType" => {
+                if let Some(G::F(d)) = tr.root.get("m_barModelDiameter") {
+                    if d.is_finite() && *d > 0.0 {
+                        self.bar_diam.insert(id, *d);
+                    }
+                }
+            }
+            "Rebar" => {
+                // the first bar's centre line, repeated at each included bar position
+                let Some(ri) = tr.objs.iter().find(|o| s.name(o.tag) == "RebarInstance") else { return };
+                let Some(cache) = ri.ptr("m_oCacheData").and_then(|k| tr.objs.get(k)) else { return };
+                let one = ["m_noSelfIntersectingCenterlineCurves", "m_selfIntersectingCenterlineCurves"]
+                    .iter()
+                    .find_map(|f| cache.ptrs(f).first().and_then(|&k| tr.objs.get(k)));
+                let Some(one) = one else { return };
+                let mut line: Vec<V3> = Vec::new();
+                for c in one.ptrs("m_centerlineCurves").iter().filter_map(|&k| tr.objs.get(k)) {
+                    chain_onto(&mut line, curve_points(c, s));
+                }
+                if line.len() < 2 {
+                    return;
+                }
+                let inc = match ri.get("m_includedBars") {
+                    Some(G::Is(v)) => v.clone(),
+                    _ => vec![],
+                };
+                let pos: Vec<Option<Trf>> = ri.list("m_barPositionsRelativeToFirstBarArr").iter().map(Trf::from).collect();
+                let ind: Vec<Option<Trf>> = ri.list("m_individualBarsTrf").iter().map(Trf::from).collect();
+                let mut bars = Vec::new();
+                for k in 0..pos.len().max(1) {
+                    if inc.get(k).is_some_and(|&v| v == 0) {
+                        continue;
+                    }
+                    let b: Vec<V3> = line
+                        .iter()
+                        .map(|&p| {
+                            let p = ind.get(k).and_then(|t| t.as_ref()).map_or(p, |t| t.apply(p));
+                            pos.get(k).and_then(|t| t.as_ref()).map_or(p, |t| t.apply(p))
+                        })
+                        .collect();
+                    bars.push(b);
+                }
+                self.rebar.push((id, ri.int("m_barTypeId").unwrap_or(-1), bars));
+            }
+            "RebarSystem" => {
+                for (li, l) in tr.root.list("m_layers").iter().enumerate() {
+                    let bt = l.int("m_barType").unwrap_or(-1);
+                    let trf: Vec<Option<Trf>> = l.list("m_individualLineTrf").iter().map(Trf::from).collect();
+                    let curves = match l.get("m_uncutCurves") {
+                        Some(G::Ps(v)) => v.clone(),
+                        _ => vec![],
+                    };
+                    let inc = match l.get("m_includedUncutBars") {
+                        Some(G::Is(v)) => v.clone(),
+                        _ => vec![],
+                    };
+                    let lines: Vec<Option<Vec<V3>>> = curves
+                        .iter()
+                        .enumerate()
+                        .map(|(k, c)| {
+                            let c = c.and_then(|c| tr.objs.get(c))?;
+                            if inc.get(k).is_some_and(|&v| v == 0) {
+                                return None;
+                            }
+                            let mut pts = curve_points(c, s);
+                            if let Some(Some(t)) = trf.get(k) {
+                                pts = pts.into_iter().map(|p| t.apply(p)).collect();
+                            }
+                            (pts.len() >= 2).then_some(pts)
+                        })
+                        .collect();
+                    // each uncut rebar instance (one RebarInSystem element) takes the
+                    // next run of lines, as many as its bar positions
+                    let insts = match l.get("m_uncutRebarInstances") {
+                        Some(G::Ps(v)) => v.clone(),
+                        _ => vec![],
+                    };
+                    let mut at = 0usize;
+                    for (k, inst) in insts.iter().enumerate() {
+                        let n = if insts.len() == 1 {
+                            lines.len()
+                        } else {
+                            inst.and_then(|i| tr.objs.get(i))
+                                .and_then(|o| o.int("m_numberOfBarPositions"))
+                                .unwrap_or(0)
+                                .max(0) as usize
+                        };
+                        let end = (at + n).min(lines.len());
+                        let group: Vec<Vec<V3>> = lines[at..end].iter().flatten().cloned().collect();
+                        at = end;
+                        if !group.is_empty() {
+                            self.system_bars.insert((id, li as i64, k as i64), (bt, group));
+                        }
+                    }
+                }
+            }
+            "RebarInSystem" => {
+                if let (Some(sys), Some(key)) = (tr.root.int("m_systemId"), tr.root.obj("m_key")) {
+                    self.bars_in_system.push((id, sys, key.int("m_layer").unwrap_or(0), key.int("m_index").unwrap_or(0)));
+                }
+            }
             "SiteSurface" => {
                 // the surveyed points of the latest triangulation of each driver
                 let mut m = Mesh::default();
@@ -1701,6 +1864,28 @@ impl Shapes {
             out.entry(g).or_insert(m);
         }
         self.rails_and_railings(boxes, &mut out);
+        // rebar: bars as hexagonal tubes of the bar type's diameter
+        let diam = |bt: i64| self.bar_diam.get(&bt).copied().unwrap_or(0.04);
+        for (id, bt, bars) in &self.rebar {
+            let mut m = Mesh::default();
+            for b in bars {
+                tube(&mut m, b, diam(*bt) / 2.0);
+            }
+            if !m.tri.is_empty() {
+                out.insert(*id, m);
+            }
+        }
+        for &(id, sys, layer, k) in &self.bars_in_system {
+            if let Some((bt, lines)) = self.system_bars.get(&(sys, layer, k)) {
+                let mut m = Mesh::default();
+                for line in lines {
+                    tube(&mut m, line, diam(*bt) / 2.0);
+                }
+                if !m.tri.is_empty() {
+                    out.insert(id, m);
+                }
+            }
+        }
         for sl in &self.slabs {
             if let Some(m) = slab(sl) {
                 out.insert(sl.id, m);
