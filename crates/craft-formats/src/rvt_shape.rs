@@ -914,6 +914,8 @@ pub struct Shapes {
     sym_size: HashMap<i64, (f64, f64)>,
     /// Meshes of the boundary representations stored by stairs, landings, parts and roofs.
     breps: Vec<(i64, Mesh)>,
+    /// Stair runs and landings: id, id of their stairs.
+    stair_parts: Vec<(i64, i64)>,
     /// Curved walls: id, location curve points (feet), half thickness, reference planes.
     /// Rails (top rails, handrails): id, `Path3d` id of their top line.
     rails: Vec<(i64, i64)>,
@@ -1352,6 +1354,9 @@ impl Shapes {
                 }
             }
             "StairsRun" | "StairsLanding" | "ProfileRoof" => {
+                if let Some(g) = tr.objs.iter().find(|o| s.name(o.tag) == "StairsElementMembership").and_then(|o| o.int("m_groupId")).filter(|&g| g > 0) {
+                    self.stair_parts.push((id, g));
+                }
                 if let Some(m) = stored_brep(s, tr) {
                     self.breps.push((id, m));
                 }
@@ -1571,6 +1576,19 @@ impl Shapes {
             if let Some(m) = swept_wall(path, *half, z0, z1) {
                 out.insert(*id, m);
             }
+        }
+        // a stairs: its runs and landings
+        let mut stairs: HashMap<i64, Mesh> = HashMap::new();
+        for &(p, g) in &self.stair_parts {
+            if let Some(m) = out.get(&p) {
+                let e = stairs.entry(g).or_default();
+                let base = e.pos.len() as u32;
+                e.pos.extend(&m.pos);
+                e.tri.extend(m.tri.iter().map(|t| [t[0] + base, t[1] + base, t[2] + base]));
+            }
+        }
+        for (g, m) in stairs {
+            out.entry(g).or_insert(m);
         }
         self.rails_and_railings(boxes, &mut out);
         for sl in &self.slabs {
