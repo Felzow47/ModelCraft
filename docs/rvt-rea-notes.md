@@ -374,3 +374,15 @@ pleins) sont découpées par ce que garde la vue (zone cadrée, plage de vue, co
 dessinées dans un tampon de profondeur (2 400 px sur le grand côté). Une arête garde les
 parties devant la face la plus proche (minimum des 3 × 3 pixels voisins, tolérance 0,02 pi
 + ¼ pixel). `RVT_NO_HLR=1` : toutes les arêtes.
+
+### Éléments et catégories masqués par vue
+
+Dans l'enregistrement de la vue (`DBView…`) : `HiddenElementsViewSettings.m_hiddenElements`
+(ids des éléments masqués dans la vue) et, parmi les `m_oaDrawFilters`,
+`IckyExcludedCategoriesSetPtrWrapper.m_categoryIds` (catégories décochées dans la visibilité de
+la vue, ids négatifs des catégories intégrées) avec `m_analyticalModelsExcluded`,
+`m_modelsExcluded`, `m_annotationsExcluded`. Exemple public rst_2023, vue 3D « Central Pile »
+sans zone cadrée ni zone de coupe : seules les fondations restent, le reste de la structure est
+dans des catégories masquées. Appliqué aux vues placées sur les feuilles (pas encore à la vue 3D
+interactive, dont les composants regroupent plusieurs éléments).
+`ExtentElem` (`m_extentElemId` de la vue) : `m_idExtents` vide sur les échantillons.

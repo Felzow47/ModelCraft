@@ -274,8 +274,8 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
     };
     s.timings.decode += t1.elapsed();
     if !sheet_ids.is_empty() {
-        let model: Vec<(i64, [f64; 3], [f64; 3], Option<&crate::rvt_shape::Mesh>)> = match &boxes {
-            Ok(b) => b.iter().filter(|b| rvt_model::category_in(b.category, false).is_some()).map(|b| (b.id, b.min, b.max, meshes.get(&b.id))).collect(),
+        let model: Vec<(i64, i64, [f64; 3], [f64; 3], Option<&crate::rvt_shape::Mesh>)> = match &boxes {
+            Ok(b) => b.iter().filter(|b| rvt_model::category_in(b.category, false).is_some()).map(|b| (b.id, b.category, b.min, b.max, meshes.get(&b.id))).collect(),
             Err(_) => vec![],
         };
         s.sheets = sheets.finish(&sheet_ids, &model);

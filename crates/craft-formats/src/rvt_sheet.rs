@@ -261,6 +261,11 @@ struct ViewInfo {
     /// bottom, depth) and where each is measured from (`PlanViewRange.m_levelPos`: 0 the
     /// view's level, 1 the level above, -1 unlimited).
     range_rel: Option<([f64; 4], [i64; 4])>,
+    /// Elements hidden in this view (`HiddenElementsViewSettings.m_hiddenElements`) and the
+    /// categories switched off in its visibility settings
+    /// (`IckyExcludedCategoriesSetPtrWrapper.m_categoryIds`).
+    hidden: std::collections::HashSet<i64>,
+    hidden_cats: std::collections::HashSet<i64>,
     /// The view's level (`m_genElemId`) and its viewer element (`m_viewerId`).
     level: i64,
     viewer: i64,
@@ -581,6 +586,8 @@ impl Sheets {
                         level: r.int("m_genElemId").unwrap_or(-1),
                         viewer: r.int("m_viewerId").unwrap_or(-1),
                         strs: strings(tr),
+                        hidden: ids_of(tr, s, "HiddenElementsViewSettings", "m_hiddenElements"),
+                        hidden_cats: ids_of(tr, s, "IckyExcludedCategoriesSetPtrWrapper", "m_categoryIds"),
                     },
                 );
                 if let Some(data) = r.ptr("m_pData").and_then(|i| tr.objs.get(i)).filter(|o| s.name(o.tag) == "ScheduleData") {
@@ -600,7 +607,7 @@ impl Sheets {
 
     /// The sheets' drawings. `model`: what the placed views show, element id → (box min,
     /// max, metres; rebuilt mesh if any).
-    pub fn finish(&self, sheet_ids: &[(i64, String, String)], model: &[(i64, [f64; 3], [f64; 3], Option<&Mesh>)]) -> Vec<Sheet2d> {
+    pub fn finish(&self, sheet_ids: &[(i64, String, String)], model: &[(i64, i64, [f64; 3], [f64; 3], Option<&Mesh>)]) -> Vec<Sheet2d> {
         // model edges only when a sheet shows a model view
         let need = self.viewports.iter().any(|v| v.scale > 1e-6 && v.scale < 0.99 && self.views.get(&v.view).is_some_and(|w| w.class != "DBViewSchedule"));
         let edges = Edges::new(if need { model } else { &[] });
@@ -959,8 +966,8 @@ impl Sheets {
         let mut tris: Vec<[V3; 3]> = Vec::new();
         // drafting views draw no model, only their own lines
         let drafting = view.class.contains("Drafting");
-        for (lo, hi, list, mesh) in edges.items.iter().filter(|_| !drafting) {
-            if keep.is_some_and(|k| k.misses(ft(*lo), ft(*hi))) {
+        for (id, cat, lo, hi, list, mesh) in edges.items.iter().filter(|_| !drafting) {
+            if view.hidden.contains(id) || view.hidden_cats.contains(cat) || keep.is_some_and(|k| k.misses(ft(*lo), ft(*hi))) {
                 continue;
             }
             for e in list {
@@ -1190,10 +1197,23 @@ fn clip(a: P2, b: P2, r: [f64; 4]) -> Option<(P2, P2)> {
     Some(([a[0] + d[0] * t0, a[1] + d[1] * t0], [a[0] + d[0] * t1, a[1] + d[1] * t1]))
 }
 
+/// The ids listed in field `field` of the objects of class `class` in element `tr`.
+fn ids_of(tr: &Tree, s: &Schema, class: &str, field: &str) -> std::collections::HashSet<i64> {
+    tr.objs
+        .iter()
+        .filter(|o| s.name(o.tag) == class)
+        .filter_map(|o| match o.get(field) {
+            Some(G::Ids(v)) | Some(G::Is(v)) => Some(v.clone()),
+            _ => None,
+        })
+        .flatten()
+        .collect()
+}
+
 /// The model's drawable edges (metres): feature edges of the rebuilt meshes, box edges of
 /// the others, with each element's box and the faces that hide what is behind them.
 struct Edges<'a> {
-    items: Vec<([f64; 3], [f64; 3], Vec<[V3; 2]>, Option<&'a Mesh>)>,
+    items: Vec<(i64, i64, [f64; 3], [f64; 3], Vec<[V3; 2]>, Option<&'a Mesh>)>,
 }
 
 /// Corners of box `k` (bit 0: x, 1: y, 2: z).
@@ -1205,16 +1225,16 @@ fn corner(lo: V3, hi: V3, k: usize) -> V3 {
 const BOX_TRIS: [[usize; 3]; 12] = [[0, 1, 3], [0, 3, 2], [4, 6, 7], [4, 7, 5], [0, 4, 5], [0, 5, 1], [2, 3, 7], [2, 7, 6], [0, 2, 6], [0, 6, 4], [1, 5, 7], [1, 7, 3]];
 
 impl<'a> Edges<'a> {
-    fn new(model: &[(i64, [f64; 3], [f64; 3], Option<&'a Mesh>)]) -> Edges<'a> {
+    fn new(model: &[(i64, i64, [f64; 3], [f64; 3], Option<&'a Mesh>)]) -> Edges<'a> {
         let items = model
             .iter()
-            .map(|(_, lo, hi, mesh)| {
+            .map(|(id, cat, lo, hi, mesh)| {
                 let mesh = mesh.filter(|m| !m.tri.is_empty());
                 let list = match mesh {
                     Some(m) => feature_edges(m),
                     None => [(0, 1), (2, 3), (4, 5), (6, 7), (0, 2), (1, 3), (4, 6), (5, 7), (0, 4), (1, 5), (2, 6), (3, 7)].iter().map(|&(a, b)| [corner(*lo, *hi, a), corner(*lo, *hi, b)]).collect(),
                 };
-                (*lo, *hi, list, mesh)
+                (*id, *cat, *lo, *hi, list, mesh)
             })
             .collect();
         Edges { items }
