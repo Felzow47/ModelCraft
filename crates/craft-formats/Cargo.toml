@@ -18,7 +18,7 @@ ifc = ["dep:cc"]
 sw-format = { path = "../sw-format" }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 roxmltree = "0.20"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "bmp"] }
 flate2 = "1"
 cfb = "0.15"
 glam = "0.30"

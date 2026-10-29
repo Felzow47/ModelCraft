@@ -19,6 +19,7 @@ pub mod rvt_browser;
 pub mod rvt_geom;
 pub mod rvt_model;
 pub mod rvt_shape;
+pub mod rvt_sheet;
 pub mod stl;
 pub mod tds;
 pub mod xml3d;
@@ -234,6 +235,8 @@ pub fn empty_scene(path: &Path, format: &'static str) -> Scene {
         timings: Timings::default(),
         up_z: true,
         browser: Vec::new(),
+        sheets: Vec::new(),
+        view_frames: Vec::new(),
     }
 }
 

@@ -176,6 +176,66 @@ pub struct Scene {
     pub up_z: bool,
     /// Read-only document browser (Revit "Navigateur de projet"), flattened in display order.
     pub browser: Vec<BrowserNode>,
+    /// 2D content of the sheets (Revit "Feuilles"), by sheet element id (`BrowserNode::id`).
+    pub sheets: Vec<Sheet2d>,
+    /// How each Revit view looks at the model (direction, up, cropped region), by view id.
+    pub view_frames: Vec<ViewFrame>,
+}
+
+/// A Revit view's camera as stored in the file, in model coordinates (metres, z up): `dir`
+/// points from the model towards the viewer (Revit `ViewDirection`), `up` is the screen up
+/// (`UpDirection`), `region` the box the view's crop region and depth clip enclose (None:
+/// the whole model).
+#[derive(Debug, Clone, Default)]
+pub struct ViewFrame {
+    pub id: i64,
+    pub dir: [f32; 3],
+    pub up: [f32; 3],
+    pub region: Option<([f32; 3], [f32; 3])>,
+}
+
+/// What is drawn on a sheet, in paper metres (x right, y up): title block lines and texts,
+/// the placed views (frame, title, their model edges or saved image), texts and schedules.
+#[derive(Debug, Clone, Default)]
+pub struct Sheet2d {
+    pub id: i64,
+    /// Paper extents: min x, min y, max x, max y.
+    pub extent: [f32; 4],
+    /// Title block, annotation and frame lines (polylines).
+    pub lines: Vec<Vec<[f32; 2]>>,
+    /// Model edges inside the placed views (segments), drawn thinner.
+    pub fine: Vec<[[f32; 2]; 2]>,
+    pub texts: Vec<Text2d>,
+    pub images: Vec<Image2d>,
+    pub views: Vec<Viewport2d>,
+}
+
+/// A text on a sheet: `pos` is the anchor given by `halign` (0 left, 1 centre, 2 right) and
+/// `valign` (0 top, 1 middle, 2 bottom); `dir` the base line direction; `height` the letter
+/// height (paper metres).
+#[derive(Debug, Clone, Default)]
+pub struct Text2d {
+    pub pos: [f32; 2],
+    pub dir: [f32; 2],
+    pub height: f32,
+    pub halign: u8,
+    pub valign: u8,
+    pub text: String,
+}
+
+/// A raster image placed on a sheet (rendered views, imported images), `rect` in paper metres.
+#[derive(Debug, Clone)]
+pub struct Image2d {
+    pub rect: [f32; 4],
+    pub image: std::sync::Arc<Rgba>,
+}
+
+/// A view placed on a sheet: its frame (paper metres), the view element id and its name.
+#[derive(Debug, Clone, Default)]
+pub struct Viewport2d {
+    pub rect: [f32; 4],
+    pub view_id: i64,
+    pub name: String,
 }
 
 /// What a browser row stands for (drives its icon).
@@ -901,6 +961,8 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
         timings,
         up_z: false,
         browser: Vec::new(),
+        sheets: Vec::new(),
+        view_frames: Vec::new(),
     })
 }
 

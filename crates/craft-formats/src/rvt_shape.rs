@@ -95,7 +95,7 @@ impl Frame {
 // ------------------------------------------------------------------ curves and loops
 
 /// Points along a curve object (feet), start to end.
-fn curve_points(c: &Obj, s: &Schema) -> Vec<V3> {
+pub(crate) fn curve_points(c: &Obj, s: &Schema) -> Vec<V3> {
     let ep = c.fs("m_endParams").unwrap_or(&[]);
     let (t0, t1) = match ep {
         [a, b, ..] if a.is_finite() && b.is_finite() => (*a, *b),
@@ -367,16 +367,16 @@ pub struct Trf {
 }
 
 impl Trf {
-    fn from(o: &Obj) -> Option<Trf> {
+    pub(crate) fn from(o: &Obj) -> Option<Trf> {
         let m = o.fs("m_3x3")?;
         let or = v3(o.fs("m_or"))?;
         (m.len() == 9 && m.iter().all(|x| x.is_finite())).then(|| Trf { m: m.try_into().unwrap(), or })
     }
-    fn apply(&self, p: V3) -> V3 {
+    pub(crate) fn apply(&self, p: V3) -> V3 {
         let m = &self.m;
         [m[0] * p[0] + m[3] * p[1] + m[6] * p[2] + self.or[0], m[1] * p[0] + m[4] * p[1] + m[7] * p[2] + self.or[1], m[2] * p[0] + m[5] * p[1] + m[8] * p[2] + self.or[2]]
     }
-    fn lin(&self, p: V3) -> V3 {
+    pub(crate) fn lin(&self, p: V3) -> V3 {
         let m = &self.m;
         [m[0] * p[0] + m[3] * p[1] + m[6] * p[2], m[1] * p[0] + m[4] * p[1] + m[7] * p[2], m[2] * p[0] + m[5] * p[1] + m[8] * p[2]]
     }
@@ -507,7 +507,8 @@ impl Shapes {
     /// Element classes read.
     const CLASSES: [&'static str; 12] = ["SWall", "Floor", "Ceiling", "BuildingPad", "RoofSoffit", "Toposolid", "ExtrusionElem", "FamilyInstance", "FamilySymbol", "VarSketch", "Sketch", "SketchPlane"];
 
-    pub fn partition(&mut self, s: &Schema, d: &[u8], w: usize) {
+    /// Element classes read, by tag.
+    pub fn wants(s: &Schema) -> Vec<bool> {
         let mut want = vec![false; 65536];
         for c in Self::CLASSES {
             if let Some(t) = s.tag_of(c) {
@@ -519,16 +520,24 @@ impl Shapes {
                 want[t as usize] = true;
             }
         }
-        elements(s, d, w, &|t| want[t as usize], |_, t, _, tr| {
-            if s.isa(t, "RbsSingleCurve") {
-                self.mep_curve(s, s.name(t), tr);
-            } else {
-                self.element(s, s.name(t), tr)
-            }
-        });
+        want
     }
 
-    fn mep_curve(&mut self, s: &Schema, cls: &str, tr: Tree) {
+    /// One decoded element (of a class in [`Self::wants`]).
+    pub fn take(&mut self, s: &Schema, t: u16, tr: &Tree) {
+        if s.isa(t, "RbsSingleCurve") {
+            self.mep_curve(s, s.name(t), tr);
+        } else {
+            self.element(s, s.name(t), tr)
+        }
+    }
+
+    pub fn partition(&mut self, s: &Schema, d: &[u8], w: usize) {
+        let want = Self::wants(s);
+        elements(s, d, w, &|t| want[t as usize], |_, t, _, tr| self.take(s, t, &tr));
+    }
+
+    fn mep_curve(&mut self, s: &Schema, cls: &str, tr: &Tree) {
         let r = &tr.root;
         let num = |k: &str| match r.get(k) {
             Some(G::F(v)) if v.is_finite() && *v > 1e-4 && *v < 100.0 => Some(*v),
@@ -554,7 +563,7 @@ impl Shapes {
         self.mep.push(Mep { id: tr.id, a: at(*t0), b: at(*t1), w, h, up, round });
     }
 
-    fn element(&mut self, s: &Schema, cls: &str, tr: Tree) {
+    fn element(&mut self, s: &Schema, cls: &str, tr: &Tree) {
         let id = tr.id;
         match cls {
             "SWall" => {

@@ -229,10 +229,26 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
     // element shapes rebuilt from their parameters (walls, floors, family solids…), read with
     // the project browser in the same pass over the partitions
     let mut shapes = crate::rvt_shape::Shapes::default();
+    // and the sheets' 2D content
+    let mut sheets = crate::rvt_sheet::Sheets::default();
+    let mut sheet_ids: Vec<(i64, String, String)> = Vec::new();
     let t1 = std::time::Instant::now();
     if !family {
-        if let Some(m) = crate::rvt_browser::read_model_with(&mut cf, &names, MAX_PARTITION, &mut |sc, d, w| shapes.partition(sc, d, w)) {
+        let mut each = |sc: &crate::rvt_browser::Schema, d: &[u8], w: usize| {
+            let (a, b) = (crate::rvt_shape::Shapes::wants(sc), crate::rvt_sheet::Sheets::wants(sc));
+            crate::rvt_geom::elements(sc, d, w, &|t| a[t as usize] || b[t as usize], |_, t, _, tr| {
+                if a[t as usize] {
+                    shapes.take(sc, t, &tr);
+                }
+                if b[t as usize] {
+                    sheets.take(sc, t, &tr);
+                }
+            });
+        };
+        if let Some(m) = crate::rvt_browser::read_model_with(&mut cf, &names, MAX_PARTITION, &mut each) {
             s.browser = crate::rvt_browser::build(&m);
+            let rows: std::collections::HashSet<i64> = s.browser.iter().filter(|r| r.kind == sw_format::BrowserKind::Sheet && r.id > 0).map(|r| r.id).collect();
+            sheet_ids = m.views.iter().filter(|v| rows.contains(&v.id)).map(|v| (v.id, v.sheet_number.clone(), v.name.clone())).collect();
         }
     } else if let Some(f) = rvt_model::read_stream(&mut cf, "/Formats/Latest", 64 << 20, 64 << 20, |_| true).filter(|f| f.verified > 0) {
         let sc = crate::rvt_browser::Schema::parse(&f.data);
@@ -248,6 +264,29 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
         Err(_) => Default::default(),
     };
     s.timings.decode += t1.elapsed();
+    if !sheet_ids.is_empty() {
+        let model: Vec<(i64, [f64; 3], [f64; 3], Option<&crate::rvt_shape::Mesh>)> = match &boxes {
+            Ok(b) => b.iter().filter(|b| rvt_model::category_in(b.category, false).is_some()).map(|b| (b.id, b.min, b.max, meshes.get(&b.id))).collect(),
+            Err(_) => vec![],
+        };
+        s.sheets = sheets.finish(&sheet_ids, &model);
+    }
+    if !family {
+        // how each view looks at the model (Revit view direction, crop region)
+        let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+        if let Ok(b) = &boxes {
+            for b in b.iter().filter(|b| rvt_model::category_in(b.category, false).is_some()) {
+                for a in 0..3 {
+                    lo[a] = lo[a].min(b.min[a]);
+                    hi[a] = hi[a].max(b.max[a]);
+                }
+            }
+        }
+        if lo[0].is_finite() {
+            let rows: std::collections::HashSet<i64> = s.browser.iter().filter(|r| r.id > 0).map(|r| r.id).collect();
+            s.view_frames = sheets.frames(lo, hi).into_iter().filter(|f| rows.contains(&f.id)).collect();
+        }
+    }
     let (n, shaped) = match &boxes {
         Ok(b) => build_boxes(&mut s, b, &meshes, family),
         Err(_) => (0, 0),

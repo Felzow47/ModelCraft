@@ -547,7 +547,7 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
     let resp = ui.allocate_rect(rect, Sense::click_and_drag());
 
     if let Some(row) = doc.view_ctx.filter(|&r| doc.view_is_flat(r)) {
-        sheet_view(ui, doc, rect, row);
+        sheet_view(ui, doc, rect, row, &resp);
         loading_overlay(ui, doc, rect, cmds);
         return;
     }
@@ -1954,12 +1954,16 @@ fn explode_row(ui: &mut egui::Ui, doc: &mut Document) {
 }
 
 /// A sheet (or drafting view, legend, schedule) opened from the project browser: shown flat,
-/// like Revit's sheet view. Its 2D content (title block lines, placed views, texts) is not
-/// decoded yet, so the sheet shows its frame and title, plus the preview saved in the file.
-fn sheet_view(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, row: usize) {
+/// like Revit's sheet view. A sheet whose 2D content was read (title block, placed views,
+/// texts) is drawn from it; otherwise the frame and title, plus the preview saved in the file.
+fn sheet_view(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, row: usize, resp: &egui::Response) {
     use sw_format::BrowserKind as K;
     let t = Tokens::get(ui.ctx());
     let Some(r) = doc.scene.as_ref().and_then(|s| s.browser.get(row)).cloned() else { return };
+    if doc.scene.as_ref().is_some_and(|s| s.sheets.iter().any(|x| x.id == r.id)) {
+        sheet_2d(ui, doc, rect, &r, resp);
+        return;
+    }
     let p = ui.painter_at(rect);
     p.rect_filled(rect, CornerRadius::ZERO, t.pasteboard);
     let label = browser_label(&r.label, r.kind);
@@ -2005,6 +2009,126 @@ fn sheet_view(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, row: usize) {
             doc.leave_view();
         }
     }
+}
+
+/// A Revit sheet drawn from its 2D content (`Scene.sheets`): paper, title block lines and
+/// texts, placed views (model edges or their rendered image). Wheel zooms, drag pans,
+/// double-click on a placed view opens it (as in Revit), double-click elsewhere refits.
+fn sheet_2d(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, r: &sw_format::BrowserNode, resp: &egui::Response) {
+    let t = Tokens::get(ui.ctx());
+    let Some(sh) = doc.scene.as_ref().and_then(|s| s.sheets.iter().find(|x| x.id == r.id)).cloned() else { return };
+    let p = ui.painter_at(rect);
+    p.rect_filled(rect, CornerRadius::ZERO, t.pasteboard);
+    let e = sh.extent;
+    let (pw, ph) = ((e[2] - e[0]).max(1e-3), (e[3] - e[1]).max(1e-3));
+    let avail = vec2(rect.width() - 60.0, rect.height() - 90.0).max(vec2(120.0, 80.0));
+    let fit = (avail.x / pw).min(avail.y / ph);
+    // zoom about the pointer, pan by dragging
+    let (mut zoom, mut pan) = doc.sheet_cam;
+    let home = rect.center() - vec2(0.0, 18.0);
+    if resp.hovered() {
+        let scroll = ui.input(|i| i.smooth_scroll_delta.y + i.zoom_delta().ln() * 200.0);
+        if scroll.abs() > 0.01 {
+            let k = (scroll * 0.0025).exp();
+            let nz = (zoom * k).clamp(0.2, 200.0);
+            if let Some(m) = resp.hover_pos() {
+                let c = home + pan;
+                pan += (m - c) * (1.0 - nz / zoom);
+            }
+            zoom = nz;
+        }
+    }
+    if resp.dragged() {
+        pan += resp.drag_delta();
+    }
+    let s = fit * zoom;
+    let mid = [(e[0] + e[2]) * 0.5, (e[1] + e[3]) * 0.5];
+    let c = home + pan;
+    let to = |q: [f32; 2]| egui::pos2(c.x + (q[0] - mid[0]) * s, c.y - (q[1] - mid[1]) * s);
+    let paper = Rect::from_two_pos(to([e[0], e[1]]), to([e[2], e[3]]));
+    p.rect_filled(paper.translate(vec2(3.0, 4.0)), CornerRadius::same(2), Color32::from_black_alpha(40));
+    p.rect_filled(paper, CornerRadius::ZERO, Color32::WHITE);
+    let ink = Color32::from_gray(25);
+    let thin = Color32::from_gray(90);
+    let vis = rect.expand(4.0);
+    // placed views' images under the lines
+    if let Some(tex) = doc.sheet_tex.get(&sh.id) {
+        for (img, tx) in sh.images.iter().zip(tex) {
+            let rr = Rect::from_two_pos(to([img.rect[0], img.rect[1]]), to([img.rect[2], img.rect[3]]));
+            if rr.intersects(vis) {
+                p.image(tx.id(), rr, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+            }
+        }
+    }
+    // model edges of the placed views, thin
+    let fine = Stroke::new((s * 0.00018).clamp(0.5, 1.2), thin);
+    for seg in &sh.fine {
+        let (a, b) = (to(seg[0]), to(seg[1]));
+        if vis.intersects(Rect::from_two_pos(a, b)) {
+            p.line_segment([a, b], fine);
+        }
+    }
+    let bold = Stroke::new((s * 0.00035).clamp(0.8, 2.0), ink);
+    for l in &sh.lines {
+        let pts: Vec<egui::Pos2> = l.iter().map(|q| to(*q)).collect();
+        if pts.len() >= 2 && pts.iter().any(|q| vis.contains(*q)) || pts.windows(2).any(|w| vis.intersects(Rect::from_two_pos(w[0], w[1]))) {
+            p.add(egui::Shape::line(pts, bold));
+        }
+    }
+    // texts: Revit's size is the capital height, about 0.72 of the font size
+    for tx in &sh.texts {
+        let px = tx.height / 0.72 * s;
+        if px < 2.5 || tx.text.is_empty() {
+            continue;
+        }
+        let px = (px * 2.0).round() * 0.5;
+        let a = to(tx.pos);
+        if !vis.expand(px * 40.0).contains(a) {
+            continue;
+        }
+        let g = p.layout_no_wrap(tx.text.clone(), egui::FontId::proportional(px.min(400.0)), ink);
+        let d = vec2(tx.dir[0], -tx.dir[1]);
+        let n = vec2(-d.y, d.x);
+        let (ax, ay) = ([0.0, 0.5, 1.0][tx.halign.min(2) as usize], [0.0, 0.5, 1.0][tx.valign.min(2) as usize]);
+        let sz = g.size();
+        let pos = a - d * (ax * sz.x) - n * (ay * sz.y);
+        p.add(egui::epaint::TextShape::new(pos, g, ink).with_angle(d.y.atan2(d.x)));
+    }
+    // placed views: hover frame, double-click opens the view
+    let hover = resp.hover_pos();
+    let mut over: Option<&sw_format::Viewport2d> = None;
+    for v in &sh.views {
+        let rr = Rect::from_two_pos(to([v.rect[0], v.rect[1]]), to([v.rect[2], v.rect[3]]));
+        if hover.is_some_and(|h| rr.contains(h)) {
+            over = Some(v);
+            p.rect_stroke(rr, CornerRadius::ZERO, Stroke::new(1.5, t.accent), egui::StrokeKind::Outside);
+        }
+    }
+    let target = over.and_then(|v| doc.scene.as_ref().and_then(|sc| sc.browser.iter().position(|b| b.id == v.view_id)));
+    if let Some(v) = over {
+        let tip = if target.is_some() { format!("{}  ·  {}", v.name, tr("double-clic pour ouvrir la vue")) } else { v.name.clone() };
+        resp.clone().on_hover_text_at_pointer(tip);
+    }
+    if resp.double_clicked() {
+        match target {
+            Some(row) => doc.activate_view(row, true),
+            None => {
+                zoom = 1.0;
+                pan = egui::Vec2::ZERO;
+            }
+        }
+    }
+    if over.is_none() && resp.hovered() {
+        ui.ctx().set_cursor_icon(if resp.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Default });
+    }
+    doc.sheet_cam = (zoom, pan);
+    // caption, over the pasteboard at the bottom
+    let label = browser_label(&r.label, r.kind);
+    let head = if r.start { format!("{} : {label}  ·  {}", tr("Feuille"), tr("vue de démarrage")) } else { format!("{} : {label}", tr("Feuille")) };
+    let band = Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 52.0), rect.right_bottom());
+    p.rect_filled(band, CornerRadius::ZERO, t.pasteboard.gamma_multiply(0.92));
+    p.text(band.center_top() + vec2(0.0, 8.0), Align2::CENTER_TOP, head, theme::medium(13.0), t.text);
+    p.text(band.center_top() + vec2(0.0, 28.0), Align2::CENTER_TOP, tr("Lu dans le fichier (vues en arêtes, sans masquage) · molette : zoom · glisser : déplacer · double-clic : ouvrir une vue / recadrer"), theme::regular(11.5), t.text_muted);
 }
 
 fn empty_or_preview(ui: &mut egui::Ui, doc: &Document, rect: Rect) {

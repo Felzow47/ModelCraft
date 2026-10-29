@@ -465,7 +465,7 @@ mod tests {
         let two = concat(quad(0.0, 2), quad(10.0, 1));
         let mesh = SceneMesh { name: "p".into(), mesh: two, source: crate::MeshSource::Embedded, color: None };
         let comp = |name: &str, depth: usize, parent: Option<usize>, m: Option<usize>| SceneComponent { name: name.into(), path: String::new(), depth, parent, is_assembly: m.is_none(), world: [1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.], mesh: m, suppressed: false, hidden: false, color: None };
-        let mut s = crate::Scene { meshes: vec![mesh], components: vec![comp("asm", 0, None, None), comp("a", 1, Some(0), Some(0)), comp("b", 1, Some(0), Some(0))], path: Default::default(), kind: crate::DocKind::Assembly, container: crate::ContainerKind::Other("t"), stream_count: 0, preview: None, warnings: vec![], properties: vec![], timings: Default::default(), up_z: false, browser: vec![] };
+        let mut s = crate::Scene { meshes: vec![mesh], components: vec![comp("asm", 0, None, None), comp("a", 1, Some(0), Some(0)), comp("b", 1, Some(0), Some(0))], path: Default::default(), kind: crate::DocKind::Assembly, container: crate::ContainerKind::Other("t"), stream_count: 0, preview: None, warnings: vec![], properties: vec![], timings: Default::default(), up_z: false, browser: vec![], sheets: vec![], view_frames: vec![] };
         let n = split_assembly_parts(&mut s);
         assert_eq!(n, 4, "two instances × two bodies");
         let names: Vec<&str> = s.components.iter().map(|c| c.name.as_str()).collect();

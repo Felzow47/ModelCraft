@@ -133,6 +133,13 @@ pub struct Document {
     pub stats: Stats,
     pub mesh_va: Vec<(f64, f64)>,
     pub preview: Option<egui::TextureHandle>,
+    /// Images placed on the Revit sheets (rendered views), by sheet id, in `Sheet2d.images` order.
+    pub sheet_tex: std::collections::HashMap<i64, Vec<egui::TextureHandle>>,
+    /// Zoom and pan of the open sheet (2D only; the 3D camera is not touched).
+    pub sheet_cam: (f32, egui::Vec2),
+    /// The open Revit view's region (crop region × depth, display coordinates): fitting frames
+    /// it instead of the whole model, as Revit opens a cropped view on its crop.
+    pub view_box: Option<(Vec3, Vec3)>,
     pub needs_fit: bool,
     pub cam_goal: Option<(f32, f32)>,
     pub tree_filter: String,
@@ -293,6 +300,9 @@ impl Document {
             stats: Stats::default(),
             mesh_va: Vec::new(),
             preview: None,
+            sheet_tex: Default::default(),
+            sheet_cam: (1.0, egui::Vec2::ZERO),
+            view_box: None,
             needs_fit: true,
             cam_goal: None,
             tree_filter: String::new(),
@@ -390,6 +400,19 @@ impl Document {
             let img = egui::ColorImage::from_rgba_unmultiplied([p.width as usize, p.height as usize], &p.pixels);
             self.preview = Some(ctx.load_texture(format!("preview-{}", self.id), img, egui::TextureOptions::LINEAR));
         }
+        self.sheet_tex.clear();
+        for sh in &scene.sheets {
+            let tex = sh
+                .images
+                .iter()
+                .enumerate()
+                .map(|(k, i)| {
+                    let img = egui::ColorImage::from_rgba_unmultiplied([i.image.width as usize, i.image.height as usize], &i.image.pixels);
+                    ctx.load_texture(format!("sheet-{}-{}-{k}", self.id, sh.id), img, egui::TextureOptions::LINEAR)
+                })
+                .collect();
+            self.sheet_tex.insert(sh.id, tex);
+        }
         let before = crate::crash::gpu_errors().0;
         let up = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| GpuScene::upload(device, &scene)));
         let (after, msg) = crate::crash::gpu_errors();
@@ -451,14 +474,32 @@ impl Document {
         self.browser_open.extend(parents);
         self.browser_sel = Some(row);
         self.view_ctx = Some(row);
+        self.sheet_cam = (1.0, egui::Vec2::ZERO);
         self.show_browser = true;
         self.browser_reveal = if animate { 0 } else { 4 };
-        let goal = match kind {
+        let mut goal = match kind {
             K::Plan | K::CeilingPlan => Some(((0.0f32, 90.0f32), true)),
             K::Section | K::Elevation | K::Detail => Some(((0.0, 0.0), true)),
             K::View3d | K::Rendering => Some(((45.0, 35.264), false)),
             _ => None,
         };
+        // the view's own direction and crop region when the file gives them
+        self.view_box = None;
+        let id = self.scene.as_ref().and_then(|s| s.browser.get(row)).map_or(-1, |r| r.id);
+        let up_z = self.scene.as_ref().is_some_and(|s| s.up_z);
+        let frame = self.scene.as_ref().and_then(|s| s.view_frames.iter().find(|f| f.id == id)).cloned();
+        let model_view = matches!(kind, K::Plan | K::CeilingPlan | K::Section | K::Elevation | K::Detail | K::View3d);
+        if let (Some(f), Some((_, ortho)), true) = (frame, goal, model_view) {
+            // model (z up) to display (y up): (x, y, z) → (x, z, -y)
+            let disp = |v: [f32; 3]| if up_z { Vec3::new(v[0], v[2], -v[1]) } else { Vec3::from(v) };
+            if let Some(yp) = view_yaw_pitch(disp(f.dir), disp(f.up)) {
+                goal = Some((yp, ortho));
+            }
+            self.view_box = f.region.map(|(a, b)| {
+                let (a, b) = (disp(a), disp(b));
+                (a.min(b), a.max(b))
+            });
+        }
         if let Some(((y, p), ortho)) = goal {
             if ortho {
                 self.camera.ortho = true;
@@ -475,6 +516,7 @@ impl Document {
     /// Back to the whole model in 3D.
     pub fn leave_view(&mut self) {
         self.view_ctx = None;
+        self.view_box = None;
         self.cam_goal = Some((45f32.to_radians(), 35.264f32.to_radians()));
         self.needs_fit = true;
     }
@@ -1024,7 +1066,7 @@ impl Document {
     }
 
     pub fn fit(&mut self, aspect: f32) {
-        if let Some((lo, hi)) = self.stats.bbox {
+        if let Some((lo, hi)) = self.view_box.filter(|_| self.view_ctx.is_some()).or(self.stats.bbox) {
             self.camera.fit(lo, hi, aspect);
         }
         self.needs_fit = false;
@@ -1032,6 +1074,50 @@ impl Document {
 
     pub fn file_kind_label(&self) -> String {
         craft_formats::ext_of(&self.path).to_uppercase()
+    }
+}
+
+/// Turntable yaw and pitch (degrees, see `Camera::orientation`) looking along a Revit view:
+/// `f` points from the model to the viewer, `up` is the screen up (display coordinates). Top
+/// and bottom views take their yaw from `up` (rotated plans keep their orientation).
+fn view_yaw_pitch(f: Vec3, up: Vec3) -> Option<(f32, f32)> {
+    let f = f.try_normalize()?;
+    let pitch = f.y.clamp(-1.0, 1.0).asin();
+    let yaw = if f.y.abs() > 0.999 {
+        // orientation(yaw, ±90°) has up = ∓(sin yaw, 0, cos yaw)
+        let s = -f.y.signum();
+        (s * up.x).atan2(s * up.z)
+    } else {
+        f.x.atan2(f.z)
+    };
+    Some((yaw.to_degrees(), pitch.to_degrees()))
+}
+
+#[cfg(test)]
+mod view_tests {
+    use super::*;
+
+    #[test]
+    fn revit_view_directions() {
+        let close = |a: Vec3, b: Vec3| (a - b).length() < 1e-3;
+        let check = |f: Vec3, up: Vec3| {
+            let (y, p) = view_yaw_pitch(f, up).unwrap();
+            let r = Camera::orientation(y.to_radians(), p.to_radians());
+            assert!(close(r * Vec3::Z, f.normalize()), "dir {f:?}: {:?}", r * Vec3::Z);
+            assert!(close(r * Vec3::Y, up.normalize()), "up {up:?}: {:?}", r * Vec3::Y);
+        };
+        // plan, north up: model dir (0,0,1), up (0,1,0) → display (0,1,0), (0,0,-1)
+        check(Vec3::Y, -Vec3::Z);
+        // plan rotated 30°
+        let a = 30f32.to_radians();
+        check(Vec3::Y, Vec3::new(a.sin(), 0.0, -a.cos()));
+        // south elevation (display +z), east elevation, 3D from above
+        check(Vec3::Z, Vec3::Y);
+        check(Vec3::X, Vec3::Y);
+        let f = Vec3::new(1.0, 1.0, 1.0).normalize();
+        check(f, (Vec3::Y - f * f.y).normalize());
+        // ceiling plan, from below
+        check(-Vec3::Y, -Vec3::Z);
     }
 }
 

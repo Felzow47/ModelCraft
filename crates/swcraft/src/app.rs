@@ -758,6 +758,13 @@ impl App {
                 d.needs_fit = true;
             }
             "pan" => d.pan_tool = true,
+            v if v.starts_with("view:") => {
+                // a Revit project: open the browser row whose label contains the text
+                let want = &v[5..];
+                if let Some(row) = d.scene.as_ref().and_then(|s| s.browser.iter().position(|r| r.id > 0 && r.label.contains(want))) {
+                    d.activate_view(row, false);
+                }
+            }
             "roll" => {
                 // view cube 90° roll (cube labels must follow their faces)
                 d.camera.set_view(30.0, 25.0);

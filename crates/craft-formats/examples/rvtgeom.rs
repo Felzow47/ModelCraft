@@ -1,5 +1,7 @@
 //! Probe (local only): decode every element generically, report classes and deferred objects.
-//! Usage: rvtgeom <file> [class-substring-to-dump] [max dumps]
+//! Usage: rvtgeom <file> [class-substring-to-dump] [max dumps]; RVT_OWNER=<view id>: only the
+//! elements owned by that view (sheet content…); RVT_ID=a,b: only those elements and the elements
+//! of those family documents
 use craft_formats::rvt_browser::Schema;
 use craft_formats::rvt_geom::*;
 use std::collections::HashMap;
@@ -19,7 +21,11 @@ fn main() {
         let w = if w == 0 { 8 } else { w };
         let want = |t: u16| sc.isa(t, "Element");
         let mut fails: HashMap<String, usize> = HashMap::new();
+        let only: Option<Vec<i64>> = std::env::var("RVT_ID").ok().map(|v| v.split(',').filter_map(|x| x.parse().ok()).collect());
+        let owner: Option<i64> = std::env::var("RVT_OWNER").ok().and_then(|v| v.parse().ok());
         elements_dbg(&sc, &inf.data, w, &want, &mut |at, t, size, tr| {
+            if owner.is_some() && tr.root.int("m_ownerDBViewId") != owner { return; }
+            if let Some(ids) = &only { if !ids.contains(&tr.id) && !tr.root.int("m_famId").is_some_and(|f| ids.contains(&f)) { return; } }
             let e = by.entry(sc.name(t).to_string()).or_default();
             e.0 += 1;
             if tr.failed.is_some() { e.1 += 1; }
@@ -32,7 +38,7 @@ fn main() {
                     dumps += 1;
                     println!("== {} id {} at {at:#x} size {size} consumed {} failed {:?}", sc.name(t), tr.id, tr.end - at, tr.failed.map(|x| sc.name(x).to_string()));
                     println!("  ROOT {:?}", tr.root.fields.iter().map(|(n, g)| format!("{n}={}", short(g))).collect::<Vec<_>>());
-                    for (i, o) in tr.objs.iter().enumerate().take(60) { println!("  #{i} {} {:?}", sc.name(o.tag), o.fields.iter().map(|(n, g)| format!("{n}={}", short(g))).collect::<Vec<_>>()); }
+                    for (i, o) in tr.objs.iter().enumerate().take(std::env::var("RVT_OBJS").ok().and_then(|v| v.parse().ok()).unwrap_or(60)) { println!("  #{i} {} {:?}", sc.name(o.tag), o.fields.iter().map(|(n, g)| format!("{n}={}", short(g))).collect::<Vec<_>>()); }
                 }
             }
         }, &mut |_, t| *fails.entry(sc.name(t).to_string()).or_default() += 1);

@@ -273,3 +273,29 @@ Géométrie lue (pieds, repère projet) :
 Validation (échantillons publics + fichier sous NDA, localement) : sur 5 660 formes reconstruites du
 fichier MEP sous NDA, 4 s'écartent de plus de 5 cm de la boîte Revit ; `M_Chair-Desk.rfa` : 4/4.
 Pas encore : murs courbes, toits, lissages / balayages / révolutions, raccords MEP (familles chargées).
+
+
+## Feuilles (contenu 2D) et cadrage des vues
+
+Lu par `crates/craft-formats/src/rvt_sheet.rs`, dans la même passe que le navigateur et les formes.
+
+- Éléments possédés par une feuille : `m_ownerDBViewId` = id de la `DBViewSheet`.
+- Cartouche et symboles 2D : `FamilyInstance` (`m_pInstanceInfo.m_Trf` : `m_3x3`, `m_or`, pieds),
+  symbole `FamilySymbol` : courbes `m_nonBRepGeomPtrs` (toutes à z = 0, `m_outline.m_minmax` plat),
+  textes `m_textNoteData`, étiquettes `m_tagNoteData` (valeur = paramètre de la feuille, du projet
+  `ProjectInfo` ou intégré : -1007400 nom, -1007401 numéro, -1007402 échelle), tableaux
+  `AllScheduleInstanceRegenData` (tableau des révisions).
+- Textes : `TextNote` (texte riche RTF réduit en texte simple, `\'hh` Windows-1252, `\uN`) ;
+  `m_height` = boîte : lignes × taille × ~1,57.
+- Vues placées : `Viewport` (`m_offset` centre sur la feuille, `m_scale`, `m_dbViewId`,
+  `m_labelOrigin` / `m_labelLength` ligne de titre, `m_detailNumber`). Zone cadrée :
+  `Viewer.m_boundedSpace` (`m_orig`, `m_basis` 3×3 = axes u, v, profondeur, `m_boundOffset` 6 :
+  u max, u min, v max, v min, loin, près ; `m_boundActive`). Plans : de l'étage sous l'origine jusqu'au
+  plan de coupe `PlanViewRange.m_offsets[0]` (0 vu sur des étages supérieurs : ignoré, 4 pi par
+  défaut). Images des rendus : `ImageInstance` → `ImageSymbol` (`m_widthInFeet`, `m_heightInFeet`)
+  → `ImageHolder.m_pRasterImage.m_compressedImage` (PNG / JPEG / BMP / GIF).
+- Direction des vues (`DBView`) : `m_viewDir` vers l'observateur (comme `View.ViewDirection` de
+  l'API), `m_vertDir` haut de l'écran, `m_horzDir` droite ; vérifié sur les élévations Nord (+y) /
+  Sud (-y) et les plans (+z). `Scene.view_frames` : direction, haut et boîte de la zone cadrée ×
+  profondeur (bornée à la maquette) ; la visionneuse en tire lacet / tangage de l'orbite type
+  Blender (plans pivotés : lacet tiré du haut).

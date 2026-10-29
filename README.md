@@ -312,6 +312,15 @@ moteur : `WGPU_BACKEND=dx12|vulkan|gl`.
   partagé ou non, ouverts en lecture seule sans verrou ni synchronisation ; voir
   `docs/rvt-rea-notes.md`). Pour la géométrie complète : exporter en **IFC** depuis Revit, puis
   l'ouvrir dans ModelCraft.
+- **Revit, feuilles et vues** : une feuille ouverte depuis le navigateur est dessinée à plat avec son
+  **contenu 2D lu dans le fichier** (cartouche : traits, textes et étiquettes remplies avec les
+  paramètres de la feuille et du projet, tableau des révisions ; vues placées avec leur titre et les
+  **arêtes** des éléments qu'elles voient, découpées par la zone cadrée ; textes ; images des rendus).
+  Pas encore : masquage des arêtes cachées, hachures, cotes, étiquettes et symboles des vues placées,
+  styles de ligne. Une vue de plan, coupe, élévation ou 3D s'ouvre avec **sa direction et son
+  orientation** (plans pivotés compris) et, quand sa zone cadrée est active, **cadrée dessus** ; la
+  plage de vue et la zone cadrée ne masquent pas encore le reste de la maquette. La navigation 3D
+  (orbite, panoramique, zoom) reste celle de ModelCraft.
 - **Parasolid `.x_t`** : non supporté (aucun lecteur libre) ; exporter en STEP. Les fichiers SolidWorks
   sans maillage d'affichage contiennent pourtant leur B-rep Parasolid (flux `Config-N-Partition`,
   « TRANSMIT FILE » binaire) : un lecteur indépendant du format XT (documenté publiquement par
