@@ -13,6 +13,16 @@
 //!   `GLine`, text positions `m_ArrSegInfo[].m_origin`): dimension and extension lines, tick
 //!   marks, the measured lengths in the project length unit (`UnitsElem`, spec
 //!   `autodesk.spec.aec:length-1.0.0`);
+//! - radial dimensions (`RadialDim`: arc centre `m_center`, point on the arc `m_refPnts`,
+//!   radius `m_ArrSegInfo[0].m_values[0].m_value`, text at `m_ArrSegInfo[0].m_origin`): line
+//!   from the centre, arrow on the arc, "R" and the radius;
+//! - angular dimensions (`AngularDim`: the two points on the dimension arc `m_refPnts`, arc
+//!   centre in its `GArc`, plane normal `m_planeNormal`, angle in radians in
+//!   `m_values[0].m_value`): the arc between the two points, ticks, the angle in degrees;
+//! - spot elevations and coordinates (`SpotElevation`: point `m_refPnts`, leader bend
+//!   `m_bendOrPosPtOffset` from it, shoulder `m_horizLeaderLength`; values in
+//!   `m_ArrSegInfo[0].m_values`: elevation first, east and north next; a
+//!   `SpotCoordinateState` object marks a spot coordinate);
 //! - tags (`IndependentTag`, `RoomTag`): placement and tagged element, drawn by the sheets
 //!   with the tag symbol and the tagged element's text parameters.
 //!
@@ -26,7 +36,10 @@ use std::collections::HashMap;
 type V3 = [f64; 3];
 type P2 = [f64; 2];
 
-pub(crate) const CLASSES: [&str; 12] = [
+pub(crate) const CLASSES: [&str; 15] = [
+    "SpotElevation",
+    "RadialDim",
+    "AngularDim",
     "CurveElem",
     "GStyleElem",
     "PenWidthTableElem",
@@ -89,6 +102,31 @@ struct Dim {
     texts: Vec<V3>,
 }
 
+/// A radial or angular dimension (model feet): centre, points on the arc, text position,
+/// value (radius in feet or angle in radians), plane normal.
+#[derive(Debug)]
+struct ArcDim {
+    owner: i64,
+    angular: bool,
+    center: V3,
+    refs: Vec<V3>,
+    text: Option<V3>,
+    value: f64,
+    normal: V3,
+}
+
+/// A spot elevation or coordinate (model feet): point, leader bend, shoulder length, lines of
+/// text (values in feet, coordinate or not).
+#[derive(Debug)]
+struct Spot {
+    owner: i64,
+    at: V3,
+    bend: Option<V3>,
+    shoulder: f64,
+    values: Vec<f64>,
+    coord: bool,
+}
+
 /// A tag: owner view, tag symbol, head point (model feet), rotation, tagged element.
 #[derive(Debug)]
 pub(crate) struct Tag {
@@ -122,6 +160,10 @@ pub struct Annots {
     /// (owner, sketch, type)
     regions: Vec<(i64, i64, i64)>,
     dims: Vec<Dim>,
+    arc_dims: Vec<ArcDim>,
+    spots: Vec<Spot>,
+    /// Angle display accuracy (degrees).
+    angle_acc: Option<f64>,
     pub(crate) tags: Vec<Tag>,
     /// text parameters of rooms, family instances and types (tag labels)
     pub(crate) strs: HashMap<i64, HashMap<i64, String>>,
@@ -238,6 +280,26 @@ impl Annots {
                     self.dims.push(Dim { owner, refs, line: (o, d), texts });
                 }
             }
+            "SpotElevation" if owner > 0 => {
+                let Some(at) = v3(r.fs("m_refPnts")) else { return };
+                let values: Vec<f64> = r.list("m_ArrSegInfo").first().map(|g| g.list("m_values").iter().filter_map(|v| num(v, "m_value")).collect()).unwrap_or_default();
+                let coord = tr.objs.iter().any(|o| s.name(o.tag) == "SpotCoordinateState");
+                let leader = r.int("m_leader").unwrap_or(1) != 0;
+                let bend = v3(r.fs("m_bendOrPosPtOffset")).filter(|_| leader).map(|o| [at[0] + o[0], at[1] + o[1], at[2] + o[2]]);
+                self.spots.push(Spot { owner, at, bend, shoulder: num(r, "m_horizLeaderLength").filter(|_| leader).unwrap_or(0.0), values, coord });
+            }
+            "RadialDim" | "AngularDim" if owner > 0 => {
+                let angular = s.name(t) == "AngularDim";
+                let refs: Vec<V3> = r.fs("m_refPnts").unwrap_or(&[]).chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+                let seg = r.list("m_ArrSegInfo").first();
+                let value = seg.and_then(|g| g.list("m_values").first().and_then(|v| num(v, "m_value"))).or_else(|| seg.and_then(|g| num(g, "m_lockedValue")));
+                let center = if angular { tr.objs.iter().find(|o| s.name(o.tag) == "GArc").and_then(|a| v3(a.fs("m_center"))) } else { v3(r.fs("m_center")) };
+                let (Some(center), Some(value)) = (center, value.filter(|v| v.is_finite() && *v > 0.0)) else { return };
+                if refs.len() >= if angular { 2 } else { 1 } {
+                    let normal = v3(r.fs("m_planeNormal")).unwrap_or([0.0, 0.0, 1.0]);
+                    self.arc_dims.push(ArcDim { owner, angular, center, refs, text: seg.and_then(|g| v3(g.fs("m_origin"))), value, normal });
+                }
+            }
             "IndependentTag" if owner > 0 => {
                 let target = r
                     .obj("m_taggedEntitiesCell")
@@ -278,13 +340,16 @@ impl Annots {
                     };
                     self.unit = Some((u, num(f, "m_accuracy").filter(|a| *a > 0.0).unwrap_or(1.0)));
                 }
+                if let Some(f) = find_format(r, "autodesk.spec.aec:angle-1.0.0").or_else(|| tr.objs.iter().find_map(|o| find_format(o, "autodesk.spec.aec:angle-1.0.0"))) {
+                    self.angle_acc = num(f, "m_accuracy").filter(|a| *a > 0.0);
+                }
             }
             _ => {}
         }
     }
 
     pub fn owns(&self, view: i64) -> bool {
-        self.curves.iter().any(|c| c.owner == view) || self.regions.iter().any(|r| r.0 == view) || self.dims.iter().any(|d| d.owner == view) || self.tags.iter().any(|t| t.owner == view)
+        self.curves.iter().any(|c| c.owner == view) || self.regions.iter().any(|r| r.0 == view) || self.dims.iter().any(|d| d.owner == view) || self.arc_dims.iter().any(|d| d.owner == view) || self.spots.iter().any(|d| d.owner == view) || self.tags.iter().any(|t| t.owner == view)
     }
 
     pub(crate) fn pen(&self, n: i64) -> f64 {
@@ -440,6 +505,105 @@ impl Annots {
                 out.texts.push((pos, d, DIM_TEXT, self.length(v)));
             }
         }
+        // radial and angular dimensions
+        for dm in self.arc_dims.iter().filter(|d| d.owner == owner) {
+            let w = self.pen(1);
+            let c = proj(dm.center);
+            let read = |d: P2| if d[0] < -1e-6 || (d[0].abs() <= 1e-6 && d[1] < 0.0) { [-d[0], -d[1]] } else { d };
+            if !dm.angular {
+                let p = proj(dm.refs[0]);
+                let mut d = [p[0] - c[0], p[1] - c[1]];
+                let l = sdot(d, d).sqrt();
+                if l < 1e-9 {
+                    continue; // seen edge on
+                }
+                d = [d[0] / l, d[1] / l];
+                // the line runs from the centre to the arc, or on to the text past it
+                let tt = dm.text.map(|t| sdot([proj(t)[0] - c[0], proj(t)[1] - c[1]], d)).unwrap_or(l);
+                let end = tt.max(l);
+                out.strokes.push((vec![c, [c[0] + d[0] * end, c[1] + d[1] * end]], w, [0; 3]));
+                // arrow on the arc, pointing outwards
+                let (a, h) = (TICK * 2.0 / k, 0.35f64);
+                for sgn in [-1.0, 1.0] {
+                    let (cs, sn) = (h.cos(), h.sin() * sgn);
+                    let back = [-(d[0] * cs - d[1] * sn), -(d[0] * sn + d[1] * cs)];
+                    out.strokes.push((vec![p, [p[0] + back[0] * a, p[1] + back[1] * a]], w, [0; 3]));
+                }
+                let dr = read(d);
+                let nv = [-dr[1], dr[0]];
+                let mid = l * 0.5;
+                let pos = dm.text.map(proj).unwrap_or([c[0] + d[0] * mid + nv[0] * 0.6 / 304.8 / k, c[1] + d[1] * mid + nv[1] * 0.6 / 304.8 / k]);
+                out.texts.push((pos, dr, DIM_TEXT, format!("R {}", self.length(dm.value))));
+                continue;
+            }
+            // angular: the arc through the two points, around the centre, in the dimension's plane
+            let n = dm.normal;
+            let u0 = [dm.refs[0][0] - dm.center[0], dm.refs[0][1] - dm.center[1], dm.refs[0][2] - dm.center[2]];
+            let r0 = (u0[0] * u0[0] + u0[1] * u0[1] + u0[2] * u0[2]).sqrt();
+            if r0 < 1e-9 {
+                continue;
+            }
+            let u = [u0[0] / r0, u0[1] / r0, u0[2] / r0];
+            let v = [n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2], n[0] * u[1] - n[1] * u[0]];
+            let w2 = [dm.refs[1][0] - dm.center[0], dm.refs[1][1] - dm.center[1], dm.refs[1][2] - dm.center[2]];
+            let th = (w2[0] * v[0] + w2[1] * v[1] + w2[2] * v[2]).atan2(w2[0] * u[0] + w2[1] * u[1] + w2[2] * u[2]);
+            let at = |t: f64| proj([dm.center[0] + r0 * (t.cos() * u[0] + t.sin() * v[0]), dm.center[1] + r0 * (t.cos() * u[1] + t.sin() * v[1]), dm.center[2] + r0 * (t.cos() * u[2] + t.sin() * v[2])]);
+            let steps = ((th.abs() * 24.0).ceil() as usize).clamp(4, 96);
+            let arc: Vec<P2> = (0..=steps).map(|i| at(th * i as f64 / steps as f64)).collect();
+            let span = arc.windows(2).map(|q| ((q[1][0] - q[0][0]).powi(2) + (q[1][1] - q[0][1]).powi(2)).sqrt()).sum::<f64>();
+            if span < 1e-9 {
+                continue; // seen edge on
+            }
+            out.strokes.push((arc, w, [0; 3]));
+            for t in [0.0, th] {
+                let p = at(t);
+                let q = at(t + th.signum() * 0.01);
+                let mut d = [q[0] - p[0], q[1] - p[1]];
+                let l = sdot(d, d).sqrt().max(1e-12);
+                d = [d[0] / l, d[1] / l];
+                let nv = [-d[1], d[0]];
+                let a = [(d[0] + nv[0]) * TICK / k, (d[1] + nv[1]) * TICK / k];
+                out.strokes.push((vec![[p[0] - a[0], p[1] - a[1]], [p[0] + a[0], p[1] + a[1]]], self.pen(3), [0; 3]));
+            }
+            let (pm, qm) = (at(th * 0.5), at(th * 0.5 + 0.01));
+            let mut d = [qm[0] - pm[0], qm[1] - pm[1]];
+            let l = sdot(d, d).sqrt().max(1e-12);
+            d = read([d[0] / l, d[1] / l]);
+            let pos = dm.text.map(proj).unwrap_or(pm);
+            out.texts.push((pos, d, DIM_TEXT, self.angle(dm.value)));
+        }
+        // spot elevations and coordinates: leader, shoulder, values above it
+        for sp in self.spots.iter().filter(|d| d.owner == owner) {
+            let w = self.pen(1);
+            let p = proj(sp.at);
+            let b = sp.bend.map(proj).unwrap_or(p);
+            let dir = if b[0] >= p[0] { 1.0 } else { -1.0 };
+            let sh = sp.shoulder.max(if sp.bend.is_some() { 0.0 } else { 6.0 / 304.8 / k });
+            let e = [b[0] + dir * sh, b[1]];
+            out.strokes.push((vec![p, b, e], w, [0; 3]));
+            // a small triangle on the point
+            let a = TICK * 1.5 / k;
+            out.strokes.push((vec![p, [p[0] - a, p[1] + a * 1.6], [p[0] + a, p[1] + a * 1.6], p], w, [0; 3]));
+            let lines: Vec<String> = if sp.coord && sp.values.len() >= 3 {
+                vec![format!("N {}", self.length(sp.values[2])), format!("E {}", self.length(sp.values[1]))]
+            } else if let Some(v) = sp.values.first() {
+                vec![self.length(*v)]
+            } else {
+                continue;
+            };
+            let mid = [(b[0] + e[0]) * 0.5, b[1]];
+            for (i, t) in lines.iter().rev().enumerate() {
+                let y = mid[1] + (0.6 / 304.8 + i as f64 * DIM_TEXT * 1.4) / k;
+                out.texts.push(([mid[0], y], [1.0, 0.0], DIM_TEXT, t.clone()));
+            }
+        }
+    }
+
+    /// An angle (radians) in degrees at the project's angle accuracy.
+    pub fn angle(&self, rad: f64) -> String {
+        let acc = self.angle_acc.unwrap_or(0.01);
+        let dec = (-acc.log10()).ceil().max(0.0) as usize;
+        format!("{:.*}°", dec, (rad.to_degrees() / acc).round() * acc)
     }
 }
 

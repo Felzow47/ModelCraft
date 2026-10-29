@@ -386,3 +386,17 @@ sans zone cadrée ni zone de coupe : seules les fondations restent, le reste de 
 dans des catégories masquées. Appliqué aux vues placées sur les feuilles (pas encore à la vue 3D
 interactive, dont les composants regroupent plusieurs éléments).
 `ExtentElem` (`m_extentElemId` de la vue) : `m_idExtents` vide sur les échantillons.
+
+## Cotes radiales, angulaires et altimétriques
+
+- `RadialDim` : `m_center` = centre de l'arc, `m_refPnts[0]` = point sur l'arc,
+  `m_ArrSegInfo[0].m_values[0].m_value` = rayon (pieds), `m_ArrSegInfo[0].m_origin` = position du texte.
+  Dessin : trait du centre vers le point (prolongé jusqu'au texte), flèche sur l'arc, texte « R <rayon> ».
+- `AngularDim` : deux points sur l'arc de cote dans `m_refPnts`, centre et rayon dans l'objet `GArc`
+  associé, `m_planeNormal` = plan de la cote, valeur en radians. Précision lue dans `UnitsElem`
+  (spec `autodesk.spec.aec:angle-1.0.0`). Aucun exemple public n'en contient dans une vue de projet :
+  non validé visuellement.
+- `SpotElevation` : `m_refPnts` = point coté, `m_bendOrPosPtOffset` = coude de la ligne de repère,
+  `m_horizLeaderLength` = épaulement, valeurs = [altitude, est, nord]. La présence d'un objet
+  `SpotCoordinateState` signale une coordonnée ponctuelle (texte « N … » / « E … »).
+  Vérifié sur rst_2023 S101 (E 13062 / N 2799).
