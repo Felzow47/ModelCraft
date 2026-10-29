@@ -86,6 +86,8 @@ pub struct Tree {
     pub failed: Option<u16>,
     pub start: usize,
     pub end: usize,
+    /// Explicit local ids of the deferred objects (raw pointers `R(id)` refer to them).
+    pub local: std::collections::HashMap<u32, usize>,
 }
 
 pub struct Dec<'a> {
@@ -366,6 +368,7 @@ impl<'a> Dec<'a> {
             i += 1;
         }
         t.end = p;
+        t.local = std::mem::take(&mut self.seen);
         t.id = t.root.int("m_id").unwrap_or(i64::MIN);
         Some(t)
     }

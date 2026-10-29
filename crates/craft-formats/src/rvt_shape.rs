@@ -817,6 +817,8 @@ pub struct Shapes {
     instances: Vec<(i64, i64, i64, Trf)>,
     /// symbol id → (m_famId, m_familyId)
     symbols: HashMap<i64, (i64, i64)>,
+    /// Type width and height (feet) of the family symbols that have them (doors, windows).
+    sym_size: HashMap<i64, (f64, f64)>,
     mep: Vec<Mep>,
     /// curve-driven instance (beam, brace) → its location line (start, end), feet
     framing: Vec<(i64, V3, V3)>,
@@ -939,6 +941,54 @@ fn oriented_box(t: &Trf, lo: [f64; 3], hi: [f64; 3]) -> Option<Mesh> {
     let c = mul(add(lo, hi), 0.5 / FEET);
     let m = Mep { id: 0, a: sub(c, mul(u[0], l[0] * 0.5)), b: add(c, mul(u[0], l[0] * 0.5)), w: l[1], h: l[2], up: u[2], round: false };
     mep(&m)
+}
+
+/// Appends `m` (metres, family frame) placed by `t` (feet).
+fn append(out: &mut Mesh, m: &Mesh, t: &Trf) {
+    if m.tri.is_empty() {
+        return;
+    }
+    let flip = t.det() < 0.0;
+    let base = out.pos.len() as u32;
+    for p in &m.pos {
+        let q = t.apply([p[0] as f64 / FEET, p[1] as f64 / FEET, p[2] as f64 / FEET]);
+        out.pos.push([(q[0] * FEET) as f32, (q[1] * FEET) as f32, (q[2] * FEET) as f32]);
+    }
+    out.tri.extend(m.tri.iter().map(|tr| if flip { [tr[0] + base, tr[2] + base, tr[1] + base] } else { [tr[0] + base, tr[1] + base, tr[2] + base] }));
+}
+
+/// The family solids stretched along the family x (about the middle of the solids) to
+/// width `w` and along z (from their bottom) to height `h` (metres), placed by `t`, when
+/// the result lies within the instance box `b` (± `tol`).
+fn sized(parts: &[Mesh], pb: &[Option<([f32; 3], [f32; 3])>], w: f64, h: f64, t: &Trf, b: ([f64; 3], [f64; 3]), tol: f64) -> Option<Mesh> {
+    let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+    for (l, u) in pb.iter().flatten() {
+        for a in 0..3 {
+            lo[a] = lo[a].min(l[a]);
+            hi[a] = hi[a].max(u[a]);
+        }
+    }
+    let (ex, ez) = ((hi[0] - lo[0]) as f64, (hi[2] - lo[2]) as f64);
+    if ex < 0.05 || ez < 0.05 {
+        return None;
+    }
+    let (sx, sz) = (w / ex, h / ez);
+    if !(0.25..=4.0).contains(&sx) || !(0.25..=4.0).contains(&sz) {
+        return None;
+    }
+    let cx = (lo[0] + hi[0]) * 0.5;
+    let mut m = Mesh::default();
+    for p in parts {
+        let mut q = p.clone();
+        for v in &mut q.pos {
+            v[0] = cx + (v[0] - cx) * sx as f32;
+            v[2] = lo[2] + (v[2] - lo[2]) * sz as f32;
+        }
+        append(&mut m, &q, t);
+    }
+    let (ml, mh) = m.bbox()?;
+    let inside = (0..3).all(|a| ml[a] as f64 >= b.0[a] - tol && mh[a] as f64 <= b.1[a] + tol);
+    inside.then_some(m)
 }
 
 fn param(tr: &Tree, id: i64) -> Option<f64> {
@@ -1201,6 +1251,18 @@ impl Shapes {
             }
             "FamilySymbol" => {
                 self.symbols.insert(id, (tr.root.int("m_famId").unwrap_or(-1), tr.root.int("m_familyId").unwrap_or(-1)));
+                if let Some(ps) = tr.root.ptr("m_pParams").and_then(|k| tr.objs.get(k)) {
+                    let get = |pid: i64| {
+                        ps.list("m_params").iter().find(|p| p.int("m_paramId") == Some(pid)).and_then(|p| match p.get("m_value") {
+                            Some(G::F(v)) if v.is_finite() && *v > 0.05 => Some(*v),
+                            _ => None,
+                        })
+                    };
+                    // FAMILY_WIDTH_PARAM, FAMILY_HEIGHT_PARAM
+                    if let (Some(w), Some(h)) = (get(-1001301), get(-1001300)) {
+                        self.sym_size.insert(id, (w, h));
+                    }
+                }
             }
             _ => {}
         }
@@ -1354,18 +1416,6 @@ impl Shapes {
             memo.insert(fam, r.clone());
             r
         }
-        fn append(out: &mut Mesh, m: &Mesh, t: &Trf) {
-            if m.tri.is_empty() {
-                return;
-            }
-            let flip = t.det() < 0.0;
-            let base = out.pos.len() as u32;
-            for p in &m.pos {
-                let q = t.apply([p[0] as f64 / FEET, p[1] as f64 / FEET, p[2] as f64 / FEET]);
-                out.pos.push([(q[0] * FEET) as f32, (q[1] * FEET) as f32, (q[2] * FEET) as f32]);
-            }
-            out.tri.extend(m.tri.iter().map(|tr| if flip { [tr[0] + base, tr[2] + base, tr[1] + base] } else { [tr[0] + base, tr[1] + base, tr[2] + base] }));
-        }
         /// World box (metres) of a part's box (metres, family frame) placed by `t` (feet).
         fn placed_box(b: ([f32; 3], [f32; 3]), t: &Trf) -> ([f64; 3], [f64; 3]) {
             let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
@@ -1429,10 +1479,16 @@ impl Shapes {
                     uhi[a] = uhi[a].max(hi[a]);
                 }
             }
-            let covers = !keep.is_empty() && (0..3).all(|a| {
-                let e = bhi[a] - blo[a];
-                e < 0.1 || uhi[a] - ulo[a] >= cover * e
-            });
+            let covered = (0..3)
+                .filter(|&a| {
+                    let e = bhi[a] - blo[a];
+                    e < 0.1 || uhi[a] - ulo[a] >= cover * e
+                })
+                .count();
+            // all three axes, or two when the solids lie inside the box: a door or window
+            // whose box also holds its swing, frame depth or opening (the panel and trims
+            // span the width and height but not the whole depth)
+            let covers = !keep.is_empty() && (covered == 3 || (covered == 2 && keep.len() == parts.len()));
             if covers {
                 let mut m = Mesh::default();
                 for &k in &keep {
@@ -1446,8 +1502,18 @@ impl Shapes {
             }
             if dbg {
                 eprintln!("OFFBOX {id} sym {sym} fam {f} aligned {} parts {} in box {} box {blo:?} {bhi:?}", t.axis_aligned(), parts.len(), keep.len());
+                if std::env::var_os("RVT_SHAPE_DEBUG2").is_some() { for b in placed.iter().flatten() { eprintln!("   part {:?} {:?}", b.0, b.1); } }
             }
             st[4] += 1;
+            // a door or window of another type: the solids of the family's default type
+            // stretched to the type's width (family x) and height (family z, from the sill)
+            if let Some(&(w, h)) = self.sym_size.get(&sym) {
+                if let Some(m) = sized(&parts, &pb, w * FEET, h * FEET, &t, (blo, bhi), tol) {
+                    st[5] += 1;
+                    out.insert(id, m);
+                    continue;
+                }
+            }
             // another type (other sizes): MEP fittings and most parametric families scale
             // with their nominal size: the solids scaled about the insertion point so that
             // their box is the instance's

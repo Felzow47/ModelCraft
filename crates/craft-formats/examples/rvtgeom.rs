@@ -38,7 +38,8 @@ fn main() {
                     dumps += 1;
                     println!("== {} id {} at {at:#x} size {size} consumed {} failed {:?}", sc.name(t), tr.id, tr.end - at, tr.failed.map(|x| sc.name(x).to_string()));
                     println!("  ROOT {:?}", tr.root.fields.iter().map(|(n, g)| format!("{n}={}", short(g))).collect::<Vec<_>>());
-                    for (i, o) in tr.objs.iter().enumerate().take(std::env::var("RVT_OBJS").ok().and_then(|v| v.parse().ok()).unwrap_or(60)) { println!("  #{i} {} {:?}", sc.name(o.tag), o.fields.iter().map(|(n, g)| format!("{n}={}", short(g))).collect::<Vec<_>>()); }
+                    let rev: HashMap<usize, u32> = tr.local.iter().map(|(k, v)| (*v, *k)).collect();
+                    for (i, o) in tr.objs.iter().enumerate().take(std::env::var("RVT_OBJS").ok().and_then(|v| v.parse().ok()).unwrap_or(60)) { println!("  #{i} L{:?} {} {:?}", rev.get(&i), sc.name(o.tag), o.fields.iter().map(|(n, g)| format!("{n}={}", short(g))).collect::<Vec<_>>()); }
                 }
             }
         }, &mut |_, t| *fails.entry(sc.name(t).to_string()).or_default() += 1);
