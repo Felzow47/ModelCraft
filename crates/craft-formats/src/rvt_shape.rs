@@ -149,16 +149,57 @@ pub(crate) fn curve_points(c: &Obj, s: &Schema) -> Vec<V3> {
                 })
                 .collect()
         }
-        "GNurbSpline" => c
-            .list("m_ctrlPoints")
-            .iter()
-            .filter_map(|p| {
-                let q = v3(p.fs("m_Point"))?;
-                Some(q)
-            })
-            .collect(),
+        "GNurbSpline" => nurbs_points(c, t0, t1),
         _ => vec![],
     }
+}
+
+/// Points along a NURBS curve between parameters `t0` and `t1` (de Boor); its control polygon
+/// when its knots do not read.
+fn nurbs_points(c: &Obj, t0: f64, t1: f64) -> Vec<V3> {
+    let ctrl: Vec<(V3, f64)> = c
+        .list("m_ctrlPoints")
+        .iter()
+        .filter_map(|p| Some((v3(p.fs("m_Point"))?, p.fs("m_Weight").and_then(|w| w.first().copied()).or(match p.get("m_Weight") {
+            Some(G::F(w)) => Some(*w),
+            _ => None,
+        }).unwrap_or(1.0))))
+        .collect();
+    let polygon = || ctrl.iter().map(|c| c.0).collect::<Vec<_>>();
+    let p = c.int("m_Degree").unwrap_or(0).max(0) as usize;
+    let knots = c.fs("m_Knots").unwrap_or(&[]);
+    if p == 0 || ctrl.len() <= p || knots.len() != ctrl.len() + p + 1 || !(t1 > t0) {
+        return polygon();
+    }
+    let n = (ctrl.len() * 8).clamp(16, 192);
+    (0..=n)
+        .map(|i| {
+            let t = (t0 + (t1 - t0) * i as f64 / n as f64).clamp(knots[p], knots[ctrl.len()]);
+            // knot span
+            let mut k = p;
+            while k + 1 < ctrl.len() && t >= knots[k + 1] {
+                k += 1;
+            }
+            let mut d: Vec<[f64; 4]> = (0..=p)
+                .map(|j| {
+                    let (q, w) = ctrl[j + k - p];
+                    [q[0] * w, q[1] * w, q[2] * w, w]
+                })
+                .collect();
+            for r in 1..=p {
+                for j in (r..=p).rev() {
+                    let (a, b) = (knots[j + k - p], knots[j + 1 + k - r]);
+                    let f = if b > a { (t - a) / (b - a) } else { 0.0 };
+                    let prev = d[j - 1];
+                    for e in 0..4 {
+                        d[j][e] = prev[e] * (1.0 - f) + d[j][e] * f;
+                    }
+                }
+            }
+            let w = if d[p][3].abs() > 1e-12 { d[p][3] } else { 1.0 };
+            [d[p][0] / w, d[p][1] / w, d[p][2] / w]
+        })
+        .collect()
 }
 
 /// The curves of a `CurveLoop` chained into one closed polyline (feet).
@@ -981,6 +1022,12 @@ impl Trf {
     /// Rotation-scale part (columns: images of x, y, z) and origin.
     pub(crate) fn new(m: [f64; 9], or: V3) -> Trf {
         Trf { m, or }
+    }
+    /// `self` applied after `inner`.
+    pub(crate) fn after(&self, inner: &Trf) -> Trf {
+        let (x, y, z) = (self.lin(inner.lin([1.0, 0.0, 0.0])), self.lin(inner.lin([0.0, 1.0, 0.0])), self.lin(inner.lin([0.0, 0.0, 1.0])));
+        let m = [x[0], x[1], x[2], y[0], y[1], y[2], z[0], z[1], z[2]];
+        Trf { m, or: self.apply(inner.apply([0.0; 3])) }
     }
     pub(crate) fn from(o: &Obj) -> Option<Trf> {
         let m = o.fs("m_3x3")?;
@@ -2304,6 +2351,11 @@ impl Shapes {
                 self.content.insert(guid, r);
             }
         }
+    }
+
+    /// `Family` element -> root of its family document (after `content_docs`).
+    pub fn family_roots(&self) -> HashMap<i64, i64> {
+        self.fam_guid.iter().filter_map(|(f, g)| Some((*f, *self.content.get(g)?))).collect()
     }
 
     fn mep_curve(&mut self, s: &Schema, cls: &str, tr: &Tree) {

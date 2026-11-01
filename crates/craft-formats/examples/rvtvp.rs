@@ -13,9 +13,10 @@ fn main() {
         let inf = rd(&mut cf, &n);
         let w = craft_formats::rvt_model::walk_chain(&inf).id_width;
         let w = if w == 0 { 8 } else { w };
-        elements_dbg(&sc, &inf, w, &|t: u16| sc.name(t) == "Viewport" || std::env::var("ALL").is_ok(), &mut |_, t, _, tr| {
+        elements_dbg(&sc, &inf, w, &|t: u16| sc.name(t) == std::env::var("CLASS").unwrap_or("Viewport".into()), &mut |_, t, _, tr| {
             let v = tr.root.int("m_dbViewId").unwrap_or(0);
-            if !ids.contains(&v) && !ids.contains(&tr.id) { return; }
+            if let Ok(f) = std::env::var("FAM") { if tr.root.int("m_famId").unwrap_or(0).to_string() != f { return; } }
+            if !ids.contains(&v) && !ids.contains(&tr.id) && std::env::var("EVERY").is_err() { return; }
             println!("== {} {} failed {:?}", sc.name(t), tr.id, tr.failed.map(|x| sc.name(x).to_string()));
             println!("  {:?}", tr.root.fields.iter().filter(|(n, _)| !n.starts_with("m_pParam")).map(|(n, g)| format!("{n}={}", &format!("{g:?}").chars().take(200).collect::<String>())).collect::<Vec<_>>());
             for o in &tr.objs { println!("  {} {:?}", sc.name(o.tag), o.fields.iter().map(|(n, g)| format!("{n}={}", &format!("{g:?}").chars().take(200).collect::<String>())).collect::<Vec<_>>()); }

@@ -263,6 +263,7 @@ pub struct Text2d {
     pub bold: bool,
     /// Width its lines wrap at (paper metres; 0: no wrapping).
     pub wrap: f32,
+    pub color: [u8; 3],
 }
 
 /// A raster image placed on a sheet (rendered views, imported images), `rect` in paper metres;

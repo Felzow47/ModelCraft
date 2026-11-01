@@ -176,12 +176,14 @@ pub(crate) struct Drawn {
 #[derive(Default)]
 pub struct Annots {
     styles: HashMap<i64, Style>,
+    /// category -> colour of its projection style
+    cat_colors: HashMap<i64, [u8; 3]>,
     pens: Vec<f64>,
     /// line pattern id → (length, drawn) on paper (feet)
     line_patterns: HashMap<i64, Vec<(f64, bool)>>,
     fill_patterns: HashMap<i64, Pattern>,
-    /// filled region type → fill pattern
-    region_types: HashMap<i64, i64>,
+    /// filled region type → (fill pattern, category giving its colour)
+    region_types: HashMap<i64, (i64, i64)>,
     curves: Vec<Curve>,
     /// (owner, sketch, type)
     regions: Vec<(i64, i64, i64)>,
@@ -245,13 +247,15 @@ fn find_format<'a>(o: &'a Obj, spec: &str) -> Option<&'a Obj> {
 impl Annots {
     pub fn take(&mut self, s: &Schema, t: u16, tr: &Tree, strs: impl FnOnce() -> HashMap<i64, String>) {
         let r = &tr.root;
-        if r.int("m_famId").unwrap_or(-1) != -1 {
-            return; // family documents
+        // family documents: their lines and regions, filed under the negated document root
+        let fam = r.int("m_famId").unwrap_or(-1);
+        if fam != -1 && !(fam > 0 && matches!(s.name(t), "CurveElem" | "FilledRegion" | "GStyleElem" | "FilledRegionAttributes" | "FillPatternElem" | "LinePatternElem")) {
+            return;
         }
-        let owner = r.int("m_ownerDBViewId").unwrap_or(-1);
+        let owner = if fam > 0 { -fam } else { r.int("m_ownerDBViewId").unwrap_or(-1) };
         let obj = |k: &str| r.ptr(k).and_then(|i| tr.objs.get(i));
         match s.name(t) {
-            "CurveElem" if owner > 0 => {
+            "CurveElem" if owner != -1 => {
                 let Some(c) = obj("m_pCurveDriver").and_then(|d| d.ptr("m_pCrv")).and_then(|i| tr.objs.get(i)) else { return };
                 let pts = curve_points(c, s);
                 if pts.len() < 2 {
@@ -262,7 +266,18 @@ impl Annots {
             }
             "GStyleElem" => {
                 if let Some(g) = obj("m_pGStyle") {
-                    self.styles.insert(tr.id, Style { pen: g.int("m_penNumber").unwrap_or(1), color: color(g.int("m_color").unwrap_or(0)), pattern: g.int("m_linePatternId").unwrap_or(-3000010) });
+                    let st = Style { pen: g.int("m_penNumber").unwrap_or(1), color: color(g.int("m_color").unwrap_or(0)), pattern: g.int("m_linePatternId").unwrap_or(-3000010) };
+                    if r.int("m_gstyleType") == Some(1) {
+                        if let Some(c) = r.int("m_categoryId") {
+                            self.cat_colors.entry(c).or_insert(st.color);
+                        }
+                    }
+                    // an id shared with a family document stays the project's
+                    if fam > 0 {
+                        self.styles.entry(tr.id).or_insert(st);
+                    } else {
+                        self.styles.insert(tr.id, st);
+                    }
                 }
             }
             "PenWidthTableElem" => {
@@ -273,7 +288,11 @@ impl Annots {
             "LinePatternElem" => {
                 if let Some(p) = tr.objs.iter().find(|o| s.name(o.tag) == "LinePattern") {
                     let segs: Vec<(f64, bool)> = p.list("m_segs").iter().filter_map(|g| Some((num(g, "m_data")?, g.int("m_type")? != 1))).map(|(l, d)| (if d && l < 1e-6 { 0.6 / 304.8 } else { l }, d)).collect();
-                    self.line_patterns.insert(tr.id, segs);
+                    if fam > 0 {
+                        self.line_patterns.entry(tr.id).or_insert(segs);
+                    } else {
+                        self.line_patterns.insert(tr.id, segs);
+                    }
                 }
             }
             "FillPatternElem" => {
@@ -288,15 +307,25 @@ impl Annots {
                             Some(Grid { angle: num(g, "m_angle")?, origin: [o[0], o[1]], shift: d[0], offset: d[1], segs: g.fs("m_segs").unwrap_or(&[]).to_vec() })
                         })
                         .collect();
-                    self.fill_patterns.insert(tr.id, Pattern { grids, scale: num(p, "m_scale").filter(|s| *s > 1e-9).unwrap_or(1.0), model: p.int("m_fpTarget").unwrap_or(0) == 1 });
+                    let pat = Pattern { grids, scale: num(p, "m_scale").filter(|s| *s > 1e-9).unwrap_or(1.0), model: p.int("m_fpTarget").unwrap_or(0) == 1 };
+                    if fam > 0 {
+                        self.fill_patterns.entry(tr.id).or_insert(pat);
+                    } else {
+                        self.fill_patterns.insert(tr.id, pat);
+                    }
                 }
             }
             "FilledRegionAttributes" => {
                 if let Some(f) = r.int("m_fillPatternElemId") {
-                    self.region_types.insert(tr.id, f);
+                    let v = (f, r.obj("m_lineAndTextAttr").and_then(|a| a.int("m_categoryId")).unwrap_or(-1));
+                    if fam > 0 {
+                        self.region_types.entry(tr.id).or_insert(v);
+                    } else {
+                        self.region_types.insert(tr.id, v);
+                    }
                 }
             }
-            "FilledRegion" if owner > 0 => {
+            "FilledRegion" if owner != -1 => {
                 if let (Some(sk), Some(at)) = (r.int("m_sketchId"), r.int("m_attrId")) {
                     self.regions.push((owner, sk, at));
                 }
@@ -434,6 +463,11 @@ impl Annots {
         }
     }
 
+    /// Colour of a category (black when unknown).
+    pub(crate) fn style_color(&self, category: i64) -> [u8; 3] {
+        self.cat_colors.get(&category).copied().unwrap_or([0; 3])
+    }
+
     pub(crate) fn pen(&self, n: i64) -> f64 {
         let n = n.clamp(1, 16) as usize;
         self.pens.get(n - 1).copied().filter(|w| *w > 0.0).unwrap_or(0.00085 * n as f64)
@@ -490,9 +524,10 @@ impl Annots {
             if edges.len() < 3 {
                 continue;
             }
-            let Some(pat) = self.region_types.get(at).and_then(|f| self.fill_patterns.get(f)) else { continue };
+            let Some(&(f, style)) = self.region_types.get(at) else { continue };
+            let Some(pat) = self.fill_patterns.get(&f) else { continue };
             if pat.grids.is_empty() {
-                out.fills.push((fill(&edges), [0; 3]));
+                out.fills.push((fill(&edges), self.style_color(style)));
                 continue;
             }
             let unit = if pat.model { pat.scale } else { pat.scale / k };
