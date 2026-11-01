@@ -1,9 +1,6 @@
-<<<<<<< HEAD
-<<<<<<< HEAD
-# ModelCraft - la visionneuse 3D ultime (V4)
-=======
+
+
 # ModelCraft - the ultimate 3D viewer (V4)
->>>>>>> 639014b (docs: English README with multi-format screenshots of public samples (SolidWorks, STEP, IFC, glTF, Revit); English NOTICE, references, Revit notes, installer strings and script comments)
 
 <p align="center"><img src="assets/logo/modelcraft_512.png" width="256" alt="ModelCraft logo"></p>
 
@@ -376,15 +373,7 @@ ModelCraft restarts with Vulkan then OpenGL. Force a backend with `WGPU_BACKEND=
 
 ## Licence
 
-<<<<<<< HEAD
-MIT pour le code de ModelCraft. Code d'interface adapté de PdfCraft (MIT/Apache-2.0),
-icônes Lucide (ISC), polices Inter et JetBrains Mono (OFL), OpenCascade (LGPL-2.1) :
-détails dans [`NOTICE.md`](NOTICE.md).
-=======
-# ModelCraft
->>>>>>> 5acfdbd (Initial commit)
-=======
+
 MIT for ModelCraft's code. Interface code adapted from PdfCraft (MIT/Apache-2.0), Lucide icons
 (ISC), Inter and JetBrains Mono fonts (OFL), OpenCascade (LGPL-2.1), assimp (BSD-3), web-ifc
 (MPL-2.0): details in [`NOTICE.md`](NOTICE.md).
->>>>>>> 639014b (docs: English README with multi-format screenshots of public samples (SolidWorks, STEP, IFC, glTF, Revit); English NOTICE, references, Revit notes, installer strings and script comments)
