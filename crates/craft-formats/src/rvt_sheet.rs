@@ -310,6 +310,8 @@ struct Sym {
     /// Schedules drawn by the symbol (revision schedule of a title block): (position, table).
     tables: Vec<(V3, Table)>,
     outline: Option<[f64; 4]>,
+    /// Its text parameters.
+    strs: HashMap<i64, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -352,6 +354,8 @@ struct ViewInfo {
     /// hidden), and the worksets it hides once resolved against the global setting.
     ws_set: HashMap<[u8; 16], bool>,
     hidden_ws: std::collections::HashSet<u32>,
+    /// Paper size of a model foot (1 / `m_scale`).
+    scale: f64,
     /// The view's level (`m_genElemId`) and its viewer element (`m_viewerId`).
     level: i64,
     viewer: i64,
@@ -459,6 +463,8 @@ pub struct Sheets {
     symbols: HashMap<i64, Sym>,
     /// (owner view, symbol, transform)
     instances: Vec<(i64, i64, Trf)>,
+    /// Text parameters of the placed 2D families, by index in `instances`.
+    inst_strs: Vec<HashMap<i64, String>>,
     texts: Vec<(i64, RawText)>,
     viewports: Vec<Vp>,
     /// (owner view, origin, schedule view id)
@@ -476,6 +482,8 @@ pub struct Sheets {
     /// images placed in family documents: (image symbol, centre, base direction, width,
     /// height), family coordinates (feet)
     fam_images: Vec<(i64, V3, V3, f64, f64)>,
+    /// text type → its category, giving its colour (`m_lineAndTextAttr.m_categoryId`)
+    text_styles: HashMap<i64, i64>,
     /// text types drawn bold (`m_lineAndTextAttr.m_bBold`)
     bold_types: std::collections::HashSet<i64>,
     holders: HashMap<i64, Vec<u8>>,
@@ -492,6 +500,9 @@ pub struct Sheets {
     global_hidden_ws: std::collections::HashSet<[u8; 16]>,
     /// element id → its workset (partition id)
     elem_ws: HashMap<i64, u32>,
+    /// `Family` element -> root of its family document, and what those documents draw.
+    fam_roots: HashMap<i64, i64>,
+    fam_drawn: std::sync::Mutex<HashMap<i64, std::sync::Arc<crate::rvt_annot::Drawn>>>,
     /// Images decoded once (a title block logo repeats on every sheet).
     decoded: std::sync::Mutex<HashMap<i64, Option<std::sync::Arc<Rgba>>>>,
 }
@@ -575,15 +586,13 @@ impl Sheets {
                         }
                     }
                 }
-                if curves.is_empty() && texts.is_empty() && tags.is_empty() {
-                    return;
-                }
-                self.symbols.insert(tr.id, Sym { family: r.int("m_familyId").unwrap_or(-1), curves, texts, tags, tables, outline });
+                self.symbols.insert(tr.id, Sym { family: r.int("m_familyId").unwrap_or(-1), curves, texts, tags, tables, outline, strs: family_strs(tr, s) });
             }
             "FamilyInstance" if owner > 0 => {
                 let Some(ii) = r.ptr("m_pInstanceInfo").and_then(|i| tr.objs.get(i)) else { return };
                 let Some(t) = ii.obj("m_Trf").and_then(Trf::from) else { return };
                 self.instances.push((owner, ii.int("m_symbolId").unwrap_or(-1), t));
+                self.inst_strs.push(family_strs(tr, s));
             }
             "TextNote" if owner > 0 => {
                 if let Some(t) = raw_text(r, tr) {
@@ -651,6 +660,9 @@ impl Sheets {
                 if r.obj("m_lineAndTextAttr").and_then(|a| a.int("m_bBold")).unwrap_or(0) != 0 {
                     self.bold_types.insert(tr.id);
                 }
+                if let Some(c) = r.obj("m_lineAndTextAttr").and_then(|a| a.int("m_categoryId")) {
+                    self.text_styles.insert(tr.id, c);
+                }
             }
             "ImageHolder" => {
                 if let Some(G::Is(v)) = r.ptr("m_pRasterImage").and_then(|i| tr.objs.get(i)).and_then(|o| o.get("m_compressedImage")) {
@@ -705,6 +717,7 @@ impl Sheets {
                     ViewInfo {
                         name: text_of(r, "m_viewName").unwrap_or_default(),
                         class: cls.to_string(),
+                        scale: num(r, "m_scale").filter(|k| *k >= 1.0).map_or(1.0, |k| 1.0 / k),
                         horz: v3(r.fs("m_horzDir")),
                         vert: v3(r.fs("m_vertDir")),
                         dir: v3(r.fs("m_viewDir")),
@@ -731,9 +744,9 @@ impl Sheets {
         }
     }
 
-    /// A text drawn bold: by its type or in its own rich text.
-    fn is_bold(&self, t: &RawText) -> bool {
-        t.bold || self.bold_types.contains(&t.attr)
+    /// How a text is drawn: bold (by its type or in its own rich text) and its colour.
+    fn look(&self, t: &RawText) -> (bool, [u8; 3]) {
+        (t.bold || self.bold_types.contains(&t.attr), self.text_styles.get(&t.attr).map_or([0; 3], |c| self.ann.style_color(*c)))
     }
 
     fn image(&self, sym: i64) -> Option<(std::sync::Arc<Rgba>, f64, f64)> {
@@ -760,6 +773,33 @@ impl Sheets {
             self.draw_table(&mut sh, &Table { name, ..tb.clone() }, [0.0, 0.0, 0.0]);
             let mut e = [f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
             for q in sh.lines.iter().flatten() {
+                e = [e[0].min(q[0]), e[1].min(q[1]), e[2].max(q[0]), e[3].max(q[1])];
+            }
+            if !e[0].is_finite() {
+                continue;
+            }
+            let m = ((e[2] - e[0]).max(e[3] - e[1]) * 0.04).max(0.005);
+            sh.extent = [e[0] - m, e[1] - m, e[2] + m, e[3] + m];
+            out.push(sh);
+        }
+        out
+    }
+
+    /// Drafting views and legends drawn alone: their lines, symbols and texts, at the view's
+    /// scale, with a margin around them.
+    pub fn drawings(&self, ids: &[i64]) -> Vec<Sheet2d> {
+        let edges = Edges { items: Vec::new() };
+        let mut out = Vec::new();
+        for &id in ids {
+            let Some(view) = self.views.get(&id) else { continue };
+            let vp = Vp { owner: -1, offset: [0.0; 3], label: [0.0; 3], label_len: 0.0, scale: view.scale, view: id, number: String::new() };
+            let mut sh = Sheet2d { id, ..Default::default() };
+            if self.draw_view(&mut sh, view, &vp, &edges).is_none() {
+                continue;
+            }
+            let mut e = [f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
+            let line = sh.lines.iter().flatten().chain(sh.strokes.iter().flat_map(|s| s.pts.iter()));
+            for q in line.chain(sh.fills.iter().flat_map(|f| f.tris.iter().flatten())).chain(sh.texts.iter().map(|t| &t.pos)) {
                 e = [e[0].min(q[0]), e[1].min(q[1]), e[2].max(q[0]), e[3].max(q[1])];
             }
             if !e[0].is_finite() {
@@ -877,6 +917,39 @@ impl Sheets {
     /// category switched off, the element hidden, or its workset hidden.
     fn hides(&self, view: &ViewInfo, elem: i64, cat: i64) -> bool {
         view.hidden_cats.contains(&cat) || (elem != 0 && (view.hidden.contains(&elem) || self.elem_ws.get(&elem).is_some_and(|w| view.hidden_ws.contains(w))))
+    }
+
+    /// Which family document holds each family's lines (see `family_drawing`).
+    pub fn set_family_roots(&mut self, roots: HashMap<i64, i64>) {
+        self.fam_roots = roots;
+    }
+
+    /// The lines and filled regions of a symbol's family document (family coordinates).
+    fn family_drawing(&self, sy: &Sym) -> Option<std::sync::Arc<crate::rvt_annot::Drawn>> {
+        let root = *self.fam_roots.get(&sy.family)?;
+        let mut cache = self.fam_drawn.lock().unwrap_or_else(|e| e.into_inner());
+        let d = cache.entry(root).or_insert_with(|| {
+            let mut d = crate::rvt_annot::Drawn::default();
+            self.ann.draw(-root, &|p| [p[0], p[1]], 1.0, &mut d);
+            std::sync::Arc::new(d)
+        });
+        Some(d.clone())
+    }
+
+    /// Lines of a symbol placed by `tf`: those of its family document, else its own.
+    fn put_symbol(&self, out: &mut Sheet2d, sy: &Sym, tf: &Trf) {
+        let at = |p: P2| {
+            let q = tf.apply([p[0], p[1], 0.0]);
+            [q[0], q[1]]
+        };
+        if let Some(d) = self.family_drawing(sy).filter(|d| !d.strokes.is_empty() || !d.fills.is_empty()) {
+            put_drawn(out, &d, &at);
+            return;
+        }
+        let w = (self.ann.pen(1) * FEET) as f32;
+        for c in &sy.curves {
+            out.strokes.push(Stroke2d { pts: c.iter().map(|p| tf.apply(*p)).map(|q| [(q[0] * FEET) as f32, (q[1] * FEET) as f32]).collect(), width: w, color: [0; 3] });
+        }
     }
 
     /// Worksets of a workshared project: `partitions` (`/Global/PartitionTable`) and
@@ -1013,7 +1086,7 @@ impl Sheets {
                 out.lines.push(c.iter().map(|p| tf.apply(*p)).map(|q| pt([q[0], q[1]])).collect());
             }
             for t in &sy.texts {
-                push_text(&mut out, t, Some(tf), trf_scale(tf), t.text.clone(), self.is_bold(t));
+                push_text(&mut out, t, Some(tf), trf_scale(tf), t.text.clone(), self.look(t));
             }
             for t in &sy.tags {
                 let mut s = String::new();
@@ -1027,14 +1100,14 @@ impl Sheets {
                     }
                     s += &format!("{pre}{v}{suf}");
                 }
-                push_text(&mut out, t, Some(tf), trf_scale(tf), s, self.is_bold(t));
+                push_text(&mut out, t, Some(tf), trf_scale(tf), s, self.look(t));
             }
             for (pos, tb) in &sy.tables {
                 self.draw_table(&mut out, tb, tf.apply(*pos));
             }
         }
         for (_, t) in self.texts.iter().filter(|t| t.0 == id) {
-            push_text(&mut out, t, None, 1.0, t.text.clone(), self.is_bold(t));
+            push_text(&mut out, t, None, 1.0, t.text.clone(), self.look(t));
         }
         // annotations drawn on the sheet itself (detail lines, filled regions…)
         let mut d = crate::rvt_annot::Drawn::default();
@@ -1068,9 +1141,9 @@ impl Sheets {
                 out.lines.push(vec![pt(l0), pt(l1)]);
                 let h = 0.012; // about 3.5 mm, the usual size of view titles
                 let head = if vp.number.is_empty() { view.name.clone() } else { format!("{}  {}", vp.number, view.name) };
-                out.texts.push(Text2d { pos: pt([l0[0], l0[1] + h * 0.4]), dir: [1.0, 0.0], height: m(h), halign: 0, valign: 2, text: head, bold: false, wrap: 0.0 });
+                out.texts.push(Text2d { pos: pt([l0[0], l0[1] + h * 0.4]), dir: [1.0, 0.0], height: m(h), halign: 0, valign: 2, text: head, bold: false, wrap: 0.0, color: [0; 3] });
                 if vp.scale > 1e-6 && vp.scale < 0.99 {
-                    out.texts.push(Text2d { pos: pt([l0[0], l0[1] - h * 0.4]), dir: [1.0, 0.0], height: m(h * 0.7), halign: 0, valign: 0, text: format!("1 : {}", (1.0 / vp.scale).round()), bold: false, wrap: 0.0 });
+                    out.texts.push(Text2d { pos: pt([l0[0], l0[1] - h * 0.4]), dir: [1.0, 0.0], height: m(h * 0.7), halign: 0, valign: 0, text: format!("1 : {}", (1.0 / vp.scale).round()), bold: false, wrap: 0.0, color: [0; 3] });
                 }
             }
         }
@@ -1303,7 +1376,8 @@ impl Sheets {
             // no crop: the extents of what is seen
             let mut e = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
             let texts = self.texts.iter().filter(|t| t.0 == vp.view).map(|t| proj(t.1.orig));
-            for p in segs.iter().flatten().map(|p| [p[0], p[1]]).chain(ann.strokes.iter().flat_map(|s| s.0.iter().copied())).chain(texts) {
+            let placed = self.instances.iter().filter(|i| i.0 == vp.view).map(|i| proj(i.2.apply([0.0; 3])));
+            for p in segs.iter().flatten().map(|p| [p[0], p[1]]).chain(ann.strokes.iter().flat_map(|s| s.0.iter().copied())).chain(texts).chain(placed) {
                 e = [e[0].min(p[0]), e[1].min(p[1]), e[2].max(p[0]), e[3].max(p[1])];
             }
             if !e[0].is_finite() {
@@ -1316,9 +1390,9 @@ impl Sheets {
         // the centre of what is seen is used
         // (a crop region that is not active counts as none: 3D views and uncropped plans are
         // centred on what they show)
-        // (legends put their origin there too: their title then sits under their lower left
-        // corner, as in Revit)
-        let legend = view.class.contains("Legend");
+        // (legends and drafting views put their origin there too: their title then sits under
+        // their lower left corner, as in Revit)
+        let legend = view.class.contains("Legend") || view.class.contains("Drafting");
         let (cu, cv) = if cropped || legend { (0.0, 0.0) } else { ((ub[0] + ub[2]) * 0.5, (ub[1] + ub[3]) * 0.5) };
         let k = vp.scale;
         if std::env::var_os("SHEET_DEBUG").is_some() {
@@ -1384,7 +1458,28 @@ impl Sheets {
             if !inside([mp.apply(t.orig)[0], mp.apply(t.orig)[1]]) {
                 continue;
             }
-            push_text(out, t, Some(&mp), 1.0, t.text.clone(), self.is_bold(t));
+            push_text(out, t, Some(&mp), 1.0, t.text.clone(), self.look(t));
+        }
+        // 2D families placed in the view (detail components, symbols)
+        for (k, (_, sym, tf)) in self.instances.iter().enumerate().filter(|(_, i)| i.0 == vp.view) {
+            let Some(sy) = self.symbols.get(sym) else { continue };
+            let pl = mp.after(tf);
+            self.put_symbol(out, sy, &pl);
+            for t in &sy.texts {
+                push_text(out, t, Some(&pl), 1.0, t.text.clone(), self.look(t));
+            }
+            // labels: the instance's text parameters, else its type's, else the family's sample
+            for t in &sy.tags {
+                let vals: Vec<String> = t
+                    .params
+                    .iter()
+                    .filter_map(|(p, pre, suf, sample)| {
+                        let v = self.inst_strs.get(k).and_then(|x| x.get(p)).or_else(|| sy.strs.get(p)).unwrap_or(sample);
+                        (!v.is_empty()).then(|| format!("{pre}{v}{suf}"))
+                    })
+                    .collect();
+                push_text(out, t, Some(&pl), 1.0, vals.join(" "), self.look(t));
+            }
         }
         for tg in self.ann.tags.iter().filter(|t| t.owner == vp.view) {
             let Some(sy) = self.symbols.get(&tg.symbol) else { continue };
@@ -1394,12 +1489,9 @@ impl Sheets {
             }
             let (c, s) = (tg.angle.cos(), tg.angle.sin());
             let tf = Trf::new([c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0], [h[0], h[1], 0.0]);
-            let w = m(self.ann.pen(1));
-            for cv in &sy.curves {
-                out.strokes.push(Stroke2d { pts: cv.iter().map(|p| tf.apply(*p)).map(|q| [m(q[0]), m(q[1])]).collect(), width: w, color: [0; 3] });
-            }
+            self.put_symbol(out, sy, &tf);
             for t in &sy.texts {
-                push_text(out, t, Some(&tf), 1.0, t.text.clone(), self.is_bold(t));
+                push_text(out, t, Some(&tf), 1.0, t.text.clone(), self.look(t));
             }
             // labels: the tagged element's text parameters, else its type's
             let ty = self.ann.inst_type.get(&tg.target);
@@ -1408,7 +1500,7 @@ impl Sheets {
                     let v = self.ann.strs.get(&tg.target).and_then(|x| x.get(p)).or_else(|| ty.and_then(|y| self.ann.strs.get(y)).and_then(|x| x.get(p)))?;
                     (!v.is_empty()).then(|| format!("{pre}{v}{suf}"))
                 }).collect();
-                push_text(out, t, Some(&tf), 1.0, vals.join(" "), self.is_bold(t));
+                push_text(out, t, Some(&tf), 1.0, vals.join(" "), self.look(t));
             }
         }
         let a = to_paper([ub[0], ub[1]]);
@@ -1424,7 +1516,7 @@ fn trf_scale(tf: &Trf) -> f64 {
 }
 
 /// A text placed by `tf` (paper feet out), its height scaled by `hk`.
-fn push_text(out: &mut Sheet2d, t: &RawText, tf: Option<&Trf>, hk: f64, text: String, bold: bool) {
+fn push_text(out: &mut Sheet2d, t: &RawText, tf: Option<&Trf>, hk: f64, text: String, (bold, color): (bool, [u8; 3])) {
     if text.trim().is_empty() {
         return;
     }
@@ -1445,7 +1537,7 @@ fn push_text(out: &mut Sheet2d, t: &RawText, tf: Option<&Trf>, hk: f64, text: St
         0
     };
     let size = text_size(t.height, t.wrap, &text) * hk;
-    out.texts.push(Text2d { pos: [m(o[0]), m(o[1])], dir: [(b[0] / l) as f32, (b[1] / l) as f32], height: m(size), halign: h.min(2), valign: v, text, bold, wrap: m(t.wrap * hk) });
+    out.texts.push(Text2d { pos: [m(o[0]), m(o[1])], dir: [(b[0] / l) as f32, (b[1] / l) as f32], height: m(size), halign: h.min(2), valign: v, text, bold, wrap: m(t.wrap * hk), color });
 }
 
 /// Letter size of a text whose box is `box_h` high (feet): the box holds its lines as drawn,
@@ -1491,7 +1583,7 @@ fn put_drawn(out: &mut Sheet2d, d: &crate::rvt_annot::Drawn, to_paper: &dyn Fn(P
         let (a, b) = (to_paper(*p), to_paper([p[0] + dir[0], p[1] + dir[1]]));
         let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
         let l = (dx * dx + dy * dy).sqrt().max(1e-12);
-        out.texts.push(Text2d { pos: [m(a[0]), m(a[1])], dir: [(dx / l) as f32, (dy / l) as f32], height: m(*h), halign: 1, valign: 2, text: text.clone(), bold: false, wrap: 0.0 });
+        out.texts.push(Text2d { pos: [m(a[0]), m(a[1])], dir: [(dx / l) as f32, (dy / l) as f32], height: m(*h), halign: 1, valign: 2, text: text.clone(), bold: false, wrap: 0.0, color: [0; 3] });
     }
 }
 
@@ -1559,6 +1651,20 @@ fn workset_settings(tr: &Tree, s: &Schema) -> HashMap<[u8; 16], bool> {
             _ => None,
         })
         .collect()
+}
+
+/// Text values of a family instance or type: its parameters, and those of its family
+/// (`FamilyParams.m_params`: `m_paramId`, `m_str`).
+fn family_strs(tr: &Tree, s: &Schema) -> HashMap<i64, String> {
+    let mut out = strings(tr);
+    for o in tr.objs.iter().filter(|o| s.name(o.tag) == "FamilyParams") {
+        for p in o.list("m_params") {
+            if let (Some(id), Some(v)) = (p.int("m_paramId"), text_of(p, "m_str").filter(|v| !v.is_empty())) {
+                out.entry(id).or_insert(v);
+            }
+        }
+    }
+    out
 }
 
 fn ids_of(tr: &Tree, s: &Schema, class: &str, field: &str) -> std::collections::HashSet<i64> {

@@ -2151,6 +2151,7 @@ fn sheet_2d(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, r: &sw_format::Br
         // each line aligned on its own (centred, right-aligned paragraphs)
         // wrapped at the text box width when the file gives it
         let wrap = if tx.wrap > 0.0 { tx.wrap * s } else { f32::INFINITY };
+        let ink = if tx.color == [0; 3] { ink } else { Color32::from_rgb(tx.color[0], tx.color[1], tx.color[2]) };
         let lines: Vec<_> = tx.text.split('\n').map(|l| p.layout(l.to_string(), font.clone(), ink, wrap)).collect();
         let total: f32 = lines.iter().map(|g| g.size().y).sum();
         let mut y = 0.0;
@@ -2192,7 +2193,12 @@ fn sheet_2d(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, r: &sw_format::Br
     // caption, over the pasteboard at the bottom
     let label = browser_label(&r.label, r.kind);
     let schedule = r.kind == sw_format::BrowserKind::Schedule;
-    let what = if schedule { tr("Nomenclature") } else { tr("Feuille") };
+    let what = match r.kind {
+        sw_format::BrowserKind::Schedule => tr("Nomenclature"),
+        sw_format::BrowserKind::Legend => tr("Légende"),
+        sw_format::BrowserKind::Drafting => tr("Vue de dessin"),
+        _ => tr("Feuille"),
+    };
     let head = if r.start { format!("{what} : {label}  ·  {}", tr("vue de démarrage")) } else { format!("{what} : {label}") };
     let band = Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 52.0), rect.right_bottom());
     p.rect_filled(band, CornerRadius::ZERO, t.pasteboard.gamma_multiply(0.92));

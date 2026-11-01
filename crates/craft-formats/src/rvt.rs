@@ -272,6 +272,7 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
             rvt_model::read_stream(&mut cf, "/Global/ContentDocuments", MAX_PARTITION, rvt_model::MAX_INFLATED, |_| true),
         ) {
             shapes.content_docs(&crate::rvt_browser::Schema::parse(&f.data), &cd.data);
+            sheets.set_family_roots(shapes.family_roots());
         }
     }
     ctl.check().map_err(|e| e.to_string())?;
@@ -321,6 +322,9 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
     // schedules: their stored table
     let schedules: Vec<i64> = s.browser.iter().filter(|r| r.kind == sw_format::BrowserKind::Schedule && r.id > 0).map(|r| r.id).collect();
     s.sheets.extend(sheets.schedules(&schedules));
+    // drafting views and legends: their own drawing
+    let drawings: Vec<i64> = s.browser.iter().filter(|r| matches!(r.kind, sw_format::BrowserKind::Drafting | sw_format::BrowserKind::Legend) && r.id > 0).map(|r| r.id).collect();
+    s.sheets.extend(sheets.drawings(&drawings));
     if !family {
         // how each view looks at the model (Revit view direction, crop region)
         let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
