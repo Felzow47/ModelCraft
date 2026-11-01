@@ -66,25 +66,45 @@ Systèmes or Autodesk.
 | Parasolid | `.x_t` `.x_b` | ❌ | clear message: no free reader - export to STEP |
 | DWG / SketchUp / Rhino | `.dwg` `.skp` `.3dm` | ❌ | clear message: LibreDWG is GPL, the SketchUp SDK is proprietary; export to DXF/IFC, DAE/glTF, STEP/OBJ |
 
-### Revit without Revit
+## Known limits
 
-`.rvt` and `.rfa` files are read directly (independent reader, see `docs/rvt-rea-notes.md`),
-read-only, without locks or synchronisation, workshared or not:
-- **Rebuilt 3D shapes** from the parameters stored in the file: straight and curved walls (edited
-  profiles, door and window openings), floors, ceilings, slabs, roofs (slopes and layers), stairs
-  (runs and landings), railings and balusters, curtain walls (mullions and panels), structural
-  framing, columns, footings, rebar, topography, masses, pipes, ducts, cable trays, doors and
-  windows sized from their type, and the solids of loaded families (extrusions, revolutions,
-  sweeps, blends, nested families). Planting and entourage (picture-based RPC content in Revit)
-  are drawn as simple stand-ins (trees, people, cars) fitted to their box.
-- **Project browser**: views, sheets, schedules, families. A plan, section, elevation or 3D view
-  opens with its direction, crop region and view range, like in Revit.
-- **Sheets** drawn flat from the 2D content of the file: title block with filled-in labels,
-  revision table, placed views with the edges of the elements they see (hidden lines removed),
-  dimensions (linear, radial, angular, spot), hatches, detail lines, text, tags and the embedded
-  renderings.
+- **Revit**: shapes are rebuilt from the stored parameters (Revit does not store its B-rep in the
+  file), so joins and openings can differ slightly from Revit. Elements whose geometry is not
+  stored in a decodable form get the closest stand-in instead of a bounding box: plumbing
+  fixtures drawn only as plan symbols (2D lines and filled regions, no solids in Revit either)
+  show as 1 cm plates of their filled region stretched over the fixture's footprint; rebar of
+  older files with no cached centre lines (Revit 2018) is laid out as straight bars or closed
+  ties at the set's bar count, spacing and diameter inside the set's box; stair stringers
+  without a stored solid are rebuilt from their path line, width and depth; planting and
+  entourage (picture-based RPC) are simple trees, people and cars. Elements that still have no
+  shape at all fall back to a bounding box coloured by category (none in the public samples).
+  Sheets: model element line weights per category, detail components and calculated tag values
+  (area…) are not drawn yet. For the exact geometry, export
+  to **IFC** from Revit and open the `.ifc` in ModelCraft.
+- **eDrawings `.easm` / `.eprt`**: read natively (clean-room HSF reader written from Tech Soft 3D's
+  public format documentation; eDrawings does not need to be installed). Tested with HSF V18.00
+  and V19.10 streams (eDrawings 2014 to 2026). Not handled yet:
+  Edgebreaker-compressed shells and globally quantized points (not written by the eDrawings
+  versions tested), textures (shown with their base colour), 2D drawing sheets, markups and
+  embedded OLE pictures;
+  stored normals are recomputed; only the first configuration is shown; conditional includes are
+  always drawn. An unknown opcode stops the reading and keeps the geometry read so far.
+- **Parasolid `.x_t`**: not supported (no free reader); export to STEP. SolidWorks files without a
+  display mesh still hold their Parasolid B-rep; an independent XT reader is possible but is weeks
+  of work.
+- **`MeshData/Config-N-Mesh-*` streams** (mesh bodies of recent SolidWorks files, often the only
+  data in very large scan/STL-import files): streamed when `DisplayLists` is empty; only the first
+  configuration is read and per-body colours are not applied yet.
+- **Blender `.blend`**: old 2.7x files only; export OBJ, glTF or FBX from Blender 2.8+.
+- **DWG, SketchUp, Rhino**: not supported (see `NOTICE.md`).
+- SolidWorks: only the stored display mesh is used (no B-rep recompute); a file without graphics
+  data shows its thumbnail only.
+- Some file-reader error messages are still in French in the English interface.
+- Measurements on meshes (STL/OBJ/3DS): no exact diameter (no analytic faces).
+- No export and no saved annotations: viewer only.
 
-### V4 highlights
+
+### Highlights
 
 **Navigation and tools**
 - **Blender shortcuts** by default (*Settings › Navigation › Blender shortcuts*, can be turned
@@ -334,42 +354,6 @@ wgpu (DirectX 12 / Vulkan / OpenGL depending on the machine), adjustable MSAA, s
 B-rep edges overlay, gradient background, selection highlight, section plane. If GPU setup fails,
 ModelCraft restarts with Vulkan then OpenGL. Force a backend with `WGPU_BACKEND=dx12|vulkan|gl`.
 
-## Known limits (V4)
-
-- **Revit**: shapes are rebuilt from the stored parameters (Revit does not store its B-rep in the
-  file), so joins and openings can differ slightly from Revit. Elements whose geometry is not
-  stored in a decodable form get the closest stand-in instead of a bounding box: plumbing
-  fixtures drawn only as plan symbols (2D lines and filled regions, no solids in Revit either)
-  show as 1 cm plates of their filled region stretched over the fixture's footprint; rebar of
-  older files with no cached centre lines (Revit 2018) is laid out as straight bars or closed
-  ties at the set's bar count, spacing and diameter inside the set's box; stair stringers
-  without a stored solid are rebuilt from their path line, width and depth; planting and
-  entourage (picture-based RPC) are simple trees, people and cars. Elements that still have no
-  shape at all fall back to a bounding box coloured by category (none in the public samples).
-  Sheets: model element line weights per category, detail components and calculated tag values
-  (area…) are not drawn yet. For the exact geometry, export
-  to **IFC** from Revit and open the `.ifc` in ModelCraft.
-- **eDrawings `.easm` / `.eprt`**: read natively (clean-room HSF reader written from Tech Soft 3D's
-  public format documentation; eDrawings does not need to be installed). Tested with HSF V18.00
-  and V19.10 streams (eDrawings 2014 to 2026). Not handled yet:
-  Edgebreaker-compressed shells and globally quantized points (not written by the eDrawings
-  versions tested), textures (shown with their base colour), 2D drawing sheets, markups and
-  embedded OLE pictures;
-  stored normals are recomputed; only the first configuration is shown; conditional includes are
-  always drawn. An unknown opcode stops the reading and keeps the geometry read so far.
-- **Parasolid `.x_t`**: not supported (no free reader); export to STEP. SolidWorks files without a
-  display mesh still hold their Parasolid B-rep; an independent XT reader is possible but is weeks
-  of work.
-- **`MeshData/Config-N-Mesh-*` streams** (mesh bodies of recent SolidWorks files, often the only
-  data in very large scan/STL-import files): streamed when `DisplayLists` is empty; only the first
-  configuration is read and per-body colours are not applied yet.
-- **Blender `.blend`**: old 2.7x files only; export OBJ, glTF or FBX from Blender 2.8+.
-- **DWG, SketchUp, Rhino**: not supported (see `NOTICE.md`).
-- SolidWorks: only the stored display mesh is used (no B-rep recompute); a file without graphics
-  data shows its thumbnail only.
-- Some file-reader error messages are still in French in the English interface.
-- Measurements on meshes (STL/OBJ/3DS): no exact diameter (no analytic faces).
-- No export and no saved annotations: viewer only.
 
 ## Licence
 
