@@ -235,8 +235,9 @@ fn parse_type(d: &[u8], mut p: usize, depth: u32) -> Option<(Ty, usize)> {
 pub(crate) fn prim_size(b0: u8) -> Option<usize> {
     Some(match b0 {
         9 => 16,
-        7 | 6 | 0x0b => 8,
-        4 | 5 => 4,
+        7 | 0x0b => 8,
+        // 06: float (`std::pair< AString, float >`, `m_fVisibilityDistance`)
+        4 | 5 | 6 => 4,
         3 => 2,
         1 | 2 => 1,
         _ => return None,
@@ -434,8 +435,8 @@ impl<'a, 's> Dec<'a, 's> {
             // XYZ (or another compound of `en` elements of type `e0`; ids: `en` ids)
             0x0d if ty.e0 == 0x0e => self.w * ty.en.max(1) as usize,
             0x0d => prim_size(ty.e0)? * ty.en.max(1) as usize,
-            7 | 6 | 0x0b => 8,
-            4 | 5 => 4,
+            7 | 0x0b => 8,
+            4 | 5 | 6 => 4,
             3 => 2,
             1 | 2 => 1,
             _ => return None,
@@ -445,7 +446,7 @@ impl<'a, 's> Dec<'a, 's> {
                 let b = d.get(p..p + sz)?;
                 let v = match ty.b0 {
                     7 => Some(V::F(f64::from_le_bytes(b.try_into().ok()?))),
-                    6 => Some(V::I(i64::from_le_bytes(b.try_into().ok()?))),
+                    6 => Some(V::F(f32::from_le_bytes(b.try_into().ok()?) as f64)),
                     4 => Some(V::I(i32::from_le_bytes(b.try_into().ok()?) as i64)),
                     1 => Some(V::I(b[0] as i64)),
                     _ => None,

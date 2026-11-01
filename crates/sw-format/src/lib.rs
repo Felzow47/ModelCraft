@@ -260,13 +260,18 @@ pub struct Text2d {
     pub halign: u8,
     pub valign: u8,
     pub text: String,
+    pub bold: bool,
+    /// Width its lines wrap at (paper metres; 0: no wrapping).
+    pub wrap: f32,
 }
 
-/// A raster image placed on a sheet (rendered views, imported images), `rect` in paper metres.
+/// A raster image placed on a sheet (rendered views, imported images), `rect` in paper metres;
+/// `turns`: quarter turns counter-clockwise of the image in it.
 #[derive(Debug, Clone)]
 pub struct Image2d {
     pub rect: [f32; 4],
     pub image: std::sync::Arc<Rgba>,
+    pub turns: u8,
 }
 
 /// A view placed on a sheet: its frame (paper metres), the view element id and its name.

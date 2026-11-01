@@ -513,5 +513,6 @@ pub static EN: &[(&str, &str)] = &[
     ("Contenu 2D (cartouche, vues placées, textes) pas encore lu", "2D content (title block, placed views, texts) not read yet"),
     ("double-clic pour ouvrir la vue", "double-click to open the view"),
     ("Lu dans le fichier (vues en arêtes, lignes cachées retirées) · molette : zoom · glisser : déplacer · double-clic : ouvrir une vue / recadrer", "Read from the file (views as edges, hidden lines removed) · wheel: zoom · drag: pan · double-click: open a view / refit"),
+    ("Tableau enregistré dans le fichier (titre, en-têtes, cellules saisies) ; les lignes calculées par Revit n'y sont pas · molette : zoom · glisser : déplacer", "Table stored in the file (title, headers, typed-in cells); the rows Revit computes are not in it · wheel: zoom · drag: pan"),
     ("Contenu 2D (cartouche, vues placées, textes) pas encore lu ; image : aperçu enregistré dans le fichier", "2D content (title block, placed views, texts) not read yet; image: preview saved in the file"),
 ];

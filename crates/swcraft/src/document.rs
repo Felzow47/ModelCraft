@@ -1114,6 +1114,8 @@ impl Document {
 
     pub fn fit(&mut self, aspect: f32) {
         if let Some((lo, hi)) = self.view_box.filter(|_| self.view_ctx.is_some()).or(self.stats.bbox) {
+            // the exploded pieces in view too
+            let (lo, hi) = if self.view_ctx.is_none() { self.asm.exploded_box(lo, hi, self.asm.explode_goal.max(self.asm.explode)) } else { (lo, hi) };
             self.camera.fit(lo, hi, aspect);
         }
         self.needs_fit = false;

@@ -23,6 +23,7 @@
 //! Every read is bounds-checked and every buffer capped.
 
 use std::io::Read;
+use std::collections::HashMap;
 
 pub const PAGE: usize = 65_249;
 pub const PAGE_DATA: usize = 64_896;
@@ -500,9 +501,81 @@ pub fn push_box(b: &ElemBox, pos: &mut Vec<[f32; 3]>, tri: &mut Vec<[u32; 3]>) {
     }
 }
 
+/// Worksets of a workshared project (`/Global/PartitionTable`): GUID → partition id. Each
+/// entry is `[u32] guid id created modified dependent type deleted name`; user worksets are
+/// type 0.
+pub fn worksets(p: &[u8]) -> HashMap<[u8; 16], u32> {
+    let u = |i: usize| u32::from_le_bytes(p[i..i + 4].try_into().unwrap());
+    let mut out = HashMap::new();
+    let mut i = 6;
+    while i + 45 <= p.len() {
+        let len = u(i + 41) as usize;
+        if len > 4096 || i + 45 + 2 * len > p.len() {
+            break;
+        }
+        out.insert(p[i + 4..i + 20].try_into().unwrap(), u(i + 20));
+        i += 45 + 2 * len;
+    }
+    out
+}
+
+/// Workset of each element (`/Global/ElemTable`): element id → partition id. Records of 40
+/// bytes after a 6-byte header: an id (i64), three u32, the element id (i64), a parent id,
+/// partition (u32).
+/// Empty when the table does not read as such (another layout).
+pub fn elem_worksets(e: &[u8], known: &HashMap<[u8; 16], u32>) -> HashMap<i64, u32> {
+    let ids: std::collections::HashSet<u32> = known.values().copied().collect();
+    let mut out = HashMap::new();
+    let (mut i, mut miss) = (6, 0);
+    while i + 40 <= e.len() {
+        let id = i64::from_le_bytes(e[i + 20..i + 28].try_into().unwrap());
+        let ws = u32::from_le_bytes(e[i + 36..i + 40].try_into().unwrap());
+        if !ids.contains(&ws) {
+            miss += 1;
+        }
+        out.insert(id, ws);
+        i += 40;
+    }
+    if out.is_empty() || miss * 20 > out.len() {
+        return HashMap::new();
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worksets_and_elements() {
+        // partition table: header, then [u32] guid id created modified dependent type deleted name
+        let mut p = vec![0x40, 0x0c, 1, 0, 0, 0];
+        for (g, id, name) in [(7u8, 0u32, "A"), (9, 681, "MF_Fire")] {
+            p.extend(1u32.to_le_bytes());
+            p.extend([g; 16]);
+            for v in [id, 1, 1, u32::MAX, 0] {
+                p.extend(v.to_le_bytes());
+            }
+            p.push(0);
+            p.extend((name.len() as u32).to_le_bytes());
+            p.extend(name.encode_utf16().flat_map(|c| c.to_le_bytes()));
+        }
+        let ws = worksets(&p);
+        assert_eq!((ws.get(&[7; 16]), ws.get(&[9; 16])), (Some(&0), Some(&681)));
+        // element table: the element id is the second one of each record
+        let mut e = vec![0xab, 0x05, 0xa4, 0x4e, 2, 0];
+        for (first, id, w) in [(1i64, 1i64, 0u32), (5, 1576636, 681)] {
+            e.extend(first.to_le_bytes());
+            e.extend([0u8; 12]);
+            e.extend(id.to_le_bytes());
+            e.extend((-1i64).to_le_bytes());
+            e.extend(w.to_le_bytes());
+        }
+        let el = elem_worksets(&e, &ws);
+        assert_eq!((el.get(&1576636), el.get(&1), el.get(&5)), (Some(&681), Some(&0), None));
+        // another layout: nothing rather than wrong worksets
+        assert!(elem_worksets(&[0xff; 6 + 40 * 4], &ws).is_empty());
+    }
 
     #[test]
     fn depage_strips_runs() {

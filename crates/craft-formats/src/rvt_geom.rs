@@ -105,7 +105,20 @@ pub struct Dec<'a> {
     seen: std::collections::HashMap<u32, usize>,
     pub max_objs: usize,
     pub debug: bool,
+    /// End of the element being decoded (its header size), when known: bounds a blob skip.
+    limit: usize,
+    /// Local ids queued during a trial decode (undone after it).
+    journal: Option<Vec<u32>>,
+    /// Look past extensible storage blobs (costly search): views only, where what follows
+    /// (schedule tables) is read; elsewhere the tree stops at the blob.
+    skip_blobs: bool,
 }
+
+/// Pending entry standing for the body of an extensible storage blob (`ESEntity.m_blob`): its
+/// layout comes from the add-in's own schema, not from `Formats/Latest`.
+const BLOB: u16 = u16::MAX;
+/// Farthest a blob body is skipped over looking for the next object.
+const MAX_BLOB: usize = 4 << 20;
 
 fn u16_at(d: &[u8], p: usize) -> Option<u16> {
     Some(u16::from_le_bytes(d.get(p..p + 2)?.try_into().ok()?))
@@ -116,7 +129,7 @@ fn u32_at(d: &[u8], p: usize) -> Option<u32> {
 
 impl<'a> Dec<'a> {
     pub fn new(s: &'a Schema, d: &'a [u8], w: usize) -> Self {
-        Dec { s, d, w, pending: Vec::new(), seen: Default::default(), max_objs: 200_000, debug: std::env::var_os("RVT_GEOM_DEBUG").is_some() }
+        Dec { s, d, w, pending: Vec::new(), seen: Default::default(), max_objs: 200_000, debug: std::env::var_os("RVT_GEOM_DEBUG").is_some(), limit: usize::MAX, journal: None, skip_blobs: false }
     }
 
     fn id(&self, p: usize) -> Option<i64> {
@@ -128,7 +141,8 @@ impl<'a> Dec<'a> {
         let d = self.d;
         Some(match b0 {
             7 => G::F(f64::from_le_bytes(d.get(p..p + 8)?.try_into().ok()?)),
-            6 | 0x0b => G::I(i64::from_le_bytes(d.get(p..p + 8)?.try_into().ok()?)),
+            6 => G::F(f32::from_le_bytes(d.get(p..p + 4)?.try_into().ok()?) as f64),
+            0x0b => G::I(i64::from_le_bytes(d.get(p..p + 8)?.try_into().ok()?)),
             4 => G::I(i32::from_le_bytes(d.get(p..p + 4)?.try_into().ok()?) as i64),
             5 => G::I(u32_at(d, p)? as i64),
             3 => G::I(u16_at(d, p)? as i64),
@@ -147,7 +161,8 @@ impl<'a> Dec<'a> {
             7 => G::Fs(b.chunks_exact(8).map(|c| f64::from_le_bytes(c.try_into().unwrap())).collect()),
             4 => G::Is(b.chunks_exact(4).map(|c| i32::from_le_bytes(c.try_into().unwrap()) as i64).collect()),
             5 => G::Is(b.chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap()) as i64).collect()),
-            6 | 0x0b => G::Is(b.chunks_exact(8).map(|c| i64::from_le_bytes(c.try_into().unwrap())).collect()),
+            6 => G::Fs(b.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap()) as f64).collect()),
+            0x0b => G::Is(b.chunks_exact(8).map(|c| i64::from_le_bytes(c.try_into().unwrap())).collect()),
             3 => G::Is(b.chunks_exact(2).map(|c| u16::from_le_bytes(c.try_into().unwrap()) as i64).collect()),
             _ => G::Is(b.iter().map(|&c| c as i64).collect()),
         };
@@ -161,6 +176,14 @@ impl<'a> Dec<'a> {
         out.tag = tag;
         let s = self.s;
         for (name, ty) in s.chains.get(&tag)? {
+            // extensible storage entity: `ffffffff` and its schema GUID; the body is queued like
+            // any deferred object but has no class to read it by (skipped, see `tree`)
+            if ty.b0 == 0x0e && ty.b1 == 1 && name == "m_blob" && u32_at(self.d, p) == Some(0xffff_ffff) && !self.s.chains.contains_key(&u16_at(self.d, p + 4)?) {
+                out.fields.push((name.clone(), G::Raw(self.d.get(p + 4..p + 20)?.to_vec())));
+                self.pending.push((BLOB, p));
+                p += 20;
+                continue;
+            }
             match self.val(*ty, p, depth) {
                 Some((g, q)) => {
                     p = q;
@@ -202,6 +225,9 @@ impl<'a> Dec<'a> {
             }
             let idx = self.pending.len();
             self.seen.insert(v, idx);
+            if let Some(j) = &mut self.journal {
+                j.push(v);
+            }
             self.pending.push((t, p));
             Some((G::P(Some(idx)), p + 6))
         } else {
@@ -358,6 +384,32 @@ impl<'a> Dec<'a> {
         }
     }
 
+    /// The pending objects from `i` on (up to four, or a blob) decode one after the other from
+    /// `p`. Leaves the queue as it was.
+    fn decodes_from(&mut self, i: usize, mut p: usize) -> bool {
+        let n = self.pending.len();
+        self.journal = Some(Vec::new());
+        let mut ok = true;
+        for k in i..(i + 4).min(n) {
+            let tg = self.pending[k].0;
+            if tg == BLOB {
+                break;
+            }
+            match self.fields(tg, p, &mut Obj::default(), 0) {
+                Some(q) => p = q,
+                None => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        self.pending.truncate(n);
+        for v in self.journal.take().unwrap_or_default() {
+            self.seen.remove(&v);
+        }
+        ok
+    }
+
     /// Decodes an object of class `tag` at `p` with all its deferred contents (FIFO).
     pub fn tree(&mut self, tag: u16, p: usize) -> Option<Tree> {
         self.pending.clear();
@@ -371,6 +423,30 @@ impl<'a> Dec<'a> {
                 break;
             }
             let (tg, _) = self.pending[i];
+            if tg == BLOB && !self.skip_blobs {
+                t.failed = Some(tg);
+                break;
+            }
+            if tg == BLOB {
+                // a blob body: the next object starts where it and the ones after it decode
+                t.objs.push(Obj::default());
+                if i + 1 == self.pending.len() {
+                    // last: it ends with the element
+                    if self.limit < self.d.len() {
+                        p = p.max(self.limit);
+                    }
+                    break;
+                }
+                match (p..(p + MAX_BLOB).min(self.limit).min(self.d.len())).find(|&q| self.decodes_from(i + 1, q)) {
+                    Some(q) => p = q,
+                    None => {
+                        t.failed = Some(0);
+                        break;
+                    }
+                }
+                i += 1;
+                continue;
+            }
             let mut o = Obj::default();
             match self.fields(tg, p, &mut o, 0) {
                 Some(q) => {
@@ -426,11 +502,14 @@ pub fn elements_dbg(s: &Schema, d: &[u8], w: usize, want: &dyn Fn(u16) -> bool, 
             at += 1;
             continue;
         }
+        dec.limit = at + size as usize;
+        dec.skip_blobs = s.isa(t, "DBView");
         match dec.tree(t, at + 2) {
             Some(tr) if tr.id == eid => {
                 let end = tr.end;
                 f(at - 8 - w, t, size, tr);
-                at = end.max(at + 1);
+                // never past the element (its header size)
+                at = end.min(at + size as usize).max(at + 1);
                 continue;
             }
             None => fail(at - 8 - w, t),

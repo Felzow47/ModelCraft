@@ -1926,6 +1926,7 @@ fn explode_panel(ui: &mut egui::Ui, rect: Rect, doc: &mut Document) {
                     if widgets::icon_pill(ui, if out { "minimize-2" } else { "play" }, if out { tr("Rassembler") } else { tr("Animer") }, true).clicked() {
                         doc.checkpoint();
                         doc.asm.explode_goal = if out { 0.0 } else { 1.0 };
+                        doc.needs_fit = true;
                         ui.ctx().request_repaint();
                     }
                     if widgets::icon_pill(ui, "rotate-ccw", tr("Réinitialiser"), false).clicked() {
@@ -1984,7 +1985,7 @@ fn sheet_view(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, row: usize, res
     p.rect_filled(rect, CornerRadius::ZERO, t.pasteboard);
     let label = browser_label(&r.label, r.kind);
     // paper: landscape ISO A ratio, or the saved preview's ratio
-    let ratio = doc.preview.as_ref().map(|x| x.size_vec2()).map(|s| s.x / s.y.max(1.0)).filter(|k| (0.3..4.0).contains(k)).unwrap_or(std::f32::consts::SQRT_2);
+    let ratio = doc.preview.as_ref().filter(|_| r.start).map(|x| x.size_vec2()).map(|s| s.x / s.y.max(1.0)).filter(|k| (0.3..4.0).contains(k)).unwrap_or(std::f32::consts::SQRT_2);
     let avail = vec2(rect.width() - 80.0, rect.height() - 140.0).max(vec2(120.0, 80.0));
     let w = avail.x.min(avail.y * ratio);
     let paper = Rect::from_center_size(rect.center() - vec2(0.0, 24.0), vec2(w, w / ratio));
@@ -1993,13 +1994,15 @@ fn sheet_view(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, row: usize, res
     let ink = Color32::from_gray(40);
     let border = paper.shrink((w * 0.015).max(6.0));
     p.rect_stroke(border, CornerRadius::ZERO, Stroke::new(1.2, ink), egui::StrokeKind::Inside);
-    if let Some(tex) = &doc.preview {
+    // the file's thumbnail shows its starting view, not this one
+    let preview = doc.preview.as_ref().filter(|_| r.start);
+    if let Some(tex) = preview {
         let s = tex.size_vec2();
         let k = (border.width() / s.x).min(border.height() / s.y);
         p.image(tex.id(), Rect::from_center_size(border.center(), s * k), Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
     }
     // title block strip, bottom right (sheet number and name)
-    if r.kind == K::Sheet && doc.preview.is_none() {
+    if r.kind == K::Sheet && preview.is_none() {
         let tb = Rect::from_min_max(egui::pos2(border.right() - (border.width() * 0.32).max(140.0).min(border.width()), border.bottom() - 34.0), border.right_bottom());
         p.rect_filled(tb, CornerRadius::ZERO, Color32::WHITE);
         p.rect_stroke(tb, CornerRadius::ZERO, Stroke::new(1.0, ink), egui::StrokeKind::Inside);
@@ -2015,7 +2018,7 @@ fn sheet_view(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, row: usize, res
     };
     let head = if r.start { format!("{what} : {label}  ·  {}", tr("vue de démarrage")) } else { format!("{what} : {label}") };
     p.text(paper.center_bottom() + vec2(0.0, 16.0), Align2::CENTER_TOP, head, theme::medium(13.0), t.text);
-    let note = if doc.preview.is_some() { tr("Contenu 2D (cartouche, vues placées, textes) pas encore lu ; image : aperçu enregistré dans le fichier") } else { tr("Contenu 2D (cartouche, vues placées, textes) pas encore lu") };
+    let note = if preview.is_some() { tr("Contenu 2D (cartouche, vues placées, textes) pas encore lu ; image : aperçu enregistré dans le fichier") } else { tr("Contenu 2D (cartouche, vues placées, textes) pas encore lu") };
     p.text(paper.center_bottom() + vec2(0.0, 36.0), Align2::CENTER_TOP, note, theme::regular(12.0), t.text_muted);
     let has3d = doc.scene.as_ref().is_some_and(|s| s.has_geometry());
     if has3d {
@@ -2072,7 +2075,17 @@ fn sheet_2d(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, r: &sw_format::Br
         for (img, tx) in sh.images.iter().zip(tex) {
             let rr = Rect::from_two_pos(to([img.rect[0], img.rect[1]]), to([img.rect[2], img.rect[3]]));
             if rr.intersects(vis) {
-                p.image(tx.id(), rr, Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+                // corners bottom left, bottom right, top right, top left; the image's own
+                // corners turned counter-clockwise by `turns` quarter turns
+                let corners = [rr.left_bottom(), rr.right_bottom(), rr.right_top(), rr.left_top()];
+                let uv = [egui::pos2(0.0, 1.0), egui::pos2(1.0, 1.0), egui::pos2(1.0, 0.0), egui::pos2(0.0, 0.0)];
+                let mut mesh = egui::Mesh::with_texture(tx.id());
+                for (k, c) in corners.into_iter().enumerate() {
+                    mesh.vertices.push(egui::epaint::Vertex { pos: c, uv: uv[(k + 4 - img.turns as usize % 4) % 4], color: Color32::WHITE });
+                }
+                mesh.add_triangle(0, 1, 2);
+                mesh.add_triangle(0, 2, 3);
+                p.add(egui::Shape::mesh(mesh));
             }
         }
     }
@@ -2122,21 +2135,31 @@ fn sheet_2d(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, r: &sw_format::Br
     // texts: Revit's size is the capital height, about 0.72 of the font size
     for tx in &sh.texts {
         let px = tx.height / 0.72 * s;
-        if px < 2.5 || tx.text.is_empty() {
+        // drawn however small, as Revit does (only below a pixel it would not show at all)
+        if px < 1.0 || tx.text.is_empty() {
             continue;
         }
-        let px = (px * 2.0).round() * 0.5;
+        let px = ((px * 2.0).round() * 0.5).max(1.0);
         let a = to(tx.pos);
         if !vis.expand(px * 40.0).contains(a) {
             continue;
         }
-        let g = p.layout_no_wrap(tx.text.clone(), egui::FontId::proportional(px.min(400.0)), ink);
+        let font = if tx.bold { theme::semibold(px.min(400.0)) } else { egui::FontId::proportional(px.min(400.0)) };
         let d = vec2(tx.dir[0], -tx.dir[1]);
         let n = vec2(-d.y, d.x);
         let (ax, ay) = ([0.0, 0.5, 1.0][tx.halign.min(2) as usize], [0.0, 0.5, 1.0][tx.valign.min(2) as usize]);
-        let sz = g.size();
-        let pos = a - d * (ax * sz.x) - n * (ay * sz.y);
-        p.add(egui::epaint::TextShape::new(pos, g, ink).with_angle(d.y.atan2(d.x)));
+        // each line aligned on its own (centred, right-aligned paragraphs)
+        // wrapped at the text box width when the file gives it
+        let wrap = if tx.wrap > 0.0 { tx.wrap * s } else { f32::INFINITY };
+        let lines: Vec<_> = tx.text.split('\n').map(|l| p.layout(l.to_string(), font.clone(), ink, wrap)).collect();
+        let total: f32 = lines.iter().map(|g| g.size().y).sum();
+        let mut y = 0.0;
+        for g in lines {
+            let sz = g.size();
+            let pos = a - d * (ax * sz.x) - n * (ay * total - y);
+            y += sz.y;
+            p.add(egui::epaint::TextShape::new(pos, g, ink).with_angle(d.y.atan2(d.x)));
+        }
     }
     // placed views: hover frame, double-click opens the view
     let hover = resp.hover_pos();
@@ -2168,11 +2191,18 @@ fn sheet_2d(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, r: &sw_format::Br
     doc.sheet_cam = (zoom, pan);
     // caption, over the pasteboard at the bottom
     let label = browser_label(&r.label, r.kind);
-    let head = if r.start { format!("{} : {label}  ·  {}", tr("Feuille"), tr("vue de démarrage")) } else { format!("{} : {label}", tr("Feuille")) };
+    let schedule = r.kind == sw_format::BrowserKind::Schedule;
+    let what = if schedule { tr("Nomenclature") } else { tr("Feuille") };
+    let head = if r.start { format!("{what} : {label}  ·  {}", tr("vue de démarrage")) } else { format!("{what} : {label}") };
     let band = Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 52.0), rect.right_bottom());
     p.rect_filled(band, CornerRadius::ZERO, t.pasteboard.gamma_multiply(0.92));
     p.text(band.center_top() + vec2(0.0, 8.0), Align2::CENTER_TOP, head, theme::medium(13.0), t.text);
-    p.text(band.center_top() + vec2(0.0, 28.0), Align2::CENTER_TOP, tr("Lu dans le fichier (vues en arêtes, lignes cachées retirées) · molette : zoom · glisser : déplacer · double-clic : ouvrir une vue / recadrer"), theme::regular(11.5), t.text_muted);
+    let note = if schedule {
+        tr("Tableau enregistré dans le fichier (titre, en-têtes, cellules saisies) ; les lignes calculées par Revit n'y sont pas · molette : zoom · glisser : déplacer")
+    } else {
+        tr("Lu dans le fichier (vues en arêtes, lignes cachées retirées) · molette : zoom · glisser : déplacer · double-clic : ouvrir une vue / recadrer")
+    };
+    p.text(band.center_top() + vec2(0.0, 28.0), Align2::CENTER_TOP, note, theme::regular(11.5), t.text_muted);
 }
 
 fn empty_or_preview(ui: &mut egui::Ui, doc: &Document, rect: Rect) {

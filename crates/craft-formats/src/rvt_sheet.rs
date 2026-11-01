@@ -51,6 +51,11 @@ fn text_of(o: &Obj, k: &str) -> Option<String> {
 /// Plain text of a rich text (RTF) stream: groups of tables and destinations skipped,
 /// `\par` / `\line` as line breaks, `\'hh` (Windows-1252) and `\uN` characters decoded.
 pub fn rtf_text(b: &[u8]) -> String {
+    rtf_parse(b).0
+}
+
+/// [`rtf_text`] and whether most of the text is bold (`\b`).
+fn rtf_parse(b: &[u8]) -> (String, bool) {
     fn cp1252(c: u8) -> char {
         const HI: [u16; 32] = [
             0x20ac, 0x81, 0x201a, 0x192, 0x201e, 0x2026, 0x2020, 0x2021, 0x2c6, 0x2030, 0x160, 0x2039, 0x152, 0x8d, 0x17d, 0x8f, 0x90, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014, 0x2dc, 0x2122, 0x161, 0x203a, 0x153, 0x9d, 0x17e, 0x178,
@@ -62,24 +67,36 @@ pub fn rtf_text(b: &[u8]) -> String {
         }
     }
     if !b.starts_with(b"{\\rtf") {
-        return String::from_utf8_lossy(b).trim_end_matches('\0').to_string();
+        return (String::from_utf8_lossy(b).trim_end_matches('\0').to_string(), false);
     }
     let mut out = String::new();
-    let mut stack: Vec<(bool, i64)> = Vec::new();
-    let (mut skip, mut uc) = (false, 1i64);
+    let mut stack: Vec<(bool, i64, bool)> = Vec::new();
+    let (mut skip, mut uc, mut bold) = (false, 1i64, false);
     let mut pending_skip = 0i64;
+    // visible characters written, and how many of them bold
+    let (mut seen, mut shown, mut bolds, mut was_bold) = (0usize, 0usize, 0usize, false);
+    let mut count = |out: &str, seen: usize, was_bold: bool| {
+        let n = out[seen..].chars().filter(|c| !c.is_whitespace()).count();
+        shown += n;
+        if was_bold {
+            bolds += n;
+        }
+    };
     let mut i = 0;
     while i < b.len() {
+        count(&out, seen, was_bold);
+        (seen, was_bold) = (out.len(), bold);
         let c = b[i];
         match c {
             b'{' => {
-                stack.push((skip, uc));
+                stack.push((skip, uc, bold));
                 i += 1;
             }
             b'}' => {
-                if let Some((s, u)) = stack.pop() {
+                if let Some((s, u, w)) = stack.pop() {
                     skip = s;
                     uc = u;
+                    bold = w;
                 }
                 i += 1;
             }
@@ -106,6 +123,15 @@ pub fn rtf_text(b: &[u8]) -> String {
                     match word {
                         b"par" | b"line" if !skip => out.push('\n'),
                         b"tab" if !skip => out.push('\t'),
+                        b"endash" if !skip => out.push('\u{2013}'),
+                        b"emdash" if !skip => out.push('\u{2014}'),
+                        b"bullet" if !skip => out.push('\u{2022}'),
+                        b"lquote" if !skip => out.push('\u{2018}'),
+                        b"rquote" if !skip => out.push('\u{2019}'),
+                        b"ldblquote" if !skip => out.push('\u{201c}'),
+                        b"rdblquote" if !skip => out.push('\u{201d}'),
+                        b"b" => bold = param != Some(0),
+                        b"plain" => bold = false,
                         b"uc" => uc = param.unwrap_or(1),
                         b"u" => {
                             if !skip {
@@ -150,7 +176,8 @@ pub fn rtf_text(b: &[u8]) -> String {
             }
         }
     }
-    out.trim_end_matches(['\n', ' ', '\0']).to_string()
+    count(&out, seen, was_bold);
+    (out.trim_end_matches(['\n', ' ', '\0']).to_string(), shown > 0 && bolds * 2 > shown)
 }
 
 /// `m_height` of a text is its box: lines x size x this (measured on the 3, 5 and 8 mm types of
@@ -164,6 +191,11 @@ struct RawText {
     base: V3,
     height: f64,
     flags: i64,
+    /// Text type (`TextNoteAttributes`, `TagNoteAttributes`), and bold set in the text itself.
+    attr: i64,
+    bold: bool,
+    /// Width its lines wrap at (`m_lineWidth`, paper feet; 0 when `m_bNoWrapping`).
+    wrap: f64,
     /// Plain text, or for a label the parameters it shows: (param id, prefix, suffix, sample).
     text: String,
     params: Vec<(i64, String, String, String)>,
@@ -174,12 +206,12 @@ fn raw_text(o: &Obj, tr: &Tree) -> Option<RawText> {
     let base = v3(o.fs("m_baseVec")).unwrap_or([1.0, 0.0, 0.0]);
     let height = num(o, "m_height").filter(|h| *h > 0.0 && *h < 10.0)?;
     let flags = o.int("m_flags").unwrap_or(0);
-    let text = o
+    let (text, bold) = o
         .ptr("m_oRtfData")
         .or_else(|| o.ptr("m_oSavedRtfData"))
         .and_then(|i| tr.objs.get(i))
         .and_then(|r| match r.get("m_arrRtfStream") {
-            Some(G::Is(v)) => Some(rtf_text(&v.iter().map(|&x| x as u8).collect::<Vec<_>>())),
+            Some(G::Is(v)) => Some(rtf_parse(&v.iter().map(|&x| x as u8).collect::<Vec<_>>())),
             _ => None,
         })
         .unwrap_or_default();
@@ -188,19 +220,64 @@ fn raw_text(o: &Obj, tr: &Tree) -> Option<RawText> {
         .iter()
         .map(|p| (p.int("m_paramId").unwrap_or(-1), text_of(p, "m_prefix").unwrap_or_default(), text_of(p, "m_suffix").unwrap_or_default(), text_of(p, "m_sampleText").unwrap_or_default()))
         .collect();
-    Some(RawText { orig, base, height, flags, text, params })
+    let wrap = if o.int("m_bNoWrapping").unwrap_or(0) != 0 { 0.0 } else { num(o, "m_lineWidth").filter(|w| w.is_finite() && *w > 0.0).unwrap_or(0.0) };
+    Some(RawText { orig, base, height, flags, attr: o.int("m_attrId").unwrap_or(-1), bold, wrap, text, params })
 }
 
 /// A schedule's stored table: title / header sections (rows heights, column widths, cells).
 #[derive(Clone, Debug, Default)]
 struct Table {
     width: f64,
-    /// Sections shown, top to bottom: (column widths, row heights, cells (row, col, text)).
-    sections: Vec<(Vec<f64>, Vec<f64>, Vec<(usize, usize, String)>)>,
+    /// Sections shown, top to bottom: (title section, column widths, row heights, cells
+    /// (row, col, text)).
+    sections: Vec<(bool, Vec<f64>, Vec<f64>, Vec<(usize, usize, String)>)>,
+    /// Title shown when its cell is empty (the schedule's name).
+    name: String,
+    /// Rows stacked downwards from the position (`m_bBuildScheduleTopDown`), else upwards.
+    top_down: bool,
+    /// Fixed height below the title (`m_isFixedHeight`, `m_segZeroHeight`): Revit fills it
+    /// with empty body rows.
+    fixed: Option<f64>,
+    /// Least row height drawn below the title (feet), from the body text size.
+    pitch: f64,
+}
+
+/// Row height Revit draws for a schedule text of `pt` points: 1.92 x the size (measured on a
+/// 9 pt title block revision schedule: 0.240 in rows, stored rows of 0.167 in drawn as 0.240).
+fn row_pitch(pt: f64) -> f64 {
+    pt / 72.0 / 12.0 * 1.92
+}
+
+/// A schedule drawn by a family symbol (title block revision schedule), as stored in its
+/// `DBViewScheduleData`.
+fn symbol_table(d: &Obj, tr: &Tree) -> Option<Table> {
+    let data = d.ptr("m_oScheduleData").and_then(|i| tr.objs.get(i))?;
+    let mut t = table(data, tr);
+    let schema = d.ptr("m_oScheduleSchema").and_then(|i| tr.objs.get(i));
+    t.name = text_of(d, "m_name").unwrap_or_default();
+    t.top_down = schema.and_then(|s| s.int("m_bBuildScheduleTopDown")).unwrap_or(0) != 0;
+    if d.int("m_isFixedHeight").unwrap_or(0) != 0 {
+        t.fixed = num(d, "m_segZeroHeight").filter(|h| *h > 0.0 && *h < 10.0);
+    }
+    t.pitch = body_pitch(schema, tr);
+    Some(t)
+}
+
+/// Row height for the body text of a schedule (its first field's style, points).
+fn body_pitch(schema: Option<&Obj>, tr: &Tree) -> f64 {
+    let pt = schema
+        .and_then(|s| s.ptrs("m_pFields").first().copied())
+        .and_then(|i| tr.objs.get(i))
+        .and_then(|f| f.ptr("m_oStyle"))
+        .and_then(|i| tr.objs.get(i))
+        .and_then(|s| num(s, "m_textSize"))
+        .filter(|p| *p > 1.0 && *p < 72.0)
+        .unwrap_or(9.0);
+    row_pitch(pt)
 }
 
 fn table(data: &Obj, tr: &Tree) -> Table {
-    let mut t = Table { width: num(data, "m_WidthInFeet").unwrap_or(0.0), sections: vec![] };
+    let mut t = Table { width: num(data, "m_WidthInFeet").unwrap_or(0.0), ..Default::default() };
     for sec in data.ptrs("m_SectionData").iter().filter_map(|&i| tr.objs.get(i)) {
         if sec.int("m_hideSection").unwrap_or(0) != 0 {
             continue;
@@ -217,7 +294,7 @@ fn table(data: &Obj, tr: &Tree) -> Table {
             }
         }
         if !rows.is_empty() {
-            t.sections.push((cols, rows, cells));
+            t.sections.push((sec.int("m_index").unwrap_or(0) == 0, cols, rows, cells));
         }
     }
     t
@@ -225,6 +302,8 @@ fn table(data: &Obj, tr: &Tree) -> Table {
 
 #[derive(Default, Debug)]
 struct Sym {
+    /// Its family (`m_familyId`): the images of the family document belong to it.
+    family: i64,
     curves: Vec<Vec<V3>>,
     texts: Vec<RawText>,
     tags: Vec<RawText>,
@@ -269,6 +348,10 @@ struct ViewInfo {
     /// (`IckyExcludedCategoriesSetPtrWrapper.m_categoryIds`).
     hidden: std::collections::HashSet<i64>,
     hidden_cats: std::collections::HashSet<i64>,
+    /// Workset visibility set in this view (`WorksetVisibilityViewSettings`: workset GUID →
+    /// hidden), and the worksets it hides once resolved against the global setting.
+    ws_set: HashMap<[u8; 16], bool>,
+    hidden_ws: std::collections::HashSet<u32>,
     /// The view's level (`m_genElemId`) and its viewer element (`m_viewerId`).
     level: i64,
     viewer: i64,
@@ -388,6 +471,13 @@ pub struct Sheets {
     image_syms: HashMap<i64, (i64, f64, f64)>,
     /// image instance id → symbol id
     image_inst: HashMap<i64, i64>,
+    /// image symbol id → its family (images loaded in a family)
+    image_fam: HashMap<i64, i64>,
+    /// images placed in family documents: (image symbol, centre, base direction, width,
+    /// height), family coordinates (feet)
+    fam_images: Vec<(i64, V3, V3, f64, f64)>,
+    /// text types drawn bold (`m_lineAndTextAttr.m_bBold`)
+    bold_types: std::collections::HashSet<i64>,
     holders: HashMap<i64, Vec<u8>>,
     holder_bytes: usize,
     project: HashMap<i64, String>,
@@ -398,9 +488,15 @@ pub struct Sheets {
     section_boxes: HashMap<i64, Crop>,
     /// view annotations (detail lines, filled regions, dimensions, tags)
     ann: crate::rvt_annot::Annots,
+    /// Worksets hidden in the views that do not set them (`WorksetVisibilitySettingsElem`).
+    global_hidden_ws: std::collections::HashSet<[u8; 16]>,
+    /// element id → its workset (partition id)
+    elem_ws: HashMap<i64, u32>,
+    /// Images decoded once (a title block logo repeats on every sheet).
+    decoded: std::sync::Mutex<HashMap<i64, Option<std::sync::Arc<Rgba>>>>,
 }
 
-const CLASSES: [&str; 12] = [
+const CLASSES: [&str; 15] = [
     "FamilySymbol",
     "FamilyInstance",
     "Viewport",
@@ -413,6 +509,9 @@ const CLASSES: [&str; 12] = [
     "ProjectInfo",
     "Level",
     "ModelClipBox",
+    "TextNoteAttributes",
+    "TagNoteAttributes",
+    "WorksetVisibilitySettingsElem",
 ];
 /// Most bytes of saved images kept.
 const MAX_IMAGES: usize = 96 << 20;
@@ -471,14 +570,15 @@ impl Sheets {
                     for si in all.ptrs("m_scheduleInstanceDataArr").iter().filter_map(|&i| tr.objs.get(i)) {
                         let Some(pos) = si.obj("m_position").and_then(|p| v3(p.fs("m_xyz"))) else { continue };
                         let Some(d) = si.int("m_dBViewScheduleDataIndex").and_then(|k| datas.get(k as usize)) else { continue };
-                        let Some(data) = d.ptr("m_oScheduleData").and_then(|i| tr.objs.get(i)) else { continue };
-                        tables.push((pos, table(data, tr)));
+                        if let Some(t) = symbol_table(d, tr) {
+                            tables.push((pos, t));
+                        }
                     }
                 }
                 if curves.is_empty() && texts.is_empty() && tags.is_empty() {
                     return;
                 }
-                self.symbols.insert(tr.id, Sym { curves, texts, tags, tables, outline });
+                self.symbols.insert(tr.id, Sym { family: r.int("m_familyId").unwrap_or(-1), curves, texts, tags, tables, outline });
             }
             "FamilyInstance" if owner > 0 => {
                 let Some(ii) = r.ptr("m_pInstanceInfo").and_then(|i| tr.objs.get(i)) else { return };
@@ -528,13 +628,28 @@ impl Sheets {
                 }
             }
             "ImageSymbol" => {
-                if let (Some(h), Some(w), Some(hh)) = (r.int("m_idImageHolder"), num(r, "m_widthInFeet"), num(r, "m_heightInFeet")) {
+                if let Some(h) = r.int("m_idImageHolder") {
+                    let (w, hh) = (num(r, "m_widthInFeet").unwrap_or(0.0), num(r, "m_heightInFeet").unwrap_or(0.0));
                     self.image_syms.insert(tr.id, (h, w, hh));
+                }
+                if let Some(f) = r.int("m_famId").filter(|f| *f > 0) {
+                    self.image_fam.insert(tr.id, f);
                 }
             }
             "ImageInstance" => {
-                if let Some(sym) = r.ptr("m_pImageInfo").and_then(|i| tr.objs.get(i)).and_then(|o| o.int("m_symbolId")) {
-                    self.image_inst.insert(tr.id, sym);
+                let Some(info) = r.ptr("m_pImageInfo").and_then(|i| tr.objs.get(i)) else { return };
+                let Some(sym) = info.int("m_symbolId") else { return };
+                self.image_inst.insert(tr.id, sym);
+                // placed in a family document (logo of a title block): centre and size
+                if r.int("m_famId").unwrap_or(-1) > 0 {
+                    let (Some(w), Some(h), Some(t)) = (num(info, "m_dWidth"), num(info, "m_dHeight"), info.obj("m_Trf").and_then(Trf::from)) else { return };
+                    let base = t.lin(v3(info.fs("m_baseVec")).unwrap_or([1.0, 0.0, 0.0]));
+                    self.fam_images.push((sym, t.apply([0.0, 0.0, 0.0]), base, w, h));
+                }
+            }
+            "TextNoteAttributes" | "TagNoteAttributes" => {
+                if r.obj("m_lineAndTextAttr").and_then(|a| a.int("m_bBold")).unwrap_or(0) != 0 {
+                    self.bold_types.insert(tr.id);
                 }
             }
             "ImageHolder" => {
@@ -546,6 +661,11 @@ impl Sheets {
                 }
             }
             "ProjectInfo" => self.project.extend(strings(tr)),
+            "WorksetVisibilitySettingsElem" => {
+                if let Some(G::L(l)) = r.get("m_invisibleWorksets") {
+                    self.global_hidden_ws.extend(l.iter().filter_map(guid_of));
+                }
+            }
             "Level" => {
                 if let Some(z) = r.ptr("m_pSurface").and_then(|i| tr.objs.get(i)).and_then(|p| v3(p.fs("m_origin"))) {
                     self.levels.push(z[2]);
@@ -597,21 +717,59 @@ impl Sheets {
                         strs: strings(tr),
                         hidden: ids_of(tr, s, "HiddenElementsViewSettings", "m_hiddenElements"),
                         hidden_cats: ids_of(tr, s, "IckyExcludedCategoriesSetPtrWrapper", "m_categoryIds"),
+                        ws_set: workset_settings(tr, s),
+                        hidden_ws: Default::default(),
                     },
                 );
                 if let Some(data) = r.ptr("m_pData").and_then(|i| tr.objs.get(i)).filter(|o| s.name(o.tag) == "ScheduleData") {
-                    self.tables.insert(tr.id, table(data, tr));
+                    // placed on the sheet by its top left corner
+                    // drawn at the stored row heights (Revit keeps them, even below the text size)
+                    self.tables.insert(tr.id, Table { top_down: true, ..table(data, tr) });
                 }
             }
             _ => {}
         }
     }
 
+    /// A text drawn bold: by its type or in its own rich text.
+    fn is_bold(&self, t: &RawText) -> bool {
+        t.bold || self.bold_types.contains(&t.attr)
+    }
+
     fn image(&self, sym: i64) -> Option<(std::sync::Arc<Rgba>, f64, f64)> {
         let &(h, w, hh) = self.image_syms.get(&sym)?;
-        let b = self.holders.get(&h)?;
-        let img = image::load_from_memory(b).ok()?.to_rgba8();
-        Some((std::sync::Arc::new(Rgba { width: img.width(), height: img.height(), pixels: img.into_raw() }), w, hh))
+        let mut cache = self.decoded.lock().unwrap_or_else(|e| e.into_inner());
+        let img = cache
+            .entry(h)
+            .or_insert_with(|| {
+                let img = image::load_from_memory(self.holders.get(&h)?).ok()?.to_rgba8();
+                Some(std::sync::Arc::new(Rgba { width: img.width(), height: img.height(), pixels: img.into_raw() }))
+            })
+            .clone()?;
+        Some((img, w, hh))
+    }
+
+    /// Schedule views drawn as their stored table (title, headers, typed-in cells; the rows
+    /// Revit computes from the elements are not stored), with a margin around it.
+    pub fn schedules(&self, ids: &[i64]) -> Vec<Sheet2d> {
+        let mut out = Vec::new();
+        for &id in ids {
+            let Some(tb) = self.tables.get(&id).filter(|t| !t.sections.is_empty()) else { continue };
+            let name = self.views.get(&id).map(|v| v.name.clone()).unwrap_or_default();
+            let mut sh = Sheet2d { id, ..Default::default() };
+            self.draw_table(&mut sh, &Table { name, ..tb.clone() }, [0.0, 0.0, 0.0]);
+            let mut e = [f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
+            for q in sh.lines.iter().flatten() {
+                e = [e[0].min(q[0]), e[1].min(q[1]), e[2].max(q[0]), e[3].max(q[1])];
+            }
+            if !e[0].is_finite() {
+                continue;
+            }
+            let m = ((e[2] - e[0]).max(e[3] - e[1]) * 0.04).max(0.005);
+            sh.extent = [e[0] - m, e[1] - m, e[2] + m, e[3] + m];
+            out.push(sh);
+        }
+        out
     }
 
     /// The sheets' drawings. `model`: what the placed views show, element id → (box min,
@@ -712,7 +870,27 @@ impl Sheets {
     /// Whether view `id` hides element `elem` of category `cat` (hidden in the view, or its
     /// category switched off in the view's visibility settings).
     pub fn view_hides(&self, id: i64, elem: i64, cat: i64) -> bool {
-        self.views.get(&id).is_some_and(|v| v.hidden_cats.contains(&cat) || (elem != 0 && v.hidden.contains(&elem)))
+        self.views.get(&id).is_some_and(|v| self.hides(v, elem, cat))
+    }
+
+    /// Whether `view` does not show element `elem` (0: a merged zone) of category `cat`: its
+    /// category switched off, the element hidden, or its workset hidden.
+    fn hides(&self, view: &ViewInfo, elem: i64, cat: i64) -> bool {
+        view.hidden_cats.contains(&cat) || (elem != 0 && (view.hidden.contains(&elem) || self.elem_ws.get(&elem).is_some_and(|w| view.hidden_ws.contains(w))))
+    }
+
+    /// Worksets of a workshared project: `partitions` (`/Global/PartitionTable`) and
+    /// `elems` (`/Global/ElemTable`). Each view hides the worksets it sets hidden, and those
+    /// hidden globally that it does not set.
+    pub fn set_worksets(&mut self, partitions: &[u8], elems: &[u8]) {
+        let ws = crate::rvt_model::worksets(partitions);
+        self.elem_ws = crate::rvt_model::elem_worksets(elems, &ws);
+        if self.elem_ws.is_empty() {
+            return;
+        }
+        for v in self.views.values_mut() {
+            v.hidden_ws = ws.iter().filter(|(g, _)| v.ws_set.get(*g).copied().unwrap_or_else(|| self.global_hidden_ws.contains(*g))).map(|(_, &id)| id).collect();
+        }
     }
 
     /// How the views look at the model: direction and up of each view, and what it keeps of
@@ -821,11 +999,21 @@ impl Sheets {
                     }
                 }
             }
+            // images placed in the family (logos), under its lines
+            for &(isym, c, base, w, h) in self.fam_images.iter().filter(|i| sy.family > 0 && self.image_fam.get(&i.0) == Some(&sy.family)) {
+                let Some((img, _, _)) = self.image(isym) else { continue };
+                let (c, b) = (tf.apply(c), tf.lin(base));
+                let k = trf_scale(tf);
+                // quarter turns of the image's base direction on the paper
+                let turns = ((b[1].atan2(b[0]) / std::f64::consts::FRAC_PI_2).round().rem_euclid(4.0)) as u8;
+                let (hw, hh) = if turns % 2 == 0 { (w * k * 0.5, h * k * 0.5) } else { (h * k * 0.5, w * k * 0.5) };
+                out.images.push(Image2d { rect: [m(c[0] - hw), m(c[1] - hh), m(c[0] + hw), m(c[1] + hh)], image: img, turns });
+            }
             for c in &sy.curves {
                 out.lines.push(c.iter().map(|p| tf.apply(*p)).map(|q| pt([q[0], q[1]])).collect());
             }
             for t in &sy.texts {
-                push_text(&mut out, t, Some(tf), trf_scale(tf), t.text.clone());
+                push_text(&mut out, t, Some(tf), trf_scale(tf), t.text.clone(), self.is_bold(t));
             }
             for t in &sy.tags {
                 let mut s = String::new();
@@ -839,15 +1027,14 @@ impl Sheets {
                     }
                     s += &format!("{pre}{v}{suf}");
                 }
-                push_text(&mut out, t, Some(tf), trf_scale(tf), s);
+                push_text(&mut out, t, Some(tf), trf_scale(tf), s, self.is_bold(t));
             }
             for (pos, tb) in &sy.tables {
-                // in a title block the schedule grows upwards from its position
-                self.draw_table(&mut out, tb, tf.apply(*pos), true);
+                self.draw_table(&mut out, tb, tf.apply(*pos));
             }
         }
         for (_, t) in self.texts.iter().filter(|t| t.0 == id) {
-            push_text(&mut out, t, None, 1.0, t.text.clone());
+            push_text(&mut out, t, None, 1.0, t.text.clone(), self.is_bold(t));
         }
         // annotations drawn on the sheet itself (detail lines, filled regions…)
         let mut d = crate::rvt_annot::Drawn::default();
@@ -855,7 +1042,7 @@ impl Sheets {
         put_drawn(&mut out, &d, &|p| p);
         for (_, o, sch) in self.sched_inst.iter().filter(|s| s.0 == id) {
             if let Some(tb) = self.tables.get(sch) {
-                self.draw_table(&mut out, tb, *o, false);
+                self.draw_table(&mut out, tb, *o);
             }
         }
         // placed views
@@ -868,7 +1055,7 @@ impl Sheets {
             let mut rect: Option<[f64; 4]> = None;
             if let Some((img, w, h)) = self.image_inst.get(&view.image).and_then(|s| self.image(*s)) {
                 let r = [c[0] - w * 0.5, c[1] - h * 0.5, c[0] + w * 0.5, c[1] + h * 0.5];
-                out.images.push(Image2d { rect: [m(r[0]), m(r[1]), m(r[2]), m(r[3])], image: img });
+                out.images.push(Image2d { rect: [m(r[0]), m(r[1]), m(r[2]), m(r[3])], image: img, turns: 0 });
                 rect = Some(r);
             } else if vp.scale > 1e-6 {
                 rect = self.draw_view(&mut out, view, vp, edges);
@@ -881,9 +1068,9 @@ impl Sheets {
                 out.lines.push(vec![pt(l0), pt(l1)]);
                 let h = 0.012; // about 3.5 mm, the usual size of view titles
                 let head = if vp.number.is_empty() { view.name.clone() } else { format!("{}  {}", vp.number, view.name) };
-                out.texts.push(Text2d { pos: pt([l0[0], l0[1] + h * 0.4]), dir: [1.0, 0.0], height: m(h), halign: 0, valign: 2, text: head });
+                out.texts.push(Text2d { pos: pt([l0[0], l0[1] + h * 0.4]), dir: [1.0, 0.0], height: m(h), halign: 0, valign: 2, text: head, bold: false, wrap: 0.0 });
                 if vp.scale > 1e-6 && vp.scale < 0.99 {
-                    out.texts.push(Text2d { pos: pt([l0[0], l0[1] - h * 0.4]), dir: [1.0, 0.0], height: m(h * 0.7), halign: 0, valign: 0, text: format!("1 : {}", (1.0 / vp.scale).round()) });
+                    out.texts.push(Text2d { pos: pt([l0[0], l0[1] - h * 0.4]), dir: [1.0, 0.0], height: m(h * 0.7), halign: 0, valign: 0, text: format!("1 : {}", (1.0 / vp.scale).round()), bold: false, wrap: 0.0 });
                 }
             }
         }
@@ -908,23 +1095,33 @@ impl Sheets {
         out
     }
 
-    /// A schedule's stored rows (title, headers): grid and cell texts. `up`: rows stacked
-    /// upwards from `o` (title block revision schedules), else downwards (top left corner).
-    fn draw_table(&self, out: &mut Sheet2d, tb: &Table, o: V3, up: bool) {
+    /// A schedule's stored rows (title, headers): grid and cell texts, stacked downwards from
+    /// `o` (top left corner) unless the table grows upwards; a fixed height table filled with
+    /// empty body rows.
+    fn draw_table(&self, out: &mut Sheet2d, tb: &Table, o: V3) {
         let m = |x: f64| (x * FEET) as f32;
+        let up = !tb.top_down;
         let mut y = o[1];
-        let width = if tb.width > 1e-6 { tb.width } else { tb.sections.iter().map(|s| s.0.iter().sum::<f64>()).fold(0.0, f64::max) };
+        let width = if tb.width > 1e-6 { tb.width } else { tb.sections.iter().map(|s| s.1.iter().sum::<f64>()).fold(0.0, f64::max) };
         if width <= 1e-6 {
             return;
         }
+        let rect = |out: &mut Sheet2d, y0: f64, y1: f64| out.lines.push(vec![[m(o[0]), m(y0)], [m(o[0] + width), m(y0)], [m(o[0] + width), m(y1)], [m(o[0]), m(y1)], [m(o[0]), m(y0)]]);
+        // bottom of the title (top of the fixed height)
+        let mut below_title = y;
         let sections: Vec<_> = if up { tb.sections.iter().rev().collect() } else { tb.sections.iter().collect() };
-        for (cols, rows, cells) in sections {
+        for (title, cols, rows, cells) in sections {
             let rows_order: Vec<usize> = if up { (0..rows.len()).rev().collect() } else { (0..rows.len()).collect() };
             for r in rows_order {
-                let h = rows[r].max(0.005);
+                // at least a text line high: rows with text, and all rows below the title
+                let texted = cells.iter().any(|c| c.0 == r);
+                let h = if *title && !texted { rows[r] } else { rows[r].max(tb.pitch) }.max(0.005);
                 let (y0, y1) = if up { (y, y + h) } else { (y - h, y) };
-                out.lines.push(vec![[m(o[0]), m(y0)], [m(o[0] + width), m(y0)], [m(o[0] + width), m(y1)], [m(o[0]), m(y1)], [m(o[0]), m(y0)]]);
-                let row_cells: Vec<&(usize, usize, String)> = cells.iter().filter(|c| c.0 == r).collect();
+                rect(out, y0, y1);
+                let mut row_cells: Vec<(usize, usize, String)> = cells.iter().filter(|c| c.0 == r).cloned().collect();
+                if *title && row_cells.is_empty() && !tb.name.is_empty() {
+                    row_cells.push((r, 0, tb.name.clone()));
+                }
                 let multi = cols.len() > 1 && row_cells.len() > 1;
                 let mut x = o[0];
                 for (k, w) in cols.iter().enumerate() {
@@ -933,12 +1130,35 @@ impl Sheets {
                     }
                     if let Some(c) = row_cells.iter().find(|c| c.1 == k) {
                         let (cx, cw) = if multi { (x, *w) } else { (o[0], width) };
-                        out.texts.push(Text2d { pos: [m(cx + cw * 0.5), m((y0 + y1) * 0.5)], dir: [1.0, 0.0], height: m((h * 0.45).min(0.0156)), halign: 1, valign: 1, text: c.2.clone() });
+                        // letter height: most of the row, shrunk to fit the cell (no wrapping; a
+                        // letter is about 0.75 of its height wide)
+                        let lines = c.2.lines().count().max(1) as f64;
+                        let chars = c.2.lines().map(|l| l.chars().count()).max().unwrap_or(0).max(1) as f64;
+                        let th = (h * 0.6 / lines).min(0.0156).min(cw * 0.92 / (chars * 0.75));
+                        out.texts.push(Text2d { pos: [m(cx + cw * 0.5), m((y0 + y1) * 0.5)], dir: [1.0, 0.0], height: m(th), halign: 1, valign: 1, text: c.2.clone(), ..Default::default() });
                     }
                     x += w;
                 }
                 y = if up { y1 } else { y0 };
             }
+            if *title {
+                below_title = y;
+            }
+        }
+        // fixed height: empty body rows down to its bottom, with the columns of the headers
+        let (Some(fixed), false) = (tb.fixed, up) else { return };
+        let pitch = tb.pitch.max(0.005);
+        let n = ((y - (below_title - fixed)) / pitch + 1e-6).floor().max(0.0) as usize;
+        let cols = tb.sections.iter().rev().find(|s| !s.0).map(|s| s.1.clone()).unwrap_or_default();
+        for _ in 0..n.min(500) {
+            let (y0, y1) = (y - pitch, y);
+            rect(out, y0, y1);
+            let mut x = o[0];
+            for w in cols.iter().take(cols.len().saturating_sub(1)) {
+                x += w;
+                out.lines.push(vec![[m(x), m(y0)], [m(x), m(y1)]]);
+            }
+            y = y0;
         }
     }
 
@@ -986,10 +1206,10 @@ impl Sheets {
             z.is_finite().then_some(z)
         });
         let mut cuts: Vec<[V3; 2]> = Vec::new();
-        // drafting views draw no model, only their own lines
-        let drafting = view.class.contains("Drafting");
+        // drafting views and legends draw no model, only their own lines, texts and symbols
+        let drafting = view.class.contains("Drafting") || view.class.contains("Legend");
         for (id, cat, lo, hi, list, mesh) in edges.items.iter().filter(|_| !drafting) {
-            if view.hidden.contains(id) || view.hidden_cats.contains(cat) || keep.is_some_and(|k| k.misses(ft(*lo), ft(*hi))) {
+            if self.hides(view, *id, *cat) || keep.is_some_and(|k| k.misses(ft(*lo), ft(*hi))) {
                 continue;
             }
             for e in list {
@@ -1082,7 +1302,8 @@ impl Sheets {
         if uv_box.is_none() {
             // no crop: the extents of what is seen
             let mut e = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
-            for p in segs.iter().flatten().map(|p| [p[0], p[1]]).chain(ann.strokes.iter().flat_map(|s| s.0.iter().copied())) {
+            let texts = self.texts.iter().filter(|t| t.0 == vp.view).map(|t| proj(t.1.orig));
+            for p in segs.iter().flatten().map(|p| [p[0], p[1]]).chain(ann.strokes.iter().flat_map(|s| s.0.iter().copied())).chain(texts) {
                 e = [e[0].min(p[0]), e[1].min(p[1]), e[2].max(p[0]), e[3].max(p[1])];
             }
             if !e[0].is_finite() {
@@ -1095,7 +1316,10 @@ impl Sheets {
         // the centre of what is seen is used
         // (a crop region that is not active counts as none: 3D views and uncropped plans are
         // centred on what they show)
-        let (cu, cv) = if cropped { (0.0, 0.0) } else { ((ub[0] + ub[2]) * 0.5, (ub[1] + ub[3]) * 0.5) };
+        // (legends put their origin there too: their title then sits under their lower left
+        // corner, as in Revit)
+        let legend = view.class.contains("Legend");
+        let (cu, cv) = if cropped || legend { (0.0, 0.0) } else { ((ub[0] + ub[2]) * 0.5, (ub[1] + ub[3]) * 0.5) };
         let k = vp.scale;
         if std::env::var_os("SHEET_DEBUG").is_some() {
             eprintln!("  view {} {:?} {} crop {:?} ub {:?} offset {:?} label {:?} len {} k {}", vp.view, view.name, view.class, crop.map(|c| (c.orig, c.off, c.active)), ub, vp.offset, vp.label, vp.label_len, k);
@@ -1160,7 +1384,7 @@ impl Sheets {
             if !inside([mp.apply(t.orig)[0], mp.apply(t.orig)[1]]) {
                 continue;
             }
-            push_text(out, t, Some(&mp), 1.0, t.text.clone());
+            push_text(out, t, Some(&mp), 1.0, t.text.clone(), self.is_bold(t));
         }
         for tg in self.ann.tags.iter().filter(|t| t.owner == vp.view) {
             let Some(sy) = self.symbols.get(&tg.symbol) else { continue };
@@ -1175,7 +1399,7 @@ impl Sheets {
                 out.strokes.push(Stroke2d { pts: cv.iter().map(|p| tf.apply(*p)).map(|q| [m(q[0]), m(q[1])]).collect(), width: w, color: [0; 3] });
             }
             for t in &sy.texts {
-                push_text(out, t, Some(&tf), 1.0, t.text.clone());
+                push_text(out, t, Some(&tf), 1.0, t.text.clone(), self.is_bold(t));
             }
             // labels: the tagged element's text parameters, else its type's
             let ty = self.ann.inst_type.get(&tg.target);
@@ -1184,7 +1408,7 @@ impl Sheets {
                     let v = self.ann.strs.get(&tg.target).and_then(|x| x.get(p)).or_else(|| ty.and_then(|y| self.ann.strs.get(y)).and_then(|x| x.get(p)))?;
                     (!v.is_empty()).then(|| format!("{pre}{v}{suf}"))
                 }).collect();
-                push_text(out, t, Some(&tf), 1.0, vals.join(" "));
+                push_text(out, t, Some(&tf), 1.0, vals.join(" "), self.is_bold(t));
             }
         }
         let a = to_paper([ub[0], ub[1]]);
@@ -1200,7 +1424,7 @@ fn trf_scale(tf: &Trf) -> f64 {
 }
 
 /// A text placed by `tf` (paper feet out), its height scaled by `hk`.
-fn push_text(out: &mut Sheet2d, t: &RawText, tf: Option<&Trf>, hk: f64, text: String) {
+fn push_text(out: &mut Sheet2d, t: &RawText, tf: Option<&Trf>, hk: f64, text: String, bold: bool) {
     if text.trim().is_empty() {
         return;
     }
@@ -1210,13 +1434,44 @@ fn push_text(out: &mut Sheet2d, t: &RawText, tf: Option<&Trf>, hk: f64, text: St
         None => (t.orig, t.base),
     };
     let l = (b[0] * b[0] + b[1] * b[1]).sqrt().max(1e-9);
+    // alignment flags: left / centre / right 64 / 128 / 256 (and 0 / 1 / 2 in the low bits),
+    // top / middle / bottom 512 / 1024 / 2048
     let h = (t.flags & 3) as u8;
-    let v = match (t.flags >> 6) & 7 {
-        2 => 1,
-        4 => 2,
-        _ => 0,
+    let v = if t.flags & 2048 != 0 {
+        2
+    } else if t.flags & 1024 != 0 {
+        1
+    } else {
+        0
     };
-    out.texts.push(Text2d { pos: [m(o[0]), m(o[1])], dir: [(b[0] / l) as f32, (b[1] / l) as f32], height: m(t.height * hk / LINE_BOX / text.lines().count().max(1) as f64), halign: h.min(2), valign: v, text });
+    let size = text_size(t.height, t.wrap, &text) * hk;
+    out.texts.push(Text2d { pos: [m(o[0]), m(o[1])], dir: [(b[0] / l) as f32, (b[1] / l) as f32], height: m(size), halign: h.min(2), valign: v, text, bold, wrap: m(t.wrap * hk) });
+}
+
+/// Letter size of a text whose box is `box_h` high (feet): the box holds its lines as drawn,
+/// so with a wrapping width `wrap` (0: none) the long paragraphs count for the lines they
+/// wrap to (a letter about 0.8 of the size wide): the largest size whose lines fill the box.
+fn text_size(box_h: f64, wrap: f64, text: &str) -> f64 {
+    let paras: Vec<f64> = text.lines().map(|p| p.chars().count() as f64).collect();
+    let top = box_h / LINE_BOX / paras.len().max(1) as f64;
+    if wrap <= 0.0 {
+        return top;
+    }
+    let lines = |size: f64| paras.iter().map(|c| (c * 0.8 * size / wrap - 1e-9).ceil().max(1.0)).sum::<f64>().max(1.0);
+    let (mut lo, mut hi) = (0.0, top);
+    for _ in 0..40 {
+        let mid = (lo + hi) * 0.5;
+        if lines(mid) * mid * LINE_BOX <= box_h * (1.0 + 1e-9) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    if lines(top) * top * LINE_BOX <= box_h * (1.0 + 1e-9) {
+        top
+    } else {
+        lo
+    }
 }
 
 /// Annotation geometry (`Drawn`, view plane) put on the paper by `to_paper`.
@@ -1236,7 +1491,7 @@ fn put_drawn(out: &mut Sheet2d, d: &crate::rvt_annot::Drawn, to_paper: &dyn Fn(P
         let (a, b) = (to_paper(*p), to_paper([p[0] + dir[0], p[1] + dir[1]]));
         let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
         let l = (dx * dx + dy * dy).sqrt().max(1e-12);
-        out.texts.push(Text2d { pos: [m(a[0]), m(a[1])], dir: [(dx / l) as f32, (dy / l) as f32], height: m(*h), halign: 1, valign: 2, text: text.clone() });
+        out.texts.push(Text2d { pos: [m(a[0]), m(a[1])], dir: [(dx / l) as f32, (dy / l) as f32], height: m(*h), halign: 1, valign: 2, text: text.clone(), bold: false, wrap: 0.0 });
     }
 }
 
@@ -1279,6 +1534,33 @@ fn clip(a: P2, b: P2, r: [f64; 4]) -> Option<(P2, P2)> {
 }
 
 /// The ids listed in field `field` of the objects of class `class` in element `tr`.
+/// GUID of a `PartitionGUID` (nested objects down to its 16 bytes).
+fn guid_of(o: &Obj) -> Option<[u8; 16]> {
+    match o.fields.first().map(|f| &f.1)? {
+        G::O(x) => guid_of(x),
+        G::Raw(r) => r.as_slice().try_into().ok(),
+        _ => None,
+    }
+}
+
+/// A view's workset visibility (`WorksetVisibilityViewSettings.m_worksetVisibilityPGUIDMap`):
+/// workset GUID → hidden.
+fn workset_settings(tr: &Tree, s: &Schema) -> HashMap<[u8; 16], bool> {
+    tr.objs
+        .iter()
+        .filter(|o| s.name(o.tag) == "WorksetVisibilityViewSettings")
+        .filter_map(|o| match o.get("m_worksetVisibilityPGUIDMap") {
+            Some(G::L(l)) => Some(l),
+            _ => None,
+        })
+        .flatten()
+        .filter_map(|e| match e.get("first")? {
+            G::O(g) => Some((guid_of(g)?, e.int("second")? != 0)),
+            _ => None,
+        })
+        .collect()
+}
+
 fn ids_of(tr: &Tree, s: &Schema, class: &str, field: &str) -> std::collections::HashSet<i64> {
     tr.objs
         .iter()
@@ -1355,9 +1637,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn wrapped_text_size() {
+        // two lines, no wrapping: the box holds them
+        assert!((text_size(2.0 * LINE_BOX * 0.01, 0.0, "ab\ncd") - 0.01).abs() < 1e-12);
+        // one paragraph wrapped to 4 lines in its box
+        let t = "x".repeat(100);
+        let s = text_size(4.0 * LINE_BOX * 0.01, 0.25, &t);
+        assert!((s - 0.01).abs() < 1e-8, "{s}");
+    }
+
+    #[test]
     fn rtf_plain() {
         let r = br"{\rtf1\ansi\ansicpg1252\deff0{\fonttbl{\f0\fnil Arial;}}{\colortbl ;\red0\green0\blue0;}\viewkind4\uc1\pard\cf1\f0\fs20 Caf\'e9 \u8364?\par Ligne 2\par}";
         assert_eq!(rtf_text(r), "Café €\nLigne 2");
+        let r = br"{\rtf1\ansi{\fonttbl{\f0\fnil Arial;}}\pard\qc\b\fs40 Base vie \endash  Piste\par 77\~777\par}";
+        assert_eq!(rtf_parse(r), ("Base vie \u{2013} Piste\n77\u{a0}777".to_string(), true));
+        assert!(!rtf_parse(br"{\rtf1 a \b b\b0  cde\par}").1);
     }
 
     #[test]

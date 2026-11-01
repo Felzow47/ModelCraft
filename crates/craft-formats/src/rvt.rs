@@ -250,6 +250,13 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
             let rows: std::collections::HashSet<i64> = s.browser.iter().filter(|r| r.kind == sw_format::BrowserKind::Sheet && r.id > 0).map(|r| r.id).collect();
             sheet_ids = m.views.iter().filter(|v| rows.contains(&v.id)).map(|v| (v.id, v.sheet_number.clone(), v.name.clone())).collect();
         }
+        // worksets: which one holds each element (views hide some)
+        if let (Some(p), Some(e)) = (
+            rvt_model::read_stream(&mut cf, "/Global/PartitionTable", 256 << 20, 256 << 20, |_| true),
+            rvt_model::read_stream(&mut cf, "/Global/ElemTable", 256 << 20, 256 << 20, |_| true),
+        ) {
+            sheets.set_worksets(&p.data, &e.data);
+        }
     } else if let Some(f) = rvt_model::read_stream(&mut cf, "/Formats/Latest", 64 << 20, 64 << 20, |_| true).filter(|f| f.verified > 0) {
         let sc = crate::rvt_browser::Schema::parse(&f.data);
         for (n, _) in names.iter().filter(|(n, _)| n.starts_with("Partitions/")) {
@@ -311,6 +318,9 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
         };
         s.sheets = sheets.finish(&sheet_ids, &model);
     }
+    // schedules: their stored table
+    let schedules: Vec<i64> = s.browser.iter().filter(|r| r.kind == sw_format::BrowserKind::Schedule && r.id > 0).map(|r| r.id).collect();
+    s.sheets.extend(sheets.schedules(&schedules));
     if !family {
         // how each view looks at the model (Revit view direction, crop region)
         let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);

@@ -407,6 +407,7 @@ impl App {
                     d.explode_panel = true;
                     if d.asm.can_explode() {
                         d.asm.explode_goal = if d.asm.explode_goal > 0.0 { 0.0 } else { 1.0 };
+                        d.needs_fit = true;
                     }
                     ctx.request_repaint();
                 }
@@ -902,6 +903,10 @@ impl App {
                 }
             }
             "explode" => {
+                // the model, not a sheet the file opens on
+                if d.view_ctx.is_some() {
+                    d.leave_view();
+                }
                 d.asm.explode_goal = 1.0;
                 d.asm.explode = 1.0;
                 d.apply_transforms();

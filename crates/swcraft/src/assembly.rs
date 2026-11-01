@@ -31,10 +31,11 @@ pub struct Assembly {
 
 /// Faded opacity of the other components when "transparency of the others" is on.
 pub const OTHERS_OPACITY: f32 = 0.18;
-/// At 100 %, a piece's distance from the model centre grows by this factor (1 = doubled)…
-pub const EXPLODE_SPREAD: f32 = 1.0;
+/// At 100 %, a piece's distance from the model centre grows by this factor (4 = five times
+/// as far: every gap between neighbours five times wider, the pieces well apart)…
+pub const EXPLODE_SPREAD: f32 = 4.0;
 /// …plus this fraction of the model's half-diagonal, so pieces near the centre still move out.
-pub const EXPLODE_PUSH: f32 = 0.6;
+pub const EXPLODE_PUSH: f32 = 1.2;
 /// Up to this many pieces the push is full; above, it shrinks as 1/count.
 pub const EXPLODE_PUSH_PIECES: f32 = 6.0;
 /// From this many pieces on, the explosion centre is the per-axis median of the piece
@@ -211,6 +212,27 @@ impl Assembly {
         }
         let inv = pa.inverse();
         inv.transform_vector3(e)
+    }
+
+    /// Framing box of the model exploded at `t`: where the pieces' centres end up, without the
+    /// farthest 3 % on each side of each axis (a few stray elements thrown far out do not
+    /// shrink the rest to a dot), padded by a tenth. `lo`..`hi` when nothing moves.
+    pub fn exploded_box(&self, lo: Vec3, hi: Vec3, t: f32) -> (Vec3, Vec3) {
+        let t = t.clamp(0.0, 1.0);
+        let pts: Vec<Vec3> = self.world_off.iter().zip(&self.own_center).filter(|(o, _)| **o != Vec3::ZERO).map(|(o, c)| *c + *o * t).collect();
+        if t <= 1e-3 || pts.len() < 2 {
+            return (lo, hi);
+        }
+        let range = |f: fn(&Vec3) -> f32| {
+            let mut v: Vec<f32> = pts.iter().map(f).collect();
+            v.sort_by(f32::total_cmp);
+            let k = v.len() * 3 / 100;
+            (v[k], v[v.len() - 1 - k])
+        };
+        let ((x0, x1), (y0, y1), (z0, z1)) = (range(|p| p.x), range(|p| p.y), range(|p| p.z));
+        let (a, b) = (Vec3::new(x0, y0, z0), Vec3::new(x1, y1, z1));
+        let pad = (b - a) * 0.1;
+        (a - pad, b + pad)
     }
 
     /// At least two pieces (components or bodies) move apart in the exploded view.
