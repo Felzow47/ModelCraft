@@ -1,9 +1,6 @@
-<<<<<<< HEAD
-<<<<<<< HEAD
-# ModelCraft - la visionneuse 3D ultime (V4)
-=======
+
+
 # ModelCraft - the ultimate 3D viewer (V4)
->>>>>>> 639014b (docs: English README with multi-format screenshots of public samples (SolidWorks, STEP, IFC, glTF, Revit); English NOTICE, references, Revit notes, installer strings and script comments)
 
 <p align="center"><img src="assets/logo/modelcraft_512.png" width="256" alt="ModelCraft logo"></p>
 
