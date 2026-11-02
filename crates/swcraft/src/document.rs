@@ -903,7 +903,8 @@ impl Document {
                 let mat_alpha = c.color.or(s.meshes[mi].color).map(|c| c[3]).unwrap_or(1.0).clamp(0.05, 1.0);
                 let opacity = effective_opacity(&self.asm, i, &sel) * mat_alpha;
                 let center = self.acc[i].transform_point3(self.asm.center0[i]).to_array();
-                items.push(InstanceDesc { mesh: mi, model: self.display[i].to_cols_array(), tint, color, opacity, center });
+                let edge = s.edge_colors.get(&mi).map_or(0.0, |c| ((c[0] as u32) << 16 | (c[1] as u32) << 8 | c[2] as u32) as f32 + 1.0);
+                items.push(InstanceDesc { mesh: mi, model: self.display[i].to_cols_array(), tint, color, opacity, center, edge });
             }
             gs.set_instances(device, items);
         }

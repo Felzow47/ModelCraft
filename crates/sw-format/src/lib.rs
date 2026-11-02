@@ -180,6 +180,8 @@ pub struct Scene {
     pub sheets: Vec<Sheet2d>,
     /// How each Revit view looks at the model (direction, up, cropped region), by view id.
     pub view_frames: Vec<ViewFrame>,
+    /// Edge colour of some meshes (by index into `meshes`; the others use the viewer's).
+    pub edge_colors: std::collections::HashMap<usize, [u8; 3]>,
 }
 
 /// A Revit view's camera as stored in the file, in model coordinates (metres, z up): `dir`
@@ -1008,6 +1010,7 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
         browser: Vec::new(),
         sheets: Vec::new(),
         view_frames: Vec::new(),
+        edge_colors: Default::default(),
     })
 }
 

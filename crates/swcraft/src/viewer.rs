@@ -2139,7 +2139,7 @@ fn sheet_2d(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, r: &sw_format::Br
         if px < 1.0 || tx.text.is_empty() {
             continue;
         }
-        let px = ((px * 2.0).round() * 0.5).max(1.0);
+        let px = px.max(1.0);
         let a = to(tx.pos);
         if !vis.expand(px * 40.0).contains(a) {
             continue;
@@ -2149,16 +2149,33 @@ fn sheet_2d(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, r: &sw_format::Br
         let n = vec2(-d.y, d.x);
         let (ax, ay) = ([0.0, 0.5, 1.0][tx.halign.min(2) as usize], [0.0, 0.5, 1.0][tx.valign.min(2) as usize]);
         // each line aligned on its own (centred, right-aligned paragraphs)
-        // wrapped at the text box width when the file gives it
-        let wrap = if tx.wrap > 0.0 { tx.wrap * s } else { f32::INFINITY };
+        // wrapped at the text box width when the file gives it, the lines broken once at a
+        // fixed size so that they stay the same at any zoom
         let ink = if tx.color == [0; 3] { ink } else { Color32::from_rgb(tx.color[0], tx.color[1], tx.color[2]) };
-        let lines: Vec<_> = tx.text.split('\n').map(|l| p.layout(l.to_string(), font.clone(), ink, wrap)).collect();
-        let total: f32 = lines.iter().map(|g| g.size().y).sum();
+        // lines and their places measured once at a reference size, then scaled: the same at
+        // any zoom (the font's own rounding at small sizes does not move them)
+        const REF: f32 = 64.0;
+        let ref_font = if tx.bold { theme::semibold(REF) } else { egui::FontId::proportional(REF) };
+        let rows: Vec<String> = if tx.wrap > 0.0 {
+            let wrap = tx.wrap / (tx.height / 0.72) * REF;
+            tx.text
+                .split('\n')
+                .flat_map(|l| {
+                    let g = p.layout(l.to_string(), ref_font.clone(), ink, wrap);
+                    g.rows.iter().map(|r| r.glyphs.iter().map(|c| c.chr).collect::<String>().trim_end().to_string()).collect::<Vec<_>>()
+                })
+                .collect()
+        } else {
+            tx.text.split('\n').map(str::to_string).collect()
+        };
+        let k = px / REF;
+        let sizes: Vec<egui::Vec2> = rows.iter().map(|l| p.layout_no_wrap(l.clone(), ref_font.clone(), ink).size() * k).collect();
+        let total: f32 = sizes.iter().map(|s| s.y).sum();
         let mut y = 0.0;
-        for g in lines {
-            let sz = g.size();
+        for (l, sz) in rows.into_iter().zip(sizes) {
             let pos = a - d * (ax * sz.x) - n * (ay * total - y);
             y += sz.y;
+            let g = p.layout_no_wrap(l, font.clone(), ink);
             p.add(egui::epaint::TextShape::new(pos, g, ink).with_angle(d.y.atan2(d.x)));
         }
     }

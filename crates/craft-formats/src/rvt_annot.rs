@@ -39,7 +39,7 @@ use std::collections::HashMap;
 type V3 = [f64; 3];
 type P2 = [f64; 2];
 
-pub(crate) const CLASSES: [&str; 18] = [
+pub(crate) const CLASSES: [&str; 19] = [
     "ParamElemFamily",
     "DimensionStyle",
     "LeaderStyle",
@@ -55,6 +55,7 @@ pub(crate) const CLASSES: [&str; 18] = [
     "FilledRegion",
     "LinearDimString",
     "IndependentTag",
+    "KeynoteTag",
     "RoomTag",
     "RoomElem",
     "UnitsElem",
@@ -177,6 +178,19 @@ fn scoped(fam: i64, id: i64) -> i64 {
     }
 }
 
+/// Text values of a family instance's or type's own family parameters (`FamilyParams`).
+fn family_param_strs(tr: &Tree, s: &Schema) -> HashMap<i64, String> {
+    tr.objs
+        .iter()
+        .filter(|o| s.name(o.tag) == "FamilyParams")
+        .flat_map(|o| o.list("m_params").iter())
+        .filter_map(|p| match p.get("m_str") {
+            Some(G::S(v)) if !v.is_empty() => Some((p.int("m_paramId")?, v.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Length of a revision cloud's scallop on paper (feet).
 const CLOUD_ARC: f64 = 0.2;
 
@@ -227,6 +241,9 @@ pub(crate) struct Tag {
     pub head: V3,
     pub angle: f64,
     pub target: i64,
+    pub id: i64,
+    /// Leader: elbow and end offsets from the head (view plane, feet), when shown.
+    pub leader: Option<([f64; 2], [f64; 2])>,
 }
 
 /// Annotation geometry of one view, in its plane coordinates (model feet); widths and text
@@ -242,6 +259,8 @@ pub(crate) struct Drawn {
 #[derive(Default)]
 pub struct Annots {
     styles: HashMap<i64, Style>,
+    /// keynote tag -> its key value
+    pub(crate) keys: HashMap<i64, String>,
     /// category -> colour of its projection style
     cat_colors: HashMap<i64, [u8; 3]>,
     pens: Vec<f64>,
@@ -444,25 +463,36 @@ impl Annots {
                     self.arc_dims.push(ArcDim { owner, style: r.int("m_styleSymbolId").unwrap_or(-1), angular, center, refs, text: seg.and_then(|g| v3(g.fs("m_origin"))), value, normal });
                 }
             }
-            "IndependentTag" if owner > 0 => {
+            "IndependentTag" | "KeynoteTag" if owner > 0 => {
                 let target = r
                     .obj("m_taggedEntitiesCell")
                     .map(|c| c.ptrs("m_taggedEntities"))
                     .and_then(|p| p.first().and_then(|&i| tr.objs.get(i)))
                     .and_then(|e| e.obj("m_taggedId"))
+                    .or_else(|| r.obj("m_taggedElementId"))
                     .and_then(|x| x.int("m_linkInstOrHostId"))
                     .unwrap_or(-1);
-                let Some(oc) = obj("m_oTagOrientationCell") else { return };
-                let Some(head) = v3(oc.fs("m_headLocation")) else { return };
-                self.tags.push(Tag { owner, symbol: r.int("m_symbolId").unwrap_or(-1), head, angle: num(oc, "m_rotationAngle").unwrap_or(0.0), target });
+                // the head: its orientation cell (recent files), else its absolute position
+                let (head, angle) = match obj("m_oTagOrientationCell") {
+                    Some(oc) => (v3(oc.fs("m_headLocation")), num(oc, "m_rotationAngle").unwrap_or(0.0)),
+                    None => (v3(r.fs("m_absHeadPos")), if r.int("m_orientation") == Some(1) { std::f64::consts::FRAC_PI_2 } else { 0.0 }),
+                };
+                let Some(head) = head else { return };
+                if let Some(G::S(k)) = r.get("m_keyValue") {
+                    self.keys.insert(tr.id, k.clone());
+                }
+                let off = |k: &str| r.fs(k).filter(|v| v.len() >= 2).map(|v| [v[0], v[1]]);
+                let leader = (r.int("m_leader").unwrap_or(0) != 0).then(|| (off("m_elbowOffset").unwrap_or([0.0; 2]), off("m_endOffset").unwrap_or([0.0; 2])));
+                self.tags.push(Tag { owner, symbol: r.int("m_symbolId").unwrap_or(-1), head, angle, target, id: tr.id, leader });
             }
             "RoomTag" if owner > 0 => {
                 let Some(head) = v3(r.fs("m_point")) else { return };
                 let target = r.obj("m_taggedRoomElemId").and_then(|x| x.int("m_linkInstOrHostId")).unwrap_or(-1);
-                self.tags.push(Tag { owner, symbol: r.int("m_symbolId").unwrap_or(-1), head, angle: num(r, "m_rotationAngle").unwrap_or(0.0), target });
+                self.tags.push(Tag { owner, symbol: r.int("m_symbolId").unwrap_or(-1), head, angle: num(r, "m_rotationAngle").unwrap_or(0.0), target, id: tr.id, leader: None });
             }
             "RoomElem" | "FamilySymbol" => {
-                let m = strs();
+                let mut m = strs();
+                m.extend(family_param_strs(tr, s));
                 if !m.is_empty() {
                     self.strs.insert(tr.id, m);
                 }
@@ -471,7 +501,8 @@ impl Annots {
                 if let Some(sym) = obj("m_pInstanceInfo").and_then(|ii| ii.int("m_symbolId")) {
                     self.inst_type.insert(tr.id, sym);
                 }
-                let m = strs();
+                let mut m = strs();
+                m.extend(family_param_strs(tr, s));
                 if !m.is_empty() {
                     self.strs.insert(tr.id, m);
                 }
