@@ -22,6 +22,7 @@ pub mod rvt_model;
 pub mod rvt_shape;
 pub mod rvt_annot;
 pub mod rvt_sheet;
+pub mod rvt_csg;
 pub(crate) mod rvt_hlr;
 pub mod stl;
 pub mod tds;
@@ -240,6 +241,7 @@ pub fn empty_scene(path: &Path, format: &'static str) -> Scene {
         browser: Vec::new(),
         sheets: Vec::new(),
         view_frames: Vec::new(),
+        edge_colors: Default::default(),
     }
 }
 

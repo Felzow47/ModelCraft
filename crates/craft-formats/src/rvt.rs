@@ -342,11 +342,53 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
             s.view_frames = sheets.frames(lo, hi).into_iter().filter(|f| rows.contains(&f.id)).collect();
         }
     }
+    if let Ok(ids) = std::env::var("RVT_DUMP_IDS") {
+        // diagnostics: the given elements' meshes as one OBJ file
+        let mut out = String::new();
+        let mut base = 1;
+        for id in ids.split(',').filter_map(|x| x.parse::<i64>().ok()) {
+            let Some(m) = meshes.get(&id) else { continue };
+            for p in &m.pos {
+                out += &format!("v {} {} {}
+", p[0], p[2], -p[1]);
+            }
+            for t in &m.tri {
+                out += &format!("f {} {} {}
+", t[0] + base, t[1] + base, t[2] + base);
+            }
+            base += m.pos.len() as u32;
+        }
+        let _ = std::fs::write(std::env::var("RVT_DUMP_OUT").unwrap_or("dump.obj".into()), out);
+    }
     let mut owners = Vec::new();
     let (n, shaped) = match &boxes {
         Ok(b) => build_boxes(&mut s, b, &meshes, family, &mut owners),
         Err(_) => (0, 0),
     };
+    // MEP elements in their system's colour, as Revit draws them
+    // (only an element's own mesh: the box stand-ins share theirs with the category)
+    let mut users: std::collections::HashMap<usize, usize> = Default::default();
+    for c in &s.components {
+        if let Some(m) = c.mesh {
+            *users.entry(m).or_default() += 1;
+        }
+    }
+    for &(c, id, cat) in &owners {
+        if !crate::rvt_sheet::SYSTEM_COLORED.contains(&cat) {
+            continue;
+        }
+        if let (Some(col), Some(mi)) = (sheets.system_color(id), s.components.get(c).and_then(|c| c.mesh).filter(|m| users.get(m) == Some(&1))) {
+            // grey surface (Revit's default material), the system's colour on its edges; a
+            // smooth pipe gets edges along it so that its colour shows like Revit's outline
+            if let Some(m) = s.meshes.get_mut(mi) {
+                m.color = Some([0.55, 0.56, 0.58, 1.0]);
+                if let Some(sh) = meshes.get(&id).filter(|sh| sh.runs.is_empty()) {
+                    m.mesh = sw_format::mesh::build_from_triangles(&sh.pos, &sh.tri, 12.0, true);
+                }
+            }
+            s.edge_colors.insert(mi, col);
+        }
+    }
     // what each view does not show: its switched-off categories and hidden elements
     for f in &mut s.view_frames {
         f.hide = owners.iter().filter(|&&(_, id, cat)| sheets.view_hides(f.id, id, cat)).map(|&(c, _, _)| c).collect();
@@ -465,13 +507,23 @@ fn build_boxes(s: &mut Scene, boxes: &[rvt_model::ElemBox], shapes: &std::collec
             let mi = s.meshes.len() - 1;
             for (k, b) in list.iter().enumerate() {
                 if let Some(m) = shapes.get(&b.id).filter(|m| !m.tri.is_empty()) {
-                    // its own mesh, already in place
-                    let mesh = sw_format::mesh::build_from_triangles(&m.pos, &m.tri, 30.0, true);
-                    s.meshes.push(sw_format::SceneMesh { name: name.to_string(), mesh, source: sw_format::MeshSource::Embedded, color: Some(color) });
-                    let mut c = crate::component(&format!("{name} {}", k + 1), 2, Some(group), false, Some(s.meshes.len() - 1));
-                    c.world = [1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.];
-                    owners.push((s.components.len(), b.id, b.category));
-                    s.components.push(c);
+                    // its own mesh, already in place; one part per material colour
+                    let id4 = [1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.];
+                    let mut main = None;
+                    for (mat, tri) in m.by_color() {
+                        let col = mat.map_or(color, |c| [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0, 1.0]);
+                        let mesh = sw_format::mesh::build_from_triangles(&m.pos, &tri, 30.0, true);
+                        s.meshes.push(sw_format::SceneMesh { name: name.to_string(), mesh, source: sw_format::MeshSource::Embedded, color: Some(col) });
+                        let (level, parent, label) = match main {
+                            None => (2, Some(group), format!("{name} {}", k + 1)),
+                            Some(p) => (3, Some(p), format!("{name} {} ({})", k + 1, s.meshes.len())),
+                        };
+                        let mut c = crate::component(&label, level, parent, false, Some(s.meshes.len() - 1));
+                        c.world = id4;
+                        owners.push((s.components.len(), b.id, b.category));
+                        main.get_or_insert(s.components.len());
+                        s.components.push(c);
+                    }
                     shaped += 1;
                     continue;
                 }

@@ -519,27 +519,37 @@ pub fn worksets(p: &[u8]) -> HashMap<[u8; 16], u32> {
     out
 }
 
-/// Workset of each element (`/Global/ElemTable`): element id → partition id. Records of 40
-/// bytes after a 6-byte header: an id (i64), three u32, the element id (i64), a parent id,
-/// partition (u32).
-/// Empty when the table does not read as such (another layout).
+/// Workset of each element (`/Global/ElemTable`): element id → partition id. Records after a
+/// 6-byte header, with 8-byte ids (40 bytes: an id, three u32, an id, a parent id, partition)
+/// or 4-byte ids (28 bytes: two ids, three u32 with the partition last, a parent id). Of the
+/// two ids the element's is the second with 8-byte ids, the first with 4-byte ones; the other
+/// is kept for the ids no record has as its own. Empty when the table reads as neither.
 pub fn elem_worksets(e: &[u8], known: &HashMap<[u8; 16], u32>) -> HashMap<i64, u32> {
     let ids: std::collections::HashSet<u32> = known.values().copied().collect();
-    let mut out = HashMap::new();
-    let (mut i, mut miss) = (6, 0);
-    while i + 40 <= e.len() {
-        let id = i64::from_le_bytes(e[i + 20..i + 28].try_into().unwrap());
-        let ws = u32::from_le_bytes(e[i + 36..i + 40].try_into().unwrap());
-        if !ids.contains(&ws) {
-            miss += 1;
+    let u32_ = |i: usize| u32::from_le_bytes(e[i..i + 4].try_into().unwrap());
+    // (record size, element id at, other id at, id width, partition at)
+    for (size, at, alt, w, ws_at) in [(40usize, 20usize, 0usize, 8usize, 36usize), (28, 0, 4, 4, 20)] {
+        let id_at = |i: usize| if w == 8 { i64::from_le_bytes(e[i..i + 8].try_into().unwrap()) } else { u32_(i) as i32 as i64 };
+        let mut out = HashMap::new();
+        let (mut i, mut miss) = (6, 0);
+        while i + size <= e.len() {
+            let ws = u32_(i + ws_at);
+            if !ids.contains(&ws) {
+                miss += 1;
+            }
+            out.insert(id_at(i + at), ws);
+            i += size;
         }
-        out.insert(id, ws);
-        i += 40;
+        let mut i = 6;
+        while i + size <= e.len() {
+            out.entry(id_at(i + alt)).or_insert(u32_(i + ws_at));
+            i += size;
+        }
+        if !out.is_empty() && miss * 20 <= out.len() {
+            return out;
+        }
     }
-    if out.is_empty() || miss * 20 > out.len() {
-        return HashMap::new();
-    }
-    out
+    HashMap::new()
 }
 
 #[cfg(test)]
@@ -572,7 +582,16 @@ mod tests {
             e.extend(w.to_le_bytes());
         }
         let el = elem_worksets(&e, &ws);
-        assert_eq!((el.get(&1576636), el.get(&1), el.get(&5)), (Some(&681), Some(&0), None));
+        assert_eq!((el.get(&1576636), el.get(&1), el.get(&5)), (Some(&681), Some(&0), Some(&681)));
+        // 4-byte ids (central models): the element id first
+        let mut e4 = vec![0xd0, 0x04, 0x58, 0x64, 2, 0];
+        for (id, other, w) in [(1u32, 1u32, 0u32), (1777890, 7, 681), (2, 2, 681), (3, 3, 0), (4, 4, 681), (5, 5, 0)] {
+            for v in [id, other, 0, 0x49b, 0x49b, w, u32::MAX] {
+                e4.extend(v.to_le_bytes());
+            }
+        }
+        let el = elem_worksets(&e4, &ws);
+        assert_eq!((el.get(&1777890), el.get(&1)), (Some(&681), Some(&0)));
         // another layout: nothing rather than wrong worksets
         assert!(elem_worksets(&[0xff; 6 + 40 * 4], &ws).is_empty());
     }

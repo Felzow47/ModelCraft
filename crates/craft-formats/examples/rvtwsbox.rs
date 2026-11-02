@@ -13,8 +13,8 @@ fn main() {
     println!("{} boxes", boxes.len());
     let e = rd(&mut cf, "/Global/ElemTable");
     for b in boxes.iter().filter(|b| !el.contains_key(&b.id)).take(6) {
-        let pos: Vec<usize> = e.windows(8).enumerate().filter(|(_, w)| *w == b.id.to_le_bytes()).map(|(i, _)| i).take(4).collect();
-        println!("missing {} at {:x?} (mod 40: {:?})", b.id, pos, pos.iter().map(|p| (p + 34) % 40).collect::<Vec<_>>());
+        let pos: Vec<usize> = e.windows(4).enumerate().filter(|(_, w)| *w == (b.id as u32).to_le_bytes()).map(|(i, _)| i).take(4).collect();
+        println!("missing {} at {:x?} (mod 40: {:?})", b.id, pos, pos.iter().map(|p| (p + 22) % 28).collect::<Vec<_>>());
     }
     for (w, n) in by { println!("{w:?} {n}"); }
     if let Some(want) = a.get(1).and_then(|x| x.parse::<u32>().ok()) {

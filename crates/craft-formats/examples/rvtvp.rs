@@ -13,13 +13,14 @@ fn main() {
         let inf = rd(&mut cf, &n);
         let w = craft_formats::rvt_model::walk_chain(&inf).id_width;
         let w = if w == 0 { 8 } else { w };
-        elements_dbg(&sc, &inf, w, &|t: u16| std::env::var("CLASS").unwrap_or("Viewport".into()).split(',').any(|c| c == sc.name(t)), &mut |_, t, _, tr| {
+        elements_dbg(&sc, &inf, w, &|t: u16| { let c = std::env::var("CLASS").unwrap_or("Viewport".into()); c == "ALL" || c.split(',').any(|c| c == sc.name(t)) }, &mut |_, t, _, tr| {
             let v = tr.root.int("m_dbViewId").unwrap_or(0);
+            if let Ok(o) = std::env::var("OWNER") { if tr.root.int("m_ownerDBViewId").unwrap_or(0).to_string() != o { return; } println!("OWN {}", sc.name(t)); if std::env::var("DUMP1").is_err() { return; } }
             if let Ok(f) = std::env::var("FAM") { if tr.root.int("m_famId").unwrap_or(0).to_string() != f { return; } }
             if !ids.contains(&v) && !ids.contains(&tr.id) && std::env::var("EVERY").is_err() { return; }
             println!("== {} {} failed {:?}", sc.name(t), tr.id, tr.failed.map(|x| sc.name(x).to_string()));
             println!("  {:?}", tr.root.fields.iter().filter(|(n, _)| !n.starts_with("m_pParam")).map(|(n, g)| format!("{n}={}", &format!("{g:?}").chars().take(200).collect::<String>())).collect::<Vec<_>>());
-            for o in &tr.objs { println!("  {} {:?}", sc.name(o.tag), o.fields.iter().map(|(n, g)| format!("{n}={}", &format!("{g:?}").chars().take(200).collect::<String>())).collect::<Vec<_>>()); }
+            for (i, o) in tr.objs.iter().enumerate() { println!("  #{i} {} {:?}", sc.name(o.tag), o.fields.iter().map(|(n, g)| format!("{n}={}", &format!("{g:?}").chars().take(std::env::var("W").ok().and_then(|w| w.parse().ok()).unwrap_or(200)).collect::<String>())).collect::<Vec<_>>()); }
         }, &mut |_, _| {});
     }
 }

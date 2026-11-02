@@ -182,6 +182,15 @@ fn rtf_parse(b: &[u8]) -> (String, bool) {
 
 /// Length of a text leader's arrow, and margin of a text frame (feet on paper).
 const ARROW: f64 = 0.0098;
+/// Keynote number shown by keynote tags (`KEYNOTE_NUMBER`).
+const KEYNOTE_NUMBER: i64 = -1140421;
+/// Categories drawn in their MEP system's colour: ducts, pipes, flex ducts and pipes, their
+/// fittings and accessories (not equipment or terminals).
+pub const SYSTEM_COLORED: [i64; 8] = [-2008000, -2008010, -2008016, -2008020, -2008044, -2008049, -2008050, -2008055];
+/// System abbreviation and size of MEP elements, computed by Revit for tags.
+const SYSTEM_ABBREVIATION: i64 = -1150468;
+const MEP_SIZE: i64 = -1114240;
+const PIPE_DIAMETER: i64 = -1140225;
 /// Level elevation parameter, shown by level heads.
 const LEVEL_ELEV: i64 = -1007102;
 const TEXT_MARGIN: f64 = 0.0066;
@@ -371,10 +380,26 @@ struct ViewInfo {
     hidden_ws: std::collections::HashSet<u32>,
     /// Paper size of a model foot (1 / `m_scale`).
     scale: f64,
+    /// The view it depends on (`m_primaryViewId`), whose annotations it shows.
+    primary: i64,
+    /// Plan regions it shows (`DBViewPlanViewDepthCutter.m_planRegionFaceTagMap`).
+    regions: Vec<i64>,
+    /// Its view template (`m_viewTemplateId`), which then sets its view range.
+    template: i64,
     /// The view's level (`m_genElemId`) and its viewer element (`m_viewerId`).
     level: i64,
     viewer: i64,
     strs: HashMap<i64, String>,
+}
+
+/// A grid line (`Grid`): its ends in plan (feet), the heights its plane spans, its type.
+#[derive(Debug)]
+struct Grid {
+    name: String,
+    a: V3,
+    b: V3,
+    z: (f64, f64),
+    attr: i64,
 }
 
 #[derive(Debug)]
@@ -490,6 +515,22 @@ pub struct Sheets {
     /// horizontal; `ExtentElem`, `DatumPlaneRec`).
     datums: Vec<(i64, i64, f64, f64)>,
     level_names: HashMap<i64, String>,
+    grids: Vec<Grid>,
+    /// element -> its MEP system, system -> its type, type -> its line colour
+    elem_systems: HashMap<i64, i64>,
+    system_types: HashMap<i64, i64>,
+    system_colors: HashMap<i64, [u8; 3]>,
+    /// system type -> its abbreviation; MEP curve -> its size as written in tags
+    system_abbr: HashMap<i64, String>,
+    mep_sizes: HashMap<i64, String>,
+    /// MEP curve -> its direction (model); tag families turned with what they tag
+    mep_dirs: HashMap<i64, V3>,
+    /// MEP curve -> its ends (model feet), its diameter (mm, as tags write it)
+    mep_lines: HashMap<i64, (V3, V3)>,
+    mep_diams: HashMap<i64, String>,
+    turning_tags: std::collections::HashSet<i64>,
+    /// Plan regions: (owner view, id, (outline, bottom, top)), absolute feet.
+    plan_regions: Vec<(i64, i64, (Vec<P2>, f64, f64))>,
     /// level -> corners of its plane (`m_Envelope`: its extent, feet) and its type
     level_env: HashMap<i64, [f64; 4]>,
     level_types: HashMap<i64, i64>,
@@ -518,6 +559,9 @@ pub struct Sheets {
     fam_images: Vec<(i64, V3, V3, f64, f64)>,
     /// text type → its category, giving its colour (`m_lineAndTextAttr.m_categoryId`)
     text_styles: HashMap<i64, i64>,
+    /// text type -> its font, font -> its size (feet on paper; `FontElem`)
+    text_fonts: HashMap<i64, i64>,
+    font_sizes: HashMap<i64, f64>,
     /// text types with a frame (`m_textBoxVisibility`)
     boxed_types: std::collections::HashSet<i64>,
     /// text types drawn bold (`m_lineAndTextAttr.m_bBold`)
@@ -543,7 +587,12 @@ pub struct Sheets {
     decoded: std::sync::Mutex<HashMap<i64, Option<std::sync::Arc<Rgba>>>>,
 }
 
-const CLASSES: [&str; 17] = [
+const CLASSES: [&str; 22] = [
+    "Family",
+    "FontElem",
+    "PlanRegion",
+    "Grid",
+    "GridAttributes",
     "LevelAttributes",
     "ExtentElem",
     "FamilySymbol",
@@ -590,7 +639,7 @@ impl Sheets {
             }
         }
         for &t in s.classes.keys() {
-            if s.isa(t, "DBView") || s.isa(t, "Viewer") {
+            if s.isa(t, "DBView") || s.isa(t, "Viewer") || s.isa(t, "RbsCurve") || s.isa(t, "RbsSystem") || s.isa(t, "RbsSystemType") {
                 want[t as usize] = true;
             }
         }
@@ -599,6 +648,57 @@ impl Sheets {
 
     pub fn take(&mut self, s: &Schema, t: u16, tr: &Tree) {
         let r = &tr.root;
+        // MEP systems: the element's system, the system's type, the type's colour
+        if s.isa(t, "RbsSystemType") {
+            if let Some(G::S(a)) = r.get("m_abbreviation") {
+                self.system_abbr.insert(tr.id, a.clone());
+            }
+            if let Some(o) = r.ptr("m_oSystemOverrides").and_then(|i| tr.objs.get(i)) {
+                let gs = o.ptr("m_oOverrideGraphicSettings").and_then(|i| tr.objs.get(i));
+                let c = gs.and_then(|g| g.ptr("m_oProjPenColor")).and_then(|i| tr.objs.get(i)).and_then(|c| c.int("m_color")).filter(|c| (0..1 << 24).contains(c));
+                if let Some(c) = c {
+                    self.system_colors.insert(tr.id, [(c & 255) as u8, ((c >> 8) & 255) as u8, ((c >> 16) & 255) as u8]);
+                }
+            }
+            return;
+        }
+        if s.isa(t, "RbsSystem") {
+            if let Some(ty) = r.int("m_typeId") {
+                self.system_types.insert(tr.id, ty);
+            }
+            return;
+        }
+        if r.int("m_famId").unwrap_or(-1) == -1 {
+            let sys = tr.objs.iter().find_map(|o| o.int("m_systemId").or_else(|| o.int("m_idSystem")).filter(|v| *v > 0));
+            if let Some(sys) = sys {
+                self.elem_systems.insert(tr.id, sys);
+            }
+        }
+        if s.isa(t, "RbsCurve") {
+            if let Some(c) = r.ptr("m_pCurveDriver").and_then(|i| tr.objs.get(i)).and_then(|d| d.ptr("m_pCrv")).and_then(|i| tr.objs.get(i)) {
+                if let (Some(o), Some(d)) = (v3(c.fs("m_origin")), v3(c.fs("m_dirVec"))) {
+                    self.mep_dirs.insert(tr.id, d);
+                    if let Some([t0, t1, ..]) = c.fs("m_endParams") {
+                        let at = |t: f64| [o[0] + d[0] * t, o[1] + d[1] * t, o[2] + d[2] * t];
+                        self.mep_lines.insert(tr.id, (at(*t0), at(*t1)));
+                    }
+                }
+            }
+            if let Some(d) = num(r, "m_dWidthOrDiameter").filter(|v| *v > 0.0) {
+                self.mep_diams.insert(tr.id, format!("{}", (d * FEET * 1000.0).round() as i64));
+            }
+            // size as Revit writes it (mm): "715x610", "Ø355"
+            let mm = |k: &str| num(r, k).filter(|v| *v > 0.0).map(|v| (v * FEET * 1000.0).round() as i64);
+            let duct = s.name(t).contains("Duct");
+            if let Some(w) = mm("m_dWidthOrDiameter") {
+                let size = match mm("m_dHeight") {
+                    Some(h) if duct && h != w => format!("{w}x{h}"),
+                    _ => format!("Ø{w}"),
+                };
+                self.mep_sizes.insert(tr.id, size);
+            }
+            return;
+        }
         let owner = r.int("m_ownerDBViewId").unwrap_or(-1);
         let cls = s.name(t);
         self.ann.take(s, t, tr, || strings(tr));
@@ -704,6 +804,10 @@ impl Sheets {
                 if let Some(c) = r.obj("m_lineAndTextAttr").and_then(|a| a.int("m_categoryId")) {
                     self.text_styles.insert(tr.id, c);
                 }
+                // its font, which holds the text size
+                if let Some(f) = r.obj("m_lineAndTextAttr").and_then(|a| a.int("m_fontId")) {
+                    self.text_fonts.insert(tr.id, f);
+                }
                 if r.int("m_textBoxVisibility").unwrap_or(0) != 0 {
                     self.boxed_types.insert(tr.id);
                 }
@@ -716,10 +820,45 @@ impl Sheets {
                     }
                 }
             }
+            "FontElem" => {
+                if let Some(h) = r.ptr("m_pFont").and_then(|i| tr.objs.get(i)).and_then(|f| num(f, "m_size")).filter(|h| *h > 1e-5 && *h < 1.0) {
+                    self.font_sizes.insert(tr.id, h);
+                }
+            }
             "ProjectInfo" => self.project.extend(strings(tr)),
+            "Grid" if r.int("m_famId").unwrap_or(-1) == -1 => {
+                let Some(p) = r.ptr("m_pSurface").and_then(|i| tr.objs.get(i)) else { return };
+                let (Some(o), Some(x), Some(c)) = (v3(p.fs("m_origin")), v3(p.fs("m_xVec")), p.obj("m_Envelope").and_then(|e| e.fs("m_corners")).filter(|c| c.len() == 4)) else { return };
+                // vertical planes only: their line in plan
+                if x[2].abs() > 1e-6 {
+                    return;
+                }
+                let at = |u: f64| [o[0] + x[0] * u, o[1] + x[1] * u, o[2]];
+                self.grids.push(Grid { name: text_of(r, "m_text").unwrap_or_default(), a: at(c[0]), b: at(c[2]), z: (o[2] + c[1], o[2] + c[3]), attr: r.int("m_attrId").unwrap_or(-1) });
+            }
+            "PlanRegion" if r.int("m_famId").unwrap_or(-1) == -1 => {
+                let elev = |k: &str| num(r, k).filter(|v| v.abs() < 1e8);
+                let (Some(cut), Some(lo)) = (elev("m_cutPlaneElev"), elev("m_viewDepthPlaneElev").or(elev("m_bottomClipPlaneElev"))) else { return };
+                let lo = elev("m_bottomClipPlaneElev").map_or(lo, |b| b.min(lo));
+                let Some(lp) = r.ptrs("m_bndyCurvesLoops").first().and_then(|&i| tr.objs.get(i)) else { return };
+                let pts: Vec<P2> = lp.ptrs("m_curves").iter().filter_map(|&i| tr.objs.get(i)).flat_map(|c| curve_points(c, s)).map(|p| [p[0], p[1]]).collect();
+                if pts.len() >= 3 {
+                    self.plan_regions.push((r.int("m_ownerDBViewId").unwrap_or(-1), tr.id, (pts, lo.min(cut), lo.max(cut))));
+                }
+            }
+            "GridAttributes" => {
+                if let Some(h) = r.int("m_familyTagId") {
+                    self.level_heads.insert(tr.id, h);
+                }
+            }
             "LevelAttributes" => {
                 if let Some(h) = r.int("m_familyTagId") {
                     self.level_heads.insert(tr.id, h);
+                }
+            }
+            "Family" => {
+                if r.int("m_rotateTagWithComponent").unwrap_or(0) != 0 {
+                    self.turning_tags.insert(tr.id);
                 }
             }
             "ExtentElem" if r.int("m_famId").unwrap_or(-1) == -1 => {
@@ -796,6 +935,9 @@ impl Sheets {
                         range_abs,
                         range_rel,
                         level: r.int("m_genElemId").unwrap_or(-1),
+                        template: r.int("m_viewTemplateId").unwrap_or(-1),
+                        primary: r.int("m_primaryViewId").unwrap_or(-1),
+                        regions: tr.objs.iter().filter(|o| s.name(o.tag) == "DBViewPlanViewDepthCutter").flat_map(|o| o.list("m_planRegionFaceTagMap").iter()).filter_map(|e| e.int("first")).filter(|i| *i > 0).collect(),
                         viewer: r.int("m_viewerId").unwrap_or(-1),
                         strs: strings(tr),
                         hidden: ids_of(tr, s, "HiddenElementsViewSettings", "m_hiddenElements"),
@@ -814,9 +956,10 @@ impl Sheets {
         }
     }
 
-    /// How a text is drawn: bold (by its type or in its own rich text) and its colour.
-    fn look(&self, t: &RawText) -> (bool, [u8; 3]) {
-        (t.bold || self.bold_types.contains(&t.attr), self.text_styles.get(&t.attr).map_or([0; 3], |c| self.ann.style_color(*c)))
+    /// How a text is drawn: bold (by its type or in its own rich text), its colour and its
+    /// type's size.
+    fn look(&self, t: &RawText) -> (bool, [u8; 3], Option<f64>) {
+        (t.bold || self.bold_types.contains(&t.attr), self.text_styles.get(&t.attr).map_or([0; 3], |c| self.ann.style_color(*c)), self.text_fonts.get(&t.attr).and_then(|f| self.font_sizes.get(f)).copied())
     }
 
     fn image(&self, sym: i64) -> Option<(std::sync::Arc<Rgba>, f64, f64)> {
@@ -933,6 +1076,21 @@ impl Sheets {
     /// the view depth up to the cut plane (looking down), or from the cut plane up to the
     /// view depth (reflected ceiling plans). Infinite ends are unlimited.
     fn plan_range(&self, v: &ViewInfo) -> Option<(f64, f64)> {
+        // a view template sets the range, relative to the view's own level
+        let t = self.views.get(&v.template).filter(|t| t.range_rel.is_some());
+        if std::env::var_os("SHEET_DEBUG").is_some() {
+            if let Some(t) = t {
+                eprintln!("  template {} of {}: rel {:?} abs {:?}", t.name, v.name, t.range_rel, t.range_abs);
+            }
+        }
+        let owned;
+        let v = match t {
+            Some(t) => {
+                owned = ViewInfo { range_rel: t.range_rel, range_abs: [None; 4], ..v.clone() };
+                &owned
+            }
+            None => v,
+        };
         let lz = self.level_z.get(&v.level).copied();
         let above = lz.and_then(|z| self.levels.iter().copied().filter(|l| *l > z + 0.01).reduce(f64::min));
         // relative value k: None = unlimited
@@ -1025,6 +1183,11 @@ impl Sheets {
     /// category switched off, the element hidden, or its workset hidden.
     fn hides(&self, view: &ViewInfo, elem: i64, cat: i64) -> bool {
         view.hidden_cats.contains(&cat) || (elem != 0 && (view.hidden.contains(&elem) || self.elem_ws.get(&elem).is_some_and(|w| view.hidden_ws.contains(w))))
+    }
+
+    /// Colour of an element's MEP system (its system type's projection line colour).
+    pub fn system_color(&self, elem: i64) -> Option<[u8; 3]> {
+        self.system_colors.get(self.system_types.get(self.elem_systems.get(&elem)?)?).copied()
     }
 
     /// Which family document holds each family's lines (see `family_drawing`).
@@ -1202,6 +1365,7 @@ impl Sheets {
             x[3] = x[3].max(p[1]);
         };
         // families on the sheet (title block first: the largest)
+        let mut block_tables: Vec<V3> = Vec::new();
         let mut insts: Vec<&(i64, i64, Trf)> = self.instances.iter().filter(|i| i.0 == id).collect();
         let area = |i: &&(i64, i64, Trf)| self.symbols.get(&i.1).and_then(|s| s.outline).map(|o| (o[2] - o[0]) * (o[3] - o[1])).unwrap_or(0.0);
         insts.sort_by(|a, b| area(b).total_cmp(&area(a)));
@@ -1249,7 +1413,9 @@ impl Sheets {
                 push_text(&mut out, t, Some(tf), trf_scale(tf), s, self.look(t));
             }
             for (pos, tb) in &sy.tables {
-                self.draw_table(&mut out, tb, tf.apply(*pos));
+                let at = tf.apply(*pos);
+                self.draw_table(&mut out, tb, at);
+                block_tables.push(at);
             }
         }
         for (_, t) in self.texts.iter().filter(|t| t.0 == id) {
@@ -1260,6 +1426,10 @@ impl Sheets {
         self.ann.draw(id, &|p| [p[0], p[1]], 1.0, &mut d);
         put_drawn(&mut out, &d, &|p| p);
         for (_, o, sch) in self.sched_inst.iter().filter(|s| s.0 == id) {
+            // the title block's own revision schedule, placed on the sheet too: drawn once
+            if block_tables.iter().any(|p| (p[0] - o[0]).abs() < 0.02 && (p[1] - o[1]).abs() < 0.02) {
+                continue;
+            }
             if let Some(tb) = self.tables.get(sch) {
                 self.draw_table(&mut out, tb, *o);
             }
@@ -1397,6 +1567,10 @@ impl Sheets {
         };
         // what the view keeps (crop, view range, depth clips), segments clipped to it
         let keep = self.clip_of(vp.view, view);
+        // a dependent view shows its primary view's annotations too
+        let mine = |o: i64| o == vp.view || (view.primary > 0 && o == view.primary);
+        // plan regions of the view: (outline in plan, bottom, top), absolute feet
+        let regions: Vec<&(Vec<P2>, f64, f64)> = self.plan_regions.iter().filter(|r| mine(r.0) || view.regions.contains(&r.1)).map(|r| &r.2).collect();
         let mut uv_box = crop.filter(|c| c.active[0] && c.active[1] && c.active[2] && c.active[3]).map(|c| [c.off[1], c.off[3], c.off[0], c.off[2]]);
         let cropped = uv_box.is_some();
         let ft = |p: V3| [p[0] / FEET, p[1] / FEET, p[2] / FEET];
@@ -1417,6 +1591,8 @@ impl Sheets {
         let back = |k: &Clip, c: V3| -> V3 { std::array::from_fn(|i| k.orig[i] + k.ax[0][i] * c[0] + k.ax[1][i] * c[1] + k.ax[2][i] * c[2]) };
         let hlr_on = std::env::var_os("RVT_NO_HLR").is_none();
         let mut segs: Vec<[V3; 2]> = Vec::new();
+        // colour of each segment's element (MEP system), same index
+        let mut seg_colors: Vec<Option<[u8; 3]>> = Vec::new();
         let mut tris: Vec<[V3; 3]> = Vec::new();
         // the cut plane (plans: the cut height; sections and elevations: their line), on the
         // side of the kept box towards the viewer, in clip coordinates
@@ -1425,15 +1601,29 @@ impl Sheets {
             z.is_finite().then_some(z)
         });
         let mut cuts: Vec<[V3; 2]> = Vec::new();
+        // the cut pieces of each hatched element
+        let mut hatch_runs: Vec<std::ops::Range<usize>> = Vec::new();
         // drafting views and legends draw no model, only their own lines, texts and symbols
         let drafting = view.class.contains("Drafting") || view.class.contains("Legend");
         for (id, cat, lo, hi, list, mesh) in edges.items.iter().filter(|_| !drafting) {
-            if self.hides(view, *id, *cat) || keep.is_some_and(|k| k.misses(ft(*lo), ft(*hi))) {
+            // inside a plan region: its own view range
+            let keep_e = match (&keep, regions.is_empty()) {
+                (Some(k), false) => {
+                    let c = ft([(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, 0.0]);
+                    regions.iter().find(|r| inside_poly(&r.0, [c[0], c[1]])).map(|r| {
+                        let s = k.ax[2][2].signum();
+                        let (a, b) = ((r.1 - k.orig[2]) * s, (r.2 - k.orig[2]) * s);
+                        Clip { orig: k.orig, ax: k.ax, lo: [k.lo[0], k.lo[1], a.min(b)], hi: [k.hi[0], k.hi[1], a.max(b)] }
+                    }).or(Some(*k))
+                }
+                _ => keep,
+            };
+            if self.hides(view, *id, *cat) || keep_e.is_some_and(|k| k.misses(ft(*lo), ft(*hi))) {
                 continue;
             }
             for e in list {
                 let (p, q) = (ft(e[0]), ft(e[1]));
-                let (p, q) = match &keep {
+                let (p, q) = match &keep_e {
                     Some(k) => {
                         let Some((a, b)) = k.segment(k.coords(p), k.coords(q)) else {
                             continue;
@@ -1445,11 +1635,12 @@ impl Sheets {
                 let (a, b) = (to_view(p), to_view(q));
                 if (a[0] - b[0]).abs() + (a[1] - b[1]).abs() > 1e-4 {
                     segs.push([a, b]);
+                    seg_colors.push(self.system_color(*id).filter(|_| SYSTEM_COLORED.contains(cat)));
                 }
             }
             // the faces that hide edges: the rebuilt solid, else the element's box
             if hlr_on && tris.len() < MAX_FACES {
-                let mut add = |t: [V3; 3]| match &keep {
+                let mut add = |t: [V3; 3]| match &keep_e {
                     Some(k) => {
                         let mut poly: Vec<V3> = t.iter().map(|p| k.coords(*p)).collect();
                         for ax in 0..3 {
@@ -1477,7 +1668,9 @@ impl Sheets {
                             add(t.map(|i| ft(m.pos.get(i as usize).copied().unwrap_or_default().map(|x| x as f64))));
                         }
                         // the element's section at the cut plane, drawn heavier
-                        if let (Some(k), Some(z)) = (keep.as_ref(), cut_z) {
+                        let cut_e = keep_e.as_ref().filter(|_| cut_z.is_some()).map(|k| if dot(k.ax[2], nz) > 0.0 { k.hi[2] } else { k.lo[2] }).filter(|z| z.is_finite());
+                        if let (Some(k), Some(z)) = (keep_e.as_ref(), cut_e) {
+                            let first = cuts.len();
                             if !NOT_CUT.contains(cat) && cuts.len() < MAX_SEGMENTS {
                                 for t in &m.tri {
                                     let c = t.map(|i| k.coords(ft(m.pos.get(i as usize).copied().unwrap_or_default().map(|x| x as f64))));
@@ -1499,6 +1692,10 @@ impl Sheets {
                                     }
                                 }
                             }
+                            // cut walls, floors, roofs and columns: their section hatched
+                            if HATCHED.contains(cat) && cuts.len() > first {
+                                hatch_runs.push(first..cuts.len());
+                            }
                         }
                     }
                     // a box is not the element's shape (curtain walls, stairs, rooms…):
@@ -1518,11 +1715,14 @@ impl Sheets {
         // the view's annotations (not cut by the crop)
         let mut ann = crate::rvt_annot::Drawn::default();
         self.ann.draw(vp.view, &proj, vp.scale, &mut ann);
+        if view.primary > 0 {
+            self.ann.draw(view.primary, &proj, vp.scale, &mut ann);
+        }
         if uv_box.is_none() {
             // no crop: the extents of what is seen
             let mut e = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
-            let texts = self.texts.iter().filter(|t| t.0 == vp.view).map(|t| proj(t.1.orig));
-            let placed = self.instances.iter().filter(|i| i.0 == vp.view).map(|i| proj(i.2.apply([0.0; 3])));
+            let texts = self.texts.iter().filter(|t| mine(t.0)).map(|t| proj(t.1.orig));
+            let placed = self.instances.iter().filter(|i| mine(i.0)).map(|i| proj(i.2.apply([0.0; 3])));
             let lv = self.level_ends.iter().filter(|_| vp.owner == -1 && self.shows_levels(view)).flat_map(|(id, _)| {
                 let z = self.level_z.get(id).copied().unwrap_or(0.0);
                 let v = proj([0.0, 0.0, z])[1];
@@ -1578,7 +1778,7 @@ impl Sheets {
         }
         let tol = hlr.as_ref().map_or(0.0, |h| 0.02 + h.pixel() * 0.25);
         let mut shown = 0usize;
-        for s in &segs {
+        for (s, col) in segs.iter().zip(&seg_colors) {
             let parts = match &hlr {
                 Some(h) => h.visible(s[0], s[1], tol),
                 None => vec![(s[0], s[1])],
@@ -1586,8 +1786,21 @@ impl Sheets {
             for (a, b) in parts {
                 if let Some((a, b)) = clip([a[0], a[1]], [b[0], b[1]], ub) {
                     let (a, b) = (to_paper(a), to_paper(b));
-                    out.fine.push([[m(a[0]), m(a[1])], [m(b[0]), m(b[1])]]);
+                    match col {
+                        Some(c) => out.strokes.push(Stroke2d { pts: vec![[m(a[0]), m(a[1])], [m(b[0]), m(b[1])]], width: m(self.ann.pen(1)), color: *c }),
+                        None => out.fine.push([[m(a[0]), m(a[1])], [m(b[0]), m(b[1])]]),
+                    }
                     shown += 1;
+                }
+            }
+        }
+        // hatching of the cut sections (diagonal lines, even-odd)
+        let sections = hatch_runs.iter().map(|r| cuts[r.clone()].to_vec());
+        for sec in sections {
+            let edges: Vec<[P2; 2]> = sec.iter().map(|s| [to_paper([s[0][0], s[0][1]]), to_paper([s[1][0], s[1][1]])]).collect();
+            for (a, b) in hatch(&edges, HATCH_GAP) {
+                if let Some((a, b)) = clip(a, b, [to_paper([ub[0], ub[1]])[0], to_paper([ub[0], ub[1]])[1], to_paper([ub[2], ub[3]])[0], to_paper([ub[2], ub[3]])[1]]) {
+                    out.strokes.push(Stroke2d { pts: vec![[m(a[0]), m(a[1])], [m(b[0]), m(b[1])]], width: m(self.ann.pen(1)), color: [96, 96, 96] });
                 }
             }
         }
@@ -1606,7 +1819,7 @@ impl Sheets {
         put_drawn(out, &ann, &to_paper);
         // model → paper, for the view's texts and tags
         let mp = Trf::new([k * bx[0], k * by[0], 0.0, k * bx[1], k * by[1], 0.0, k * bx[2], k * by[2], 0.0], [vp.offset[0] - k * (dot(o, bx) + cu), vp.offset[1] - k * (dot(o, by) + cv), 0.0]);
-        for (_, t) in self.texts.iter().filter(|t| t.0 == vp.view) {
+        for (_, t) in self.texts.iter().filter(|t| mine(t.0)) {
             if !inside([mp.apply(t.orig)[0], mp.apply(t.orig)[1]]) {
                 continue;
             }
@@ -1614,7 +1827,7 @@ impl Sheets {
             self.put_text_marks(out, t, &mp);
         }
         // 2D families placed in the view (detail components, symbols)
-        for (k, (_, sym, tf)) in self.instances.iter().enumerate().filter(|(_, i)| i.0 == vp.view) {
+        for (k, (_, sym, tf)) in self.instances.iter().enumerate().filter(|(_, i)| mine(i.0)) {
             if self.inst_ids.get(k).is_some_and(|id| view.hidden.contains(id)) {
                 continue;
             }
@@ -1640,6 +1853,48 @@ impl Sheets {
                     })
                     .collect();
                 push_text(out, t, Some(&at), 1.0, vals.join(" "), self.look(t));
+            }
+        }
+        // grids, in plan views: their line cut to the view, their bubble at each end
+        const GRIDS: i64 = -2000220;
+        let plan = view.dir.is_some_and(|d| d[2].abs() > 0.99) && view.class.to_ascii_lowercase().contains("plan");
+        for g in self.grids.iter().filter(|_| plan && !view.hidden_cats.contains(&GRIDS)) {
+            if keep.is_some_and(|k| {
+                let (zl, zh) = (k.orig[2] + k.lo[2] * k.ax[2][2], k.orig[2] + k.hi[2] * k.ax[2][2]);
+                g.z.1 < zl.min(zh) || g.z.0 > zl.max(zh)
+            }) {
+                continue;
+            }
+            let Some((a, b)) = clip(proj(g.a), proj(g.b), ub) else { continue };
+            let (p, q) = (to_paper(a), to_paper(b));
+            let (dx, dy) = (q[0] - p[0], q[1] - p[1]);
+            let len = (dx * dx + dy * dy).sqrt();
+            if len < 1e-6 {
+                continue;
+            }
+            let (ux, uy) = (dx / len, dy / len);
+            let w = m(self.ann.pen(1));
+            // dash-dot
+            let mut t = 0.0;
+            while t < len {
+                for (l, draw) in [(0.04, true), (0.01, false), (0.004, true), (0.01, false)] {
+                    let e = (t + l).min(len);
+                    if draw && e > t {
+                        out.strokes.push(Stroke2d { pts: vec![[m(p[0] + ux * t), m(p[1] + uy * t)], [m(p[0] + ux * e), m(p[1] + uy * e)]], width: w, color: [0; 3] });
+                    }
+                    t = e;
+                }
+            }
+            if let Some(sy) = self.level_heads.get(&g.attr).and_then(|h| self.symbols.get(h)) {
+                for (end, dir) in [(p, [-ux, -uy]), (q, [ux, uy])] {
+                    // the bubble past the end of the line, upright
+                    let r = sy.outline.map_or(0.0, |o| (o[3] - o[1]).abs() * 0.5);
+                    let tf = Trf::new([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], [end[0] + dir[0] * r, end[1] + dir[1] * r, 0.0]);
+                    self.put_symbol(out, sy, &tf, None);
+                    for t in &sy.tags {
+                        push_text(out, t, Some(&tf), 1.0, g.name.clone(), self.look(t));
+                    }
+                }
             }
         }
         // levels: their line and head; on a sheet, cut to what the view shows
@@ -1685,14 +1940,54 @@ impl Sheets {
                 }
             }
         }
-        for tg in self.ann.tags.iter().filter(|t| t.owner == vp.view) {
+        for tg in self.ann.tags.iter().filter(|t| mine(t.owner)) {
             let Some(sy) = self.symbols.get(&tg.symbol) else { continue };
             let h = mp.apply(tg.head);
             if !inside([h[0], h[1]]) {
                 continue;
             }
-            let (c, s) = (tg.angle.cos(), tg.angle.sin());
+            // a tag of a family turned with its component follows the tagged duct or pipe,
+            // kept readable (a tag with a leader stays as placed)
+            let angle = match self.mep_dirs.get(&tg.target).filter(|_| self.turning_tags.contains(&sy.family) && tg.leader.is_none()) {
+                Some(d) => {
+                    let p = mp.lin(*d);
+                    let mut a = p[1].atan2(p[0]);
+                    if a > std::f64::consts::FRAC_PI_2 + 1e-6 {
+                        a -= std::f64::consts::PI;
+                    } else if a <= -std::f64::consts::FRAC_PI_2 + 1e-6 {
+                        a += std::f64::consts::PI;
+                    }
+                    if p[0].hypot(p[1]) > 1e-9 { a } else { tg.angle }
+                }
+                None => tg.angle,
+            };
+            let (c, s) = (angle.cos(), angle.sin());
             let tf = Trf::new([c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0], [h[0], h[1], 0.0]);
+            if let Some((elbow, end)) = tg.leader {
+                let k = vp.scale;
+                let pt = |o: [f64; 2]| [m(h[0] + o[0] * k), m(h[1] + o[1] * k)];
+                let mut pts = vec![pt([0.0; 2])];
+                if elbow[0].hypot(elbow[1]) > 1e-9 {
+                    pts.push(pt(elbow));
+                }
+                // an end left at the head: attached to the tagged curve, at its point nearest
+                // the elbow
+                let attached = (end[0].hypot(end[1]) < 1e-9).then(|| self.mep_lines.get(&tg.target)).flatten();
+                match attached {
+                    Some((a, b)) => {
+                        let (pa, pb) = (mp.apply(*a), mp.apply(*b));
+                        let e = [h[0] + elbow[0] * k, h[1] + elbow[1] * k];
+                        let (dx, dy) = (pb[0] - pa[0], pb[1] - pa[1]);
+                        let l2 = dx * dx + dy * dy;
+                        let t = if l2 > 1e-18 { (((e[0] - pa[0]) * dx + (e[1] - pa[1]) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+                        pts.push([m(pa[0] + dx * t), m(pa[1] + dy * t)]);
+                    }
+                    None => pts.push(pt(end)),
+                }
+                if pts.len() >= 2 {
+                    out.strokes.push(Stroke2d { pts, width: m(self.ann.pen(1)), color: [0; 3] });
+                }
+            }
             self.put_symbol(out, sy, &tf, None);
             for t in &sy.texts {
                 push_text(out, t, Some(&tf), 1.0, t.text.clone(), self.look(t));
@@ -1701,7 +1996,21 @@ impl Sheets {
             let ty = self.ann.inst_type.get(&tg.target);
             for t in &sy.tags {
                 let vals: Vec<String> = t.params.iter().filter_map(|(p, pre, suf, _)| {
-                    let v = self.ann.strs.get(&tg.target).and_then(|x| x.get(p)).or_else(|| ty.and_then(|y| self.ann.strs.get(y)).and_then(|x| x.get(p)))?;
+                    // a keynote shows its key; the others the tagged element's values
+                    let computed = match *p {
+                        // the key's last part, as numbered on the sheet ("AC-251.02" -> "2")
+                        KEYNOTE_NUMBER => self.ann.keys.get(&tg.id).map(|k| {
+                            let last = k.rsplit('.').next().unwrap_or(k).trim_start_matches('0');
+                            if last.is_empty() { "0".into() } else { last.to_string() }
+                        }),
+                        SYSTEM_ABBREVIATION => self.elem_systems.get(&tg.target).and_then(|sy| self.system_types.get(sy)).and_then(|ty| self.system_abbr.get(ty)).cloned(),
+                        MEP_SIZE => self.mep_sizes.get(&tg.target).cloned(),
+                        PIPE_DIAMETER => self.mep_diams.get(&tg.target).cloned(),
+                        _ => None,
+                    };
+                    let v = computed
+                        .or_else(|| self.ann.strs.get(&tg.target).and_then(|x| x.get(p)).cloned())
+                        .or_else(|| ty.and_then(|y| self.ann.strs.get(y)).and_then(|x| x.get(p)).cloned())?;
                     (!v.is_empty()).then(|| format!("{pre}{v}{suf}"))
                 }).collect();
                 push_text(out, t, Some(&tf), 1.0, vals.join(" "), self.look(t));
@@ -1720,7 +2029,7 @@ fn trf_scale(tf: &Trf) -> f64 {
 }
 
 /// A text placed by `tf` (paper feet out), its height scaled by `hk`.
-fn push_text(out: &mut Sheet2d, t: &RawText, tf: Option<&Trf>, hk: f64, text: String, (bold, color): (bool, [u8; 3])) {
+fn push_text(out: &mut Sheet2d, t: &RawText, tf: Option<&Trf>, hk: f64, text: String, (bold, color, typed): (bool, [u8; 3], Option<f64>)) {
     if text.trim().is_empty() {
         return;
     }
@@ -1740,7 +2049,8 @@ fn push_text(out: &mut Sheet2d, t: &RawText, tf: Option<&Trf>, hk: f64, text: St
     } else {
         0
     };
-    let size = text_size(t.height, t.wrap, &text) * hk;
+    // the type's size; else what the text box holds
+    let size = typed.unwrap_or_else(|| text_size(t.height, t.wrap, &text)) * hk;
     // a text turned over (mirrored group) still reads from left to right
     let (b, h, v) = if b[0] / l < -0.99 { ([-b[0], -b[1], b[2]], 2 - h.min(2), 2 - v) } else { (b, h, v) };
     out.texts.push(Text2d { pos: [m(o[0]), m(o[1])], dir: [(b[0] / l) as f32, (b[1] / l) as f32], height: m(size), halign: h.min(2), valign: v, text, bold, wrap: m(t.wrap * hk), color });
@@ -1798,6 +2108,43 @@ const CUT_PEN: f64 = 0.35 / 304.8;
 /// Built-in categories Revit does not cut (furniture, fixtures, equipment, planting,
 /// entourage, parking, site, topography): drawn in projection even across the cut plane.
 const NOT_CUT: [i64; 13] = [-2000080, -2001100, -2001160, -2001120, -2001060, -2001040, -2001140, -2001350, -2001360, -2001370, -2001180, -2001260, -2001340];
+/// Categories whose cut section is hatched: walls, floors, roofs, columns, structural columns.
+const HATCHED: [i64; 5] = [-2000011, -2000032, -2000035, -2000100, -2001330];
+/// Spacing of the hatch lines on paper (feet, about 1.5 mm).
+const HATCH_GAP: f64 = 0.005;
+
+/// Diagonal (45°) hatch lines `gap` apart inside the closed outline `edges` (even-odd).
+fn hatch(edges: &[[P2; 2]], gap: f64) -> Vec<(P2, P2)> {
+    let r = std::f64::consts::FRAC_1_SQRT_2;
+    // rotated frame: u along the hatch, v across it
+    let to = |p: P2| [(p[0] + p[1]) * r, (p[1] - p[0]) * r];
+    let back = |u: f64, v: f64| [(u - v) * r, (u + v) * r];
+    let e: Vec<[P2; 2]> = edges.iter().map(|s| [to(s[0]), to(s[1])]).collect();
+    let (lo, hi) = e.iter().flatten().fold((f64::INFINITY, f64::NEG_INFINITY), |a, p| (a.0.min(p[1]), a.1.max(p[1])));
+    let mut out = Vec::new();
+    if !(hi - lo).is_finite() || (hi - lo) / gap > 4000.0 {
+        return out;
+    }
+    let mut v = (lo / gap).ceil() * gap;
+    while v <= hi {
+        let mut us: Vec<f64> = e
+            .iter()
+            .filter_map(|s| {
+                let (a, b) = (s[0], s[1]);
+                ((a[1] > v) != (b[1] > v)).then(|| a[0] + (v - a[1]) / (b[1] - a[1]) * (b[0] - a[0]))
+            })
+            .collect();
+        us.sort_by(|a, b| a.total_cmp(b));
+        for w in us.chunks_exact(2) {
+            if w[1] - w[0] > 1e-9 {
+                out.push((back(w[0], v), back(w[1], v)));
+            }
+        }
+        v += gap;
+    }
+    out
+}
+
 /// Most model edges drawn in one view.
 const MAX_SEGMENTS: usize = 60_000;
 /// Most faces drawn to hide edges in one view.
@@ -1841,8 +2188,9 @@ fn guid_of(o: &Obj) -> Option<[u8; 16]> {
     }
 }
 
-/// A view's workset visibility (`WorksetVisibilityViewSettings.m_worksetVisibilityPGUIDMap`):
-/// workset GUID → hidden.
+/// A view's workset visibility (`WorksetVisibilityViewSettings.m_worksetVisibilityPGUIDMap`:
+/// workset GUID → shown): workset GUID → hidden. Worksets it does not list follow the global
+/// setting.
 fn workset_settings(tr: &Tree, s: &Schema) -> HashMap<[u8; 16], bool> {
     tr.objs
         .iter()
@@ -1853,7 +2201,7 @@ fn workset_settings(tr: &Tree, s: &Schema) -> HashMap<[u8; 16], bool> {
         })
         .flatten()
         .filter_map(|e| match e.get("first")? {
-            G::O(g) => Some((guid_of(g)?, e.int("second")? != 0)),
+            G::O(g) => Some((guid_of(g)?, e.int("second")? == 0)),
             _ => None,
         })
         .collect()
@@ -1894,6 +2242,19 @@ fn ids_of(tr: &Tree, s: &Schema, class: &str, field: &str) -> std::collections::
 /// the others, with each element's box and the faces that hide what is behind them.
 struct Edges<'a> {
     items: Vec<(i64, i64, [f64; 3], [f64; 3], Vec<[V3; 2]>, Option<&'a Mesh>)>,
+}
+
+/// Whether point `p` is inside polygon `poly` (even-odd).
+fn inside_poly(poly: &[P2], p: P2) -> bool {
+    let mut inside = false;
+    let n = poly.len();
+    for i in 0..n {
+        let (a, b) = (poly[i], poly[(i + 1) % n]);
+        if (a[1] > p[1]) != (b[1] > p[1]) && p[0] < a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]) {
+            inside = !inside;
+        }
+    }
+    inside
 }
 
 /// Corners of box `k` (bit 0: x, 1: y, 2: z).
@@ -1985,7 +2346,7 @@ mod tests {
         let mut pos = Vec::new();
         let mut tri = Vec::new();
         crate::rvt_model::push_box(&crate::rvt_model::ElemBox { id: 0, category: 0, min: [0.0; 3], max: [1.0; 3] }, &mut pos, &mut tri);
-        let m = Mesh { pos, tri };
+        let m = Mesh { pos, tri, ..Default::default() };
         assert_eq!(feature_edges(&m).len(), 12);
     }
 }

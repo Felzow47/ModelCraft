@@ -103,6 +103,8 @@ pub struct InstanceDesc {
     pub opacity: f32,
     /// World-space centre (for back-to-front sorting of transparent instances).
     pub center: [f32; 3],
+    /// Own edge colour, packed `r << 16 | g << 8 | b` plus one (0: the viewer's).
+    pub edge: f32,
 }
 
 /// Layout of the per-mesh texture bind group (group 1). wgpu deduplicates identical layouts, so
@@ -381,7 +383,7 @@ impl GpuScene {
             .map(|i| {
                 // y: the mesh has a texture to sample
                 let textured = if self.mesh_tex.get(i.mesh).copied().flatten().is_some() { 1.0 } else { 0.0 };
-                Instance { model: i.model, tint: i.tint, color: i.color, extra: [i.opacity.clamp(0.0, 1.0), textured, 0.0, 0.0] }
+                Instance { model: i.model, tint: i.tint, color: i.color, extra: [i.opacity.clamp(0.0, 1.0), textured, i.edge, 0.0] }
             })
             .collect();
         self.inst_buf = (!inst.is_empty()).then(|| {

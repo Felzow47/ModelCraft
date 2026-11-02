@@ -157,6 +157,8 @@ struct EdgeOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) p_world: vec3<f32>,
     @location(1) opacity: f32,
+    // own edge colour packed r << 16 | g << 8 | b, plus one (0: the viewer's)
+    @location(2) @interpolate(flat) edge: f32,
 };
 
 @vertex
@@ -179,6 +181,7 @@ fn vs_edge(v: VsIn) -> EdgeOut {
     o.clip = c;
     o.p_world = world.xyz;
     o.opacity = v.extra.x;
+    o.edge = v.extra.z;
     return o;
 }
 
@@ -186,6 +189,11 @@ fn vs_edge(v: VsIn) -> EdgeOut {
 fn fs_edge(i: EdgeOut) -> @location(0) vec4<f32> {
     if (cut(i.p_world)) {
         discard;
+    }
+    if (i.edge > 0.5) {
+        let k = u32(i.edge + 0.5) - 1u;
+        let c = vec3<f32>(f32((k >> 16u) & 255u), f32((k >> 8u) & 255u), f32(k & 255u)) / 255.0;
+        return vec4<f32>(srgb_to_linear(c), i.opacity);
     }
     return vec4<f32>(srgb_to_linear(g.edge_color.rgb), g.edge_color.a * i.opacity);
 }

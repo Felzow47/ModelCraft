@@ -56,9 +56,63 @@ fn v3(s: Option<&[f64]>) -> Option<V3> {
 pub struct Mesh {
     pub pos: Vec<[f32; 3]>,
     pub tri: Vec<[u32; 3]>,
+    /// Material of its triangles from each start index on (empty: none known).
+    pub runs: Vec<(u32, Mat)>,
+    /// One of its materials has a surface pattern (drawn hatched in plan).
+    pub patterned: bool,
+}
+
+/// Material of a family solid: none, a material element, the family parameter giving it, or
+/// (once resolved) its colour.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Mat {
+    None,
+    Elem(i64),
+    Param(i64),
+    Color([u8; 3]),
+}
+
+/// The "Material" parameter of family solids.
+const MATERIAL_PARAM: i64 = -1002107;
+
+/// A solid's material: its family parameter, else its own value.
+fn mat_of(tr: &Tree, s: &Schema) -> Mat {
+    let param = tr.objs.iter().filter(|o| s.name(o.tag) == "FamilyParametrizedElemParamsCell").flat_map(|o| o.list("m_paramDrivenData").iter()).find(|d| d.int("m_elemPropId") == Some(MATERIAL_PARAM)).and_then(|d| d.int("m_famParamId"));
+    if let Some(p) = param {
+        return Mat::Param(p);
+    }
+    if let Some(m) = tr.root.int("m_materialId").filter(|v| *v > 0) {
+        return Mat::Elem(m);
+    }
+    let own = tr.root.ptr("m_pParamValueSetElementId").and_then(|i| tr.objs.get(i)).and_then(|o| o.list("m_paramSet").iter().find(|p| p.int("m_paramId") == Some(MATERIAL_PARAM)).and_then(|p| p.int("m_value")));
+    own.filter(|v| *v > 0).map_or(Mat::None, Mat::Elem)
+}
+
+/// Element-id values of the family parameters an element holds (`FamilyParams.m_params`).
+fn family_elem_values(tr: &Tree, s: &Schema) -> HashMap<i64, i64> {
+    tr.objs.iter().filter(|o| s.name(o.tag) == "FamilyParams").flat_map(|o| o.list("m_params").iter()).filter_map(|p| Some((p.int("m_paramId")?, p.int("m_elemId").filter(|v| *v > 0)?))).collect()
 }
 
 impl Mesh {
+    /// Its triangles grouped by resolved colour (None: no material colour), in order.
+    pub fn by_color(&self) -> Vec<(Option<[u8; 3]>, Vec<[u32; 3]>)> {
+        let mut out: Vec<(Option<[u8; 3]>, Vec<[u32; 3]>)> = Vec::new();
+        let mut r = 0;
+        for (k, t) in self.tri.iter().enumerate() {
+            while r + 1 < self.runs.len() && self.runs[r + 1].0 as usize <= k {
+                r += 1;
+            }
+            let c = match self.runs.get(r) {
+                Some(&(start, Mat::Color(c))) if start as usize <= k => Some(c),
+                _ => None,
+            };
+            match out.iter_mut().find(|g| g.0 == c) {
+                Some(g) => g.1.push(*t),
+                None => out.push((c, vec![*t])),
+            }
+        }
+        out
+    }
     pub fn bbox(&self) -> Option<([f32; 3], [f32; 3])> {
         let mut lo = [f32::INFINITY; 3];
         let mut hi = [f32::NEG_INFINITY; 3];
@@ -491,6 +545,7 @@ fn solid(
     let mut m = Mesh {
         pos: Vec::with_capacity(pts.len()),
         tri,
+        ..Default::default()
     };
     let flip = trf.is_some_and(|t| t.det() < 0.0);
     for p in pts {
@@ -698,6 +753,7 @@ fn assemble(
             })
             .collect(),
         tri,
+        ..Default::default()
     })
 }
 
@@ -1276,6 +1332,9 @@ fn not_in_family(tr: &Tree, s: &Schema) -> bool {
 struct Form {
     id: i64,
     fam: i64,
+    mat: Mat,
+    /// A void: it cuts the family's solids.
+    void: bool,
     vis: i64,
     sketch: i64,
     loops: Vec<Vec<V3>>,
@@ -1302,6 +1361,8 @@ enum Kind {
 struct Form2 {
     id: i64,
     fam: i64,
+    mat: Mat,
+    void: bool,
     vis: i64,
     kind: Kind,
 }
@@ -1332,6 +1393,12 @@ pub struct Shapes {
     instances: Vec<(i64, i64, i64, Trf)>,
     /// symbol id → (m_famId, m_familyId)
     symbols: HashMap<i64, (i64, i64)>,
+    /// material element -> its colour; element -> its family parameter element values
+    mat_colors: HashMap<i64, [u8; 3]>,
+    mat_patterned: std::collections::HashSet<i64>,
+    /// family parameter -> its name
+    param_names: HashMap<i64, String>,
+    elem_values: HashMap<i64, HashMap<i64, i64>>,
     /// Type width and height (feet) of the family symbols that have them (doors, windows).
     sym_size: HashMap<i64, (f64, f64)>,
     /// Meshes of the boundary representations stored by stairs, landings, parts and roofs.
@@ -1614,6 +1681,13 @@ fn append(out: &mut Mesh, m: &Mesh, t: &Trf) {
     }
     let flip = t.det() < 0.0;
     let base = out.pos.len() as u32;
+    let first = out.tri.len() as u32;
+    if !m.runs.is_empty() || !out.runs.is_empty() {
+        if m.runs.first().map_or(true, |r| r.0 > 0) {
+            out.runs.push((first, Mat::None));
+        }
+        out.runs.extend(m.runs.iter().map(|&(k, mat)| (k + first, mat)));
+    }
     for p in &m.pos {
         let q = t.apply([p[0] as f64 / FEET, p[1] as f64 / FEET, p[2] as f64 / FEET]);
         out.pos.push([
@@ -1782,7 +1856,7 @@ fn cuboid(lo: V3, hi: V3) -> Mesh {
         q(1, 3, 7, 5),
     ]
     .concat();
-    Mesh { pos, tri }
+    Mesh { pos, tri, ..Default::default() }
 }
 
 /// Whether the box of `m` is within `tol` metres of `b`.
@@ -2267,7 +2341,9 @@ fn param(tr: &Tree, id: i64) -> Option<f64> {
 
 impl Shapes {
     /// Element classes read.
-    const CLASSES: [&'static str; 35] = [
+    const CLASSES: [&'static str; 37] = [
+        "ParamElemFamily",
+        "MaterialElem",
         "ContFooting",
         "Rebar",
         "RebarInSystem",
@@ -2788,6 +2864,8 @@ impl Shapes {
                             self.forms.push(Form {
                                 id,
                                 fam: tr.root.int("m_famId").unwrap_or(-1),
+mat: mat_of(tr, s),
+void: tr.root.int("m_cutting").unwrap_or(0) != 0,
                                 vis: vis_flags(tr),
                                 sketch: -1,
                                 loops: vec![a],
@@ -2908,7 +2986,7 @@ impl Shapes {
                 }
             }
             "ExtrusionElem" => {
-                if tr.root.int("m_cutting").unwrap_or(0) != 0 || not_in_family(tr, s) {
+                if not_in_family(tr, s) {
                     return;
                 }
                 let Some(h) = tr
@@ -2927,6 +3005,8 @@ impl Shapes {
                 self.forms.push(Form {
                     id,
                     fam: tr.root.int("m_famId").unwrap_or(-1),
+mat: mat_of(tr, s),
+void: tr.root.int("m_cutting").unwrap_or(0) != 0,
                     vis: vis_flags(tr),
                     sketch: h.int("m_sketchId").unwrap_or(-1),
                     loops,
@@ -2989,7 +3069,7 @@ impl Shapes {
                 }
             }
             "RevolutionElem" | "SweepElem" | "BlendElem" => {
-                if tr.root.int("m_cutting").unwrap_or(0) != 0 || not_in_family(tr, s) {
+                if not_in_family(tr, s) {
                     return;
                 }
                 let fam = tr.root.int("m_famId").unwrap_or(-1);
@@ -3031,6 +3111,8 @@ impl Shapes {
                 self.forms2.push(Form2 {
                     id,
                     fam,
+                    mat: mat_of(tr, s),
+                    void: tr.root.int("m_cutting").unwrap_or(0) != 0,
                     vis: vis_flags(tr),
                     kind,
                 });
@@ -3088,6 +3170,10 @@ impl Shapes {
                     return;
                 };
                 let sym = ii.int("m_symbolId").unwrap_or(-1);
+                let own = family_elem_values(tr, s);
+                if !own.is_empty() {
+                    self.elem_values.insert(id, own);
+                }
                 self.instances
                     .push((id, sym, tr.root.int("m_famId").unwrap_or(-1), t));
                 // geometry stored in the instance itself (masses, copied geometry)
@@ -3197,7 +3283,24 @@ impl Shapes {
                     );
                 }
             }
+            "ParamElemFamily" => {
+                if let Some(c) = tr.objs.iter().find_map(|o| match o.get("m_caption") {
+                    Some(G::S(c)) => Some(c.clone()),
+                    _ => None,
+                }) {
+                    self.param_names.insert(id, c);
+                }
+            }
+            "MaterialElem" => {
+                if tr.root.ptr("m_pMaterial").and_then(|i| tr.objs.get(i)).and_then(|m| m.int("m_surfacePatternId")).is_some_and(|p| p > 0) {
+                    self.mat_patterned.insert(id);
+                }
+                if let Some(c) = tr.root.ptr("m_pMaterial").and_then(|i| tr.objs.get(i)).and_then(|m| m.int("m_color")) {
+                    self.mat_colors.insert(id, [(c & 255) as u8, ((c >> 8) & 255) as u8, ((c >> 16) & 255) as u8]);
+                }
+            }
             "FamilySymbol" => {
+                self.elem_values.insert(id, family_elem_values(tr, s));
                 self.symbols.insert(
                     id,
                     (
@@ -3439,8 +3542,16 @@ impl Shapes {
         }
         // family solids, in their family's coordinates
         let mut by_fam: HashMap<i64, Vec<Mesh>> = HashMap::new();
+        let mut voids: HashMap<i64, Vec<Mesh>> = HashMap::new();
         for f in self.forms.iter() {
-            if let Some(m) = self.form(f) {
+            if let Some(mut m) = self.form(f) {
+                if f.void {
+                    if !family_doc {
+                        voids.entry(f.fam).or_default().push(m);
+                    }
+                    continue;
+                }
+                m.runs = vec![(0, f.mat)];
                 if family_doc {
                     // the family file itself: its solids as they are
                     out.insert(f.id, m);
@@ -3498,7 +3609,14 @@ impl Shapes {
                 };
                 eprintln!("FORM2 FAIL {} fam {} {kind}", f.id, f.fam);
             }
-            if let Some(m) = m {
+            if let Some(mut m) = m {
+                if f.void {
+                    if !family_doc {
+                        voids.entry(f.fam).or_default().push(m);
+                    }
+                    continue;
+                }
+                m.runs = vec![(0, f.mat)];
                 if family_doc {
                     out.insert(f.id, m);
                 } else {
@@ -3508,6 +3626,22 @@ impl Shapes {
         }
         if family_doc {
             return out;
+        }
+        // the voids of each family cut the solids they reach
+        for (fam, vs) in &voids {
+            let Some(solids) = by_fam.get_mut(fam) else { continue };
+            for m in solids.iter_mut() {
+                for v in vs {
+                    let (Some(a), Some(b)) = (m.bbox(), v.bbox()) else { continue };
+                    if (0..3).any(|k| a.1[k] < b.0[k] || b.1[k] < a.0[k]) {
+                        continue;
+                    }
+                    if let Some((pos, tri)) = crate::rvt_csg::subtract((&m.pos, &m.tri), (&v.pos, &v.tri)) {
+                        let runs = m.runs.first().map(|r| vec![(0, r.1)]).unwrap_or_default();
+                        *m = Mesh { pos, tri, runs, patterned: m.patterned };
+                    }
+                }
+            }
         }
         // families drawn only as plan symbols (no solids): their filled regions as 1 cm plates
         let solid: std::collections::HashSet<i64> = by_fam.keys().copied().collect();
@@ -3525,6 +3659,8 @@ impl Shapes {
             let f = Form {
                 id,
                 fam,
+                mat: Mat::None,
+                void: false,
                 vis: 0,
                 sketch: sk,
                 loops: closed,
@@ -4059,6 +4195,30 @@ impl Shapes {
                 self.framing.len(),
                 self.curtain.len()
             );
+        }
+        // materials of the solids: the instance's own parameter values, else its type's
+        let syms: HashMap<i64, i64> = self.instances.iter().map(|i| (i.0, i.1)).collect();
+        for (id, m) in out.iter_mut() {
+            if m.runs.is_empty() {
+                continue;
+            }
+            // the family document's parameter, matched by name to the project's
+            let named = |v: &HashMap<i64, i64>, p: i64| v.get(&p).copied().or_else(|| {
+                let n = self.param_names.get(&p)?;
+                v.iter().find(|(k, _)| self.param_names.get(k) == Some(n)).map(|(_, e)| *e)
+            });
+            let value = |p: i64| self.elem_values.get(id).and_then(|v| named(v, p)).or_else(|| syms.get(id).and_then(|s| self.elem_values.get(s)).and_then(|v| named(v, p)));
+            for r in m.runs.iter_mut() {
+                let e = match r.1 {
+                    Mat::Param(p) => value(p),
+                    Mat::Elem(e) => Some(e),
+                    _ => None,
+                };
+                if e.is_some_and(|e| self.mat_patterned.contains(&e)) {
+                    m.patterned = true;
+                }
+                r.1 = e.and_then(|e| self.mat_colors.get(&e)).map_or(Mat::None, |c| Mat::Color(*c));
+            }
         }
         out
     }
