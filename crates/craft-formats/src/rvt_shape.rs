@@ -98,6 +98,11 @@ impl Frame {
 
 /// Points along a curve object (feet), start to end.
 pub(crate) fn curve_points(c: &Obj, s: &Schema) -> Vec<V3> {
+    curve_points_within(c, s, 0.03)
+}
+
+/// `curve_points` with chords within `tol` (feet) on large arcs.
+pub(crate) fn curve_points_within(c: &Obj, s: &Schema, tol: f64) -> Vec<V3> {
     let ep = c.fs("m_endParams").unwrap_or(&[]);
     let (t0, t1) = match ep {
         [a, b, ..] if a.is_finite() && b.is_finite() => (*a, *b),
@@ -129,14 +134,15 @@ pub(crate) fn curve_points(c: &Obj, s: &Schema) -> Vec<V3> {
                     _ => return vec![],
                 },
             };
-            let span = t1 - t0;
+            // equal bounds: the whole circle
+            let span = if t1 == t0 { std::f64::consts::TAU } else { t1 - t0 };
             if !(span.abs() < 64.0) {
                 return vec![];
             }
             // 24 segments a turn, finer on large radii (chord within about 1 cm)
             let r = rx.abs().max(ry.abs());
-            let step = if r > 0.03 {
-                (std::f64::consts::PI / 12.0).min(2.0 * (1.0 - 0.03 / r).acos())
+            let step = if r > tol {
+                (std::f64::consts::PI / 12.0).min(2.0 * (1.0 - tol / r).acos())
             } else {
                 std::f64::consts::PI / 12.0
             };
@@ -150,8 +156,39 @@ pub(crate) fn curve_points(c: &Obj, s: &Schema) -> Vec<V3> {
                 .collect()
         }
         "GNurbSpline" => nurbs_points(c, t0, t1),
+        "GHermiteSpline" => hermite_points(c),
         _ => vec![],
     }
+}
+
+/// Points along a Hermite spline (`m_NodeArray`: parameter, point and tangent of each node).
+fn hermite_points(c: &Obj) -> Vec<V3> {
+    let nodes: Vec<(f64, V3, V3)> = c
+        .list("m_NodeArray")
+        .iter()
+        .filter_map(|n| {
+            let t = match n.get("m_iParametr")? {
+                G::F(t) => *t,
+                _ => return None,
+            };
+            Some((t, v3(n.fs("m_iPoint"))?, v3(n.fs("m_iTangent"))?))
+        })
+        .collect();
+    let mut out = Vec::new();
+    for w in nodes.windows(2) {
+        let ((t0, p0, m0), (t1, p1, m1)) = (w[0], w[1]);
+        let d = t1 - t0;
+        for k in 0..16 {
+            let t = k as f64 / 16.0;
+            let (t2, t3) = (t * t, t * t * t);
+            let (h00, h10, h01, h11) = (2.0 * t3 - 3.0 * t2 + 1.0, t3 - 2.0 * t2 + t, -2.0 * t3 + 3.0 * t2, t3 - t2);
+            out.push(std::array::from_fn(|a| h00 * p0[a] + h10 * d * m0[a] + h01 * p1[a] + h11 * d * m1[a]));
+        }
+    }
+    if let Some(n) = nodes.last() {
+        out.push(n.1);
+    }
+    out
 }
 
 /// Points along a NURBS curve between parameters `t0` and `t1` (de Boor); its control polygon

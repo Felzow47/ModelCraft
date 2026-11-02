@@ -451,7 +451,7 @@ impl Document {
     /// 2D-only browser rows (sheets, drafting views, legends, schedules): no 3D camera.
     pub fn view_is_flat(&self, row: usize) -> bool {
         use sw_format::BrowserKind as K;
-        self.scene.as_ref().and_then(|s| s.browser.get(row)).is_some_and(|r| matches!(r.kind, K::Sheet | K::Drafting | K::Legend | K::Schedule))
+        self.scene.as_ref().and_then(|s| s.browser.get(row)).is_some_and(|r| matches!(r.kind, K::Sheet | K::Drafting | K::Legend | K::Schedule) || self.scene.as_ref().is_some_and(|s| s.sheets.iter().any(|x| x.id == r.id)))
     }
 
     /// Can this browser row be opened like a Revit view (double-click in Revit)?

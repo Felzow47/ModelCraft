@@ -33,13 +33,14 @@
 
 use crate::rvt_browser::Schema;
 use crate::rvt_geom::{Obj, Tree, G};
-use crate::rvt_shape::curve_points;
+use crate::rvt_shape::curve_points_within;
 use std::collections::HashMap;
 
 type V3 = [f64; 3];
 type P2 = [f64; 2];
 
-pub(crate) const CLASSES: [&str; 17] = [
+pub(crate) const CLASSES: [&str; 18] = [
+    "ParamElemFamily",
     "DimensionStyle",
     "LeaderStyle",
     "SpotElevation",
@@ -115,7 +116,72 @@ struct Curve {
     style: i64,
     pts: Vec<V3>,
     sketch: i64,
+    vis: Visible,
+    /// Revision cloud edge (`Cloud`): radius and sweep of its two arcs, mirrored.
+    cloud: Option<[f64; 5]>,
 }
+
+/// Points of a revision cloud edge `a`..`b`: each scallop is two arcs, the repeat `unit` long.
+fn cloud_points(a: P2, b: P2, c: [f64; 5], unit: f64) -> Vec<P2> {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let len = (dx * dx + dy * dy).sqrt();
+    let (r1, s1, r2, s2) = (c[0], c[1], c[2], c[3]);
+    let (c1, c2) = (2.0 * r1 * (s1 * 0.5).sin(), 2.0 * r2 * (s2 * 0.5).sin());
+    if len < 1e-9 || c1 + c2 < 1e-9 {
+        return vec![a, b];
+    }
+    let n = ((len / unit).round() as usize).clamp(1, 200);
+    let k = len / n as f64 / (c1 + c2);
+    let (ux, uy) = (dx / len, dy / len);
+    let side = if c[4] != 0.0 { -1.0 } else { 1.0 };
+    let mut out = Vec::new();
+    for i in 0..n {
+        let start = i as f64 * len / n as f64;
+        for (r, sw, ch, x0) in [(r1, s1, c1, 0.0), (r2, s2, c2, c1)] {
+            for t in 0..=8 {
+                let th = sw * (t as f64 / 8.0 - 0.5);
+                let (x, y) = ((r * th.sin() + ch * 0.5 + x0) * k, (r * th.cos() - r * (sw * 0.5).cos()) * k * side);
+                out.push([a[0] + ux * (start + x) - uy * y, a[1] + uy * (start + x) + ux * y]);
+            }
+        }
+    }
+    out
+}
+
+/// Whether a family document's element shows: its "Visible" value, or the family parameter
+/// it follows.
+#[derive(Debug, Clone, Copy)]
+struct Visible {
+    default: bool,
+    param: Option<i64>,
+}
+
+impl Visible {
+    fn of(tr: &Tree, s: &Schema) -> Visible {
+        let default = tr.root.ptr("m_pParamValueSetInt").and_then(|i| tr.objs.get(i)).and_then(|o| o.list("m_paramSet").iter().find(|p| p.int("m_paramId") == Some(VISIBLE_PARAM)).and_then(|p| p.int("m_value"))).map_or(true, |v| v != 0);
+        let param = tr.objs.iter().filter(|o| s.name(o.tag) == "FamilyParametrizedElemParamsCell").flat_map(|o| o.list("m_paramDrivenData").iter()).find(|d| d.int("m_elemPropId") == Some(VISIBLE_PARAM)).and_then(|d| d.int("m_famParamId"));
+        Visible { default, param }
+    }
+    fn shows(&self, vals: &HashMap<i64, bool>) -> bool {
+        self.param.and_then(|p| vals.get(&p).copied()).unwrap_or(self.default)
+    }
+}
+
+/// Key of an element id of family document `fam`: the ids of each document are its own (the
+/// low ones repeat from one to the next). Ids of the project, or built in (negative), stay.
+fn scoped(fam: i64, id: i64) -> i64 {
+    if fam > 0 && id > 0 {
+        (fam << 28) | id
+    } else {
+        id
+    }
+}
+
+/// Length of a revision cloud's scallop on paper (feet).
+const CLOUD_ARC: f64 = 0.2;
+
+/// The "Visible" parameter of family elements.
+const VISIBLE_PARAM: i64 = -1006205;
 
 #[derive(Debug)]
 struct Dim {
@@ -185,8 +251,11 @@ pub struct Annots {
     /// filled region type → (fill pattern, category giving its colour)
     region_types: HashMap<i64, (i64, i64)>,
     curves: Vec<Curve>,
-    /// (owner, sketch, type)
-    regions: Vec<(i64, i64, i64)>,
+    /// (owner, sketch, type, visibility)
+    regions: Vec<(i64, i64, i64, Visible)>,
+    /// (family or family document, parameter name) -> parameter, and parameter -> name
+    fam_params: HashMap<(i64, String), i64>,
+    param_names: HashMap<i64, String>,
     dims: Vec<Dim>,
     /// dimension type → (tick mark `LeaderStyle`, text size on paper)
     dim_styles: HashMap<i64, (i64, Option<f64>)>,
@@ -249,35 +318,52 @@ impl Annots {
         let r = &tr.root;
         // family documents: their lines and regions, filed under the negated document root
         let fam = r.int("m_famId").unwrap_or(-1);
-        if fam != -1 && !(fam > 0 && matches!(s.name(t), "CurveElem" | "FilledRegion" | "GStyleElem" | "FilledRegionAttributes" | "FillPatternElem" | "LinePatternElem")) {
+        if fam != -1 && !(fam > 0 && matches!(s.name(t), "ParamElemFamily" | "CurveElem" | "FilledRegion" | "GStyleElem" | "FilledRegionAttributes" | "FillPatternElem" | "LinePatternElem")) {
             return;
         }
         let owner = if fam > 0 { -fam } else { r.int("m_ownerDBViewId").unwrap_or(-1) };
         let obj = |k: &str| r.ptr(k).and_then(|i| tr.objs.get(i));
         match s.name(t) {
+            "ParamElemFamily" => {
+                if let Some(c) = tr.objs.iter().find_map(|o| match o.get("m_caption") {
+                    Some(G::S(c)) => Some(c.clone()),
+                    _ => None,
+                }) {
+                    self.fam_params.insert((fam, c), tr.id);
+                    self.param_names.insert(tr.id, tr.objs.iter().find_map(|o| match o.get("m_caption") {
+                        Some(G::S(c)) => Some(c.clone()),
+                        _ => None,
+                    }).unwrap_or_default());
+                }
+            }
             "CurveElem" if owner != -1 => {
+                // construction curves of a family's solid: nothing drawn
+                if fam > 0 && tr.objs.iter().any(|o| s.name(o.tag) == "SkeletonCurveData") {
+                    return;
+                }
                 let Some(c) = obj("m_pCurveDriver").and_then(|d| d.ptr("m_pCrv")).and_then(|i| tr.objs.get(i)) else { return };
-                let pts = curve_points(c, s);
+                // a multiline (brace…): its real curve, the driver being only the chord
+                let c = tr.objs.iter().find(|o| s.name(o.tag) == "GNurbSpline").filter(|_| tr.objs.iter().any(|o| s.name(o.tag) == "MultilineData")).unwrap_or(c);
+                let pts = curve_points_within(c, s, 0.002);
                 if pts.len() < 2 {
                     return;
                 }
                 let sketch = tr.objs.iter().find(|o| s.name(o.tag) == "SketchMembership").and_then(|o| o.int("m_groupId")).unwrap_or(-1);
-                self.curves.push(Curve { owner, style: r.int("m_categoryId").unwrap_or(-1), pts, sketch });
+                let cloud = tr.objs.iter().find(|o| s.name(o.tag) == "Cloud").and_then(|o| {
+                    let (p1, p2) = (o.fs("m_params1")?, o.fs("m_params2")?);
+                    (p1.len() == 2 && p2.len() == 2).then(|| [num(o, "m_rad1").unwrap_or(0.2), p1[1] - p1[0], num(o, "m_rad2").unwrap_or(0.35), p2[1] - p2[0], o.int("m_mirrored").unwrap_or(0) as f64])
+                });
+                self.curves.push(Curve { owner, style: r.int("m_categoryId").unwrap_or(-1), pts, sketch, vis: Visible::of(tr, s), cloud });
             }
             "GStyleElem" => {
                 if let Some(g) = obj("m_pGStyle") {
                     let st = Style { pen: g.int("m_penNumber").unwrap_or(1), color: color(g.int("m_color").unwrap_or(0)), pattern: g.int("m_linePatternId").unwrap_or(-3000010) };
                     if r.int("m_gstyleType") == Some(1) {
                         if let Some(c) = r.int("m_categoryId") {
-                            self.cat_colors.entry(c).or_insert(st.color);
+                            self.cat_colors.insert(scoped(fam, c), st.color);
                         }
                     }
-                    // an id shared with a family document stays the project's
-                    if fam > 0 {
-                        self.styles.entry(tr.id).or_insert(st);
-                    } else {
-                        self.styles.insert(tr.id, st);
-                    }
+                    self.styles.insert(scoped(fam, tr.id), st);
                 }
             }
             "PenWidthTableElem" => {
@@ -288,11 +374,7 @@ impl Annots {
             "LinePatternElem" => {
                 if let Some(p) = tr.objs.iter().find(|o| s.name(o.tag) == "LinePattern") {
                     let segs: Vec<(f64, bool)> = p.list("m_segs").iter().filter_map(|g| Some((num(g, "m_data")?, g.int("m_type")? != 1))).map(|(l, d)| (if d && l < 1e-6 { 0.6 / 304.8 } else { l }, d)).collect();
-                    if fam > 0 {
-                        self.line_patterns.entry(tr.id).or_insert(segs);
-                    } else {
-                        self.line_patterns.insert(tr.id, segs);
-                    }
+                    self.line_patterns.insert(scoped(fam, tr.id), segs);
                 }
             }
             "FillPatternElem" => {
@@ -308,26 +390,18 @@ impl Annots {
                         })
                         .collect();
                     let pat = Pattern { grids, scale: num(p, "m_scale").filter(|s| *s > 1e-9).unwrap_or(1.0), model: p.int("m_fpTarget").unwrap_or(0) == 1 };
-                    if fam > 0 {
-                        self.fill_patterns.entry(tr.id).or_insert(pat);
-                    } else {
-                        self.fill_patterns.insert(tr.id, pat);
-                    }
+                    self.fill_patterns.insert(scoped(fam, tr.id), pat);
                 }
             }
             "FilledRegionAttributes" => {
                 if let Some(f) = r.int("m_fillPatternElemId") {
                     let v = (f, r.obj("m_lineAndTextAttr").and_then(|a| a.int("m_categoryId")).unwrap_or(-1));
-                    if fam > 0 {
-                        self.region_types.entry(tr.id).or_insert(v);
-                    } else {
-                        self.region_types.insert(tr.id, v);
-                    }
+                    self.region_types.insert(scoped(fam, tr.id), v);
                 }
             }
             "FilledRegion" if owner != -1 => {
                 if let (Some(sk), Some(at)) = (r.int("m_sketchId"), r.int("m_attrId")) {
-                    self.regions.push((owner, sk, at));
+                    self.regions.push((owner, sk, at, Visible::of(tr, s)));
                 }
             }
             "DimensionStyle" => {
@@ -499,16 +573,31 @@ impl Annots {
     /// The annotations owned by `owner`, in its plane: `proj` maps model feet there, `k` is the
     /// view scale (paper / model).
     pub(crate) fn draw(&self, owner: i64, proj: &dyn Fn(V3) -> P2, k: f64, out: &mut Drawn) {
+        self.draw_with(owner, proj, k, &HashMap::new(), out);
+    }
+
+    /// Family document `root`'s parameter of the same name as family parameter `param`.
+    pub(crate) fn doc_param(&self, root: i64, param: i64) -> Option<i64> {
+        self.fam_params.get(&(root, self.param_names.get(&param)?.clone())).copied()
+    }
+
+    /// `draw`, the family elements following the parameters `vals` (document ids).
+    pub(crate) fn draw_with(&self, owner: i64, proj: &dyn Fn(V3) -> P2, k: f64, vals: &HashMap<i64, bool>, out: &mut Drawn) {
         let k = k.max(1e-6);
+        let doc = if owner < -1 { -owner } else { 0 };
+        let hidden: std::collections::HashSet<i64> = self.regions.iter().filter(|r| r.0 == owner && !r.3.shows(vals)).map(|r| r.1).collect();
         // detail lines
-        for c in self.curves.iter().filter(|c| c.owner == owner) {
-            let st = self.styles.get(&c.style).cloned().unwrap_or(Style { pen: 1, color: [0; 3], pattern: -3000010 });
+        for c in self.curves.iter().filter(|c| c.owner == owner && c.vis.shows(vals) && !hidden.contains(&c.sketch)) {
+            let st = self.styles.get(&scoped(doc, c.style)).or_else(|| self.styles.get(&c.style)).cloned().unwrap_or(Style { pen: 1, color: [0; 3], pattern: -3000010 });
             if st.pattern == -1 {
                 continue; // invisible lines
             }
-            let pts: Vec<P2> = c.pts.iter().map(|p| proj(*p)).collect();
+            let mut pts: Vec<P2> = c.pts.iter().map(|p| proj(*p)).collect();
+            if let (Some(cl), 2) = (c.cloud, pts.len()) {
+                pts = cloud_points(pts[0], pts[1], cl, CLOUD_ARC / k);
+            }
             let w = self.pen(st.pen);
-            match self.line_patterns.get(&st.pattern).filter(|p| p.iter().any(|s| !s.1) && p.iter().all(|s| s.0 > 0.0)) {
+            match self.line_patterns.get(&scoped(doc, st.pattern)).or_else(|| self.line_patterns.get(&st.pattern)).filter(|p| p.iter().any(|s| !s.1) && p.iter().all(|s| s.0 > 0.0)) {
                 Some(pat) => {
                     let pat: Vec<(f64, bool)> = pat.iter().map(|(l, d)| (l / k, *d)).collect();
                     for piece in dashes(&pts, &pat, 0.0) {
@@ -519,15 +608,16 @@ impl Annots {
             }
         }
         // filled regions
-        for (_, sk, at) in self.regions.iter().filter(|r| r.0 == owner) {
+        for (_, sk, at, _) in self.regions.iter().filter(|r| r.0 == owner && r.3.shows(vals)) {
             let edges: Vec<[P2; 2]> = self.curves.iter().filter(|c| c.sketch == *sk).flat_map(|c| c.pts.windows(2).map(|w| [proj(w[0]), proj(w[1])]).collect::<Vec<_>>()).collect();
             if edges.len() < 3 {
                 continue;
             }
-            let Some(&(f, style)) = self.region_types.get(at) else { continue };
-            let Some(pat) = self.fill_patterns.get(&f) else { continue };
+            let Some(&(f, style)) = self.region_types.get(&scoped(doc, *at)).or_else(|| self.region_types.get(at)) else { continue };
+            let Some(pat) = self.fill_patterns.get(&scoped(doc, f)).or_else(|| self.fill_patterns.get(&f)) else { continue };
+            let tint = self.cat_colors.get(&scoped(doc, style)).map_or_else(|| self.style_color(style), |c| *c);
             if pat.grids.is_empty() {
-                out.fills.push((fill(&edges), self.style_color(style)));
+                out.fills.push((fill(&edges), tint));
                 continue;
             }
             let unit = if pat.model { pat.scale } else { pat.scale / k };
@@ -564,10 +654,10 @@ impl Annots {
                         let line = vec![[b[0] + d[0] * p[0], b[1] + d[1] * p[0]], [b[0] + d[0] * p[1], b[1] + d[1] * p[1]]];
                         if segs.len() >= 2 && segs.iter().all(|s| s.0 > 0.0) {
                             for piece in dashes(&line, &segs, p[0]) {
-                                out.strokes.push((piece, self.pen(1), [0; 3]));
+                                out.strokes.push((piece, self.pen(1), tint));
                             }
                         } else {
-                            out.strokes.push((line, self.pen(1), [0; 3]));
+                            out.strokes.push((line, self.pen(1), tint));
                         }
                     }
                 }

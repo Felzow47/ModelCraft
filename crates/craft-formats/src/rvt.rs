@@ -338,6 +338,7 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
         }
         if lo[0].is_finite() {
             let rows: std::collections::HashSet<i64> = s.browser.iter().filter(|r| r.id > 0).map(|r| r.id).collect();
+            sheets.set_model_box(lo, hi);
             s.view_frames = sheets.frames(lo, hi).into_iter().filter(|f| rows.contains(&f.id)).collect();
         }
     }
@@ -350,6 +351,9 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
     for f in &mut s.view_frames {
         f.hide = owners.iter().filter(|&&(_, id, cat)| sheets.view_hides(f.id, id, cat)).map(|&(c, _, _)| c).collect();
     }
+    // views that hide the whole model and show levels: their own drawing
+    let bare: Vec<i64> = s.view_frames.iter().filter(|f| f.hide.len() >= owners.len() && sheets.has_datums(f.id)).map(|f| f.id).collect();
+    s.sheets.extend(sheets.drawings(&bare));
     if n > 0 {
         props.push(("Éléments 3D".into(), format!("{n} dont {shaped} en forme reconstruite, {} en boîte englobante", n - shaped)));
         s.warnings.push(if shaped == n { WARN_SHAPES } else { WARN_SHAPES_PARTIAL }.into());

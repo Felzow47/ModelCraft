@@ -2197,6 +2197,7 @@ fn sheet_2d(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, r: &sw_format::Br
         sw_format::BrowserKind::Schedule => tr("Nomenclature"),
         sw_format::BrowserKind::Legend => tr("Légende"),
         sw_format::BrowserKind::Drafting => tr("Vue de dessin"),
+        sw_format::BrowserKind::Section | sw_format::BrowserKind::Elevation => tr("Vue"),
         _ => tr("Feuille"),
     };
     let head = if r.start { format!("{what} : {label}  ·  {}", tr("vue de démarrage")) } else { format!("{what} : {label}") };
