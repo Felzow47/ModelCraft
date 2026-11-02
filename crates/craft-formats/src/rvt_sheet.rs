@@ -180,6 +180,12 @@ fn rtf_parse(b: &[u8]) -> (String, bool) {
     (out.trim_end_matches(['\n', ' ', '\0']).to_string(), shown > 0 && bolds * 2 > shown)
 }
 
+/// Length of a text leader's arrow, and margin of a text frame (feet on paper).
+const ARROW: f64 = 0.0098;
+/// Level elevation parameter, shown by level heads.
+const LEVEL_ELEV: i64 = -1007102;
+const TEXT_MARGIN: f64 = 0.0066;
+
 /// `m_height` of a text is its box: lines x size x this (measured on the 3, 5 and 8 mm types of
 /// the public sample: 1.59, 1.57, 1.55).
 const LINE_BOX: f64 = 1.57;
@@ -196,6 +202,10 @@ struct RawText {
     bold: bool,
     /// Width its lines wrap at (`m_lineWidth`, paper feet; 0 when `m_bNoWrapping`).
     wrap: f64,
+    /// Drawn width (`m_trueWidth`, paper feet).
+    width: f64,
+    /// Leaders: anchor at the text, elbow, end at the arrow.
+    leaders: Vec<[V3; 3]>,
     /// Plain text, or for a label the parameters it shows: (param id, prefix, suffix, sample).
     text: String,
     params: Vec<(i64, String, String, String)>,
@@ -221,7 +231,10 @@ fn raw_text(o: &Obj, tr: &Tree) -> Option<RawText> {
         .map(|p| (p.int("m_paramId").unwrap_or(-1), text_of(p, "m_prefix").unwrap_or_default(), text_of(p, "m_suffix").unwrap_or_default(), text_of(p, "m_sampleText").unwrap_or_default()))
         .collect();
     let wrap = if o.int("m_bNoWrapping").unwrap_or(0) != 0 { 0.0 } else { num(o, "m_lineWidth").filter(|w| w.is_finite() && *w > 0.0).unwrap_or(0.0) };
-    Some(RawText { orig, base, height, flags, attr: o.int("m_attrId").unwrap_or(-1), bold, wrap, text, params })
+    let xyz = |l: &Obj, k: &str| v3(l.fs(k)).or_else(|| l.obj(k).and_then(|x| v3(x.fs("m_xyz"))));
+    let leaders = o.ptrs("m_leaders").iter().filter_map(|&i| tr.objs.get(i)).filter_map(|l| Some([xyz(l, "m_anchor")?, xyz(l, "m_elbow")?, xyz(l, "m_end")?])).collect();
+    let width = num(o, "m_trueWidth").filter(|w| w.is_finite() && *w > 0.0).unwrap_or(0.0);
+    Some(RawText { orig, base, height, flags, attr: o.int("m_attrId").unwrap_or(-1), bold, wrap, width, leaders, text, params })
 }
 
 /// A schedule's stored table: title / header sections (rows heights, column widths, cells).
@@ -312,6 +325,8 @@ struct Sym {
     outline: Option<[f64; 4]>,
     /// Its text parameters.
     strs: HashMap<i64, String>,
+    /// Its yes/no and integer family parameters.
+    ints: HashMap<i64, i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -465,6 +480,25 @@ pub struct Sheets {
     instances: Vec<(i64, i64, Trf)>,
     /// Text parameters of the placed 2D families, by index in `instances`.
     inst_strs: Vec<HashMap<i64, String>>,
+    /// Yes/no and integer family parameters of the placed 2D families, same index.
+    inst_ints: Vec<HashMap<i64, i64>>,
+    /// Element ids of the placed 2D families, same index.
+    inst_ids: Vec<i64>,
+    /// Flips of the placed 2D families (`m_flippedX`, `m_flippedY`), same index.
+    inst_flips: Vec<(bool, bool)>,
+    /// Levels as each view shows them: (view, level, free end, bubble end along the view's
+    /// horizontal; `ExtentElem`, `DatumPlaneRec`).
+    datums: Vec<(i64, i64, f64, f64)>,
+    level_names: HashMap<i64, String>,
+    /// level -> corners of its plane (`m_Envelope`: its extent, feet) and its type
+    level_env: HashMap<i64, [f64; 4]>,
+    level_types: HashMap<i64, i64>,
+    /// level type -> symbol of its head (`m_familyTagId`)
+    level_heads: HashMap<i64, i64>,
+    /// The model's box (feet).
+    model_box: (V3, V3),
+    /// level -> its default ends (`m_freeEnd`, `m_bubbleEnd`, model feet)
+    level_ends: HashMap<i64, (V3, V3)>,
     texts: Vec<(i64, RawText)>,
     viewports: Vec<Vp>,
     /// (owner view, origin, schedule view id)
@@ -484,6 +518,8 @@ pub struct Sheets {
     fam_images: Vec<(i64, V3, V3, f64, f64)>,
     /// text type → its category, giving its colour (`m_lineAndTextAttr.m_categoryId`)
     text_styles: HashMap<i64, i64>,
+    /// text types with a frame (`m_textBoxVisibility`)
+    boxed_types: std::collections::HashSet<i64>,
     /// text types drawn bold (`m_lineAndTextAttr.m_bBold`)
     bold_types: std::collections::HashSet<i64>,
     holders: HashMap<i64, Vec<u8>>,
@@ -502,12 +538,14 @@ pub struct Sheets {
     elem_ws: HashMap<i64, u32>,
     /// `Family` element -> root of its family document, and what those documents draw.
     fam_roots: HashMap<i64, i64>,
-    fam_drawn: std::sync::Mutex<HashMap<i64, std::sync::Arc<crate::rvt_annot::Drawn>>>,
+    fam_drawn: std::sync::Mutex<HashMap<(i64, Vec<(i64, bool)>), std::sync::Arc<crate::rvt_annot::Drawn>>>,
     /// Images decoded once (a title block logo repeats on every sheet).
     decoded: std::sync::Mutex<HashMap<i64, Option<std::sync::Arc<Rgba>>>>,
 }
 
-const CLASSES: [&str; 15] = [
+const CLASSES: [&str; 17] = [
+    "LevelAttributes",
+    "ExtentElem",
     "FamilySymbol",
     "FamilyInstance",
     "Viewport",
@@ -586,13 +624,16 @@ impl Sheets {
                         }
                     }
                 }
-                self.symbols.insert(tr.id, Sym { family: r.int("m_familyId").unwrap_or(-1), curves, texts, tags, tables, outline, strs: family_strs(tr, s) });
+                self.symbols.insert(tr.id, Sym { family: r.int("m_familyId").unwrap_or(-1), curves, texts, tags, tables, outline, strs: family_strs(tr, s), ints: family_ints(tr, s) });
             }
             "FamilyInstance" if owner > 0 => {
                 let Some(ii) = r.ptr("m_pInstanceInfo").and_then(|i| tr.objs.get(i)) else { return };
                 let Some(t) = ii.obj("m_Trf").and_then(Trf::from) else { return };
                 self.instances.push((owner, ii.int("m_symbolId").unwrap_or(-1), t));
                 self.inst_strs.push(family_strs(tr, s));
+                self.inst_ints.push(family_ints(tr, s));
+                self.inst_ids.push(tr.id);
+                self.inst_flips.push((r.int("m_flippedX").unwrap_or(0) != 0, r.int("m_flippedY").unwrap_or(0) != 0));
             }
             "TextNote" if owner > 0 => {
                 if let Some(t) = raw_text(r, tr) {
@@ -663,6 +704,9 @@ impl Sheets {
                 if let Some(c) = r.obj("m_lineAndTextAttr").and_then(|a| a.int("m_categoryId")) {
                     self.text_styles.insert(tr.id, c);
                 }
+                if r.int("m_textBoxVisibility").unwrap_or(0) != 0 {
+                    self.boxed_types.insert(tr.id);
+                }
             }
             "ImageHolder" => {
                 if let Some(G::Is(v)) = r.ptr("m_pRasterImage").and_then(|i| tr.objs.get(i)).and_then(|o| o.get("m_compressedImage")) {
@@ -673,6 +717,22 @@ impl Sheets {
                 }
             }
             "ProjectInfo" => self.project.extend(strings(tr)),
+            "LevelAttributes" => {
+                if let Some(h) = r.int("m_familyTagId") {
+                    self.level_heads.insert(tr.id, h);
+                }
+            }
+            "ExtentElem" if r.int("m_famId").unwrap_or(-1) == -1 => {
+                let view = r.int("m_dbViewId").unwrap_or(-1);
+                for e in r.list("m_idExtents") {
+                    let rec = e.obj("second").and_then(|o| o.ptr("m_oExtentData")).and_then(|i| tr.objs.get(i)).filter(|o| s.name(o.tag) == "DatumPlaneRec");
+                    if let (Some(id), Some(d)) = (e.int("first"), rec) {
+                        if let (Some(a), Some(b)) = (num(d, "m_freeEnd"), num(d, "m_bubbleEnd")) {
+                            self.datums.push((view, id, a, b));
+                        }
+                    }
+                }
+            }
             "WorksetVisibilitySettingsElem" => {
                 if let Some(G::L(l)) = r.get("m_invisibleWorksets") {
                     self.global_hidden_ws.extend(l.iter().filter_map(guid_of));
@@ -682,6 +742,16 @@ impl Sheets {
                 if let Some(z) = r.ptr("m_pSurface").and_then(|i| tr.objs.get(i)).and_then(|p| v3(p.fs("m_origin"))) {
                     self.levels.push(z[2]);
                     self.level_z.insert(tr.id, z[2]);
+                    self.level_names.insert(tr.id, text_of(r, "m_text").unwrap_or_default());
+                    if let Some(a) = r.int("m_attrId") {
+                        self.level_types.insert(tr.id, a);
+                    }
+                    if let Some(c) = r.ptr("m_pSurface").and_then(|i| tr.objs.get(i)).and_then(|p| p.obj("m_Envelope")).and_then(|e| e.fs("m_corners")).filter(|c| c.len() == 4) {
+                        self.level_env.insert(tr.id, [c[0], c[1], c[2], c[3]]);
+                    }
+                    if let (Some(a), Some(b), -1) = (v3(r.fs("m_freeEnd")), v3(r.fs("m_bubbleEnd")), r.int("m_famId").unwrap_or(-1)) {
+                        self.level_ends.insert(tr.id, (a, b));
+                    }
                 }
             }
             _ if s.isa(t, "DBView") => {
@@ -783,6 +853,44 @@ impl Sheets {
             out.push(sh);
         }
         out
+    }
+
+    /// The views that show levels of their own (sections, elevations).
+    pub fn has_datums(&self, view: i64) -> bool {
+        self.views.get(&view).is_some_and(|v| self.shows_levels(v)) && !self.level_ends.is_empty()
+    }
+
+    /// Extent of a level stored for a view.
+    fn level_span(&self, id: i64, level: i64) -> Option<(f64, f64)> {
+        let d = self.datums.iter().find(|d| d.1 == level && d.0 == id && (d.2 - d.3).abs() > 1e-6)?;
+        Some((d.2.min(d.3), d.2.max(d.3)))
+    }
+
+    /// Extent of a level along a view's horizontal: its plane's corners, else the model's width.
+    fn model_span(&self, proj: &dyn Fn(V3) -> P2) -> (f64, f64) {
+        let (lo, hi) = self.model_box;
+        let far = (f64::INFINITY, f64::NEG_INFINITY);
+        // the levels' planes share their extent, some rare one apart
+        let mut seen: HashMap<[i64; 4], (usize, [f64; 4])> = HashMap::new();
+        for c in self.level_env.iter().filter(|(id, _)| self.level_ends.contains_key(id)).map(|(_, c)| c) {
+            seen.entry(c.map(|x| x.round() as i64)).or_insert((0, *c)).0 += 1;
+        }
+        match seen.values().max_by_key(|v| v.0).map(|v| v.1).as_ref() {
+            Some(c) => [[c[0], c[1]], [c[2], c[1]], [c[0], c[3]], [c[2], c[3]]].iter().map(|p| proj([p[0], p[1], 0.0])[0]).fold(far, |a, u| (a.0.min(u), a.1.max(u))),
+            None => (0..8).map(|k| proj(corner(lo, hi, k))[0]).fold(far, |a, u| (a.0.min(u), a.1.max(u))),
+        }
+    }
+
+    /// The model's box (metres), for `model_span`.
+    pub fn set_model_box(&mut self, lo: [f64; 3], hi: [f64; 3]) {
+        self.model_box = (lo.map(|x| x / FEET), hi.map(|x| x / FEET));
+    }
+
+    /// Whether a view shows levels: it looks horizontally (sections, elevations) and their
+    /// category is not switched off.
+    fn shows_levels(&self, view: &ViewInfo) -> bool {
+        const LEVELS: i64 = -2000240;
+        view.dir.is_some_and(|d| d[2].abs() < 1e-6) && !view.class.contains("Drafting") && !view.class.contains("Legend") && !view.class.contains("Schedule") && !view.hidden_cats.contains(&LEVELS)
     }
 
     /// Drafting views and legends drawn alone: their lines, symbols and texts, at the view's
@@ -925,30 +1033,68 @@ impl Sheets {
     }
 
     /// The lines and filled regions of a symbol's family document (family coordinates).
-    fn family_drawing(&self, sy: &Sym) -> Option<std::sync::Arc<crate::rvt_annot::Drawn>> {
+    /// `ints`: the instance's own values, over its type's.
+    fn family_drawing(&self, sy: &Sym, ints: Option<&HashMap<i64, i64>>) -> Option<std::sync::Arc<crate::rvt_annot::Drawn>> {
         let root = *self.fam_roots.get(&sy.family)?;
+        let vals: HashMap<i64, bool> = sy.ints.iter().chain(ints.into_iter().flatten()).filter_map(|(p, v)| Some((self.ann.doc_param(root, *p)?, *v != 0))).collect();
+        let mut key: Vec<(i64, bool)> = vals.iter().map(|(a, b)| (*a, *b)).collect();
+        key.sort();
         let mut cache = self.fam_drawn.lock().unwrap_or_else(|e| e.into_inner());
-        let d = cache.entry(root).or_insert_with(|| {
+        let d = cache.entry((root, key)).or_insert_with(|| {
             let mut d = crate::rvt_annot::Drawn::default();
-            self.ann.draw(-root, &|p| [p[0], p[1]], 1.0, &mut d);
+            self.ann.draw_with(-root, &|p| [p[0], p[1]], 1.0, &vals, &mut d);
             std::sync::Arc::new(d)
         });
         Some(d.clone())
     }
 
     /// Lines of a symbol placed by `tf`: those of its family document, else its own.
-    fn put_symbol(&self, out: &mut Sheet2d, sy: &Sym, tf: &Trf) {
+    fn put_symbol(&self, out: &mut Sheet2d, sy: &Sym, tf: &Trf, ints: Option<&HashMap<i64, i64>>) {
         let at = |p: P2| {
             let q = tf.apply([p[0], p[1], 0.0]);
             [q[0], q[1]]
         };
-        if let Some(d) = self.family_drawing(sy).filter(|d| !d.strokes.is_empty() || !d.fills.is_empty()) {
-            put_drawn(out, &d, &at);
-            return;
+        if let Some(d) = self.family_drawing(sy, ints) {
+            if !d.strokes.is_empty() || !d.fills.is_empty() || sy.curves.is_empty() {
+                put_drawn(out, &d, &at);
+                return;
+            }
         }
         let w = (self.ann.pen(1) * FEET) as f32;
         for c in &sy.curves {
             out.strokes.push(Stroke2d { pts: c.iter().map(|p| tf.apply(*p)).map(|q| [(q[0] * FEET) as f32, (q[1] * FEET) as f32]).collect(), width: w, color: [0; 3] });
+        }
+    }
+
+    /// A text note's leaders (line and arrow) and its frame when its type shows one.
+    fn put_text_marks(&self, out: &mut Sheet2d, t: &RawText, tf: &Trf) {
+        let m = |x: f64| (x * FEET) as f32;
+        let w = m(self.ann.pen(1));
+        let p2 = |p: V3| [p[0], p[1]];
+        for l in &t.leaders {
+            let (a, e, z) = (p2(tf.apply(l[0])), p2(tf.apply(l[1])), p2(tf.apply(l[2])));
+            out.strokes.push(Stroke2d { pts: [a, e, z].iter().map(|q| [m(q[0]), m(q[1])]).collect(), width: w, color: [0; 3] });
+            // arrow at the end
+            let (dx, dy) = (e[0] - z[0], e[1] - z[1]);
+            let len = (dx * dx + dy * dy).sqrt();
+            if len > 1e-9 {
+                let (ux, uy) = (dx / len, dy / len);
+                let (s, h) = (ARROW, ARROW * 0.2);
+                let (bx, by) = (z[0] + ux * s, z[1] + uy * s);
+                out.fills.push(Fill2d { tris: vec![[[m(z[0]), m(z[1])], [m(bx - uy * h), m(by + ux * h)], [m(bx + uy * h), m(by - ux * h)]]], color: [0; 3] });
+            }
+        }
+        let width = if t.width > 0.0 { t.width } else { t.wrap };
+        if self.boxed_types.contains(&t.attr) && width > 0.0 {
+            let o = p2(tf.apply(t.orig));
+            let b = tf.lin(t.base);
+            let l = (b[0] * b[0] + b[1] * b[1]).sqrt().max(1e-12);
+            let (ux, uy) = (b[0] / l, b[1] / l);
+            let along = [0.0, -0.5, -1.0][(t.flags & 3).min(2) as usize] * width;
+            let down = if t.flags & 2048 != 0 { 1.0 } else if t.flags & 1024 != 0 { 0.5 } else { 0.0 } * t.height;
+            let c = |a: f64, h: f64| [m(o[0] + ux * a - uy * h), m(o[1] + uy * a + ux * h)];
+            let (a0, a1, h0, h1) = (along - TEXT_MARGIN, along + width + TEXT_MARGIN, down + TEXT_MARGIN, down - t.height - TEXT_MARGIN);
+            out.strokes.push(Stroke2d { pts: vec![c(a0, h0), c(a1, h0), c(a1, h1), c(a0, h1), c(a0, h0)], width: w, color: [0; 3] });
         }
     }
 
@@ -1377,7 +1523,13 @@ impl Sheets {
             let mut e = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
             let texts = self.texts.iter().filter(|t| t.0 == vp.view).map(|t| proj(t.1.orig));
             let placed = self.instances.iter().filter(|i| i.0 == vp.view).map(|i| proj(i.2.apply([0.0; 3])));
-            for p in segs.iter().flatten().map(|p| [p[0], p[1]]).chain(ann.strokes.iter().flat_map(|s| s.0.iter().copied())).chain(texts).chain(placed) {
+            let lv = self.level_ends.iter().filter(|_| vp.owner == -1 && self.shows_levels(view)).flat_map(|(id, _)| {
+                let z = self.level_z.get(id).copied().unwrap_or(0.0);
+                let v = proj([0.0, 0.0, z])[1];
+                let (u0, u1) = self.level_span(vp.view, *id).unwrap_or_else(|| self.model_span(&proj));
+                [[u0, v], [u1, v]]
+            });
+            for p in segs.iter().flatten().map(|p| [p[0], p[1]]).chain(ann.strokes.iter().flat_map(|s| s.0.iter().copied())).chain(texts).chain(placed).chain(lv) {
                 e = [e[0].min(p[0]), e[1].min(p[1]), e[2].max(p[0]), e[3].max(p[1])];
             }
             if !e[0].is_finite() {
@@ -1459,14 +1611,23 @@ impl Sheets {
                 continue;
             }
             push_text(out, t, Some(&mp), 1.0, t.text.clone(), self.look(t));
+            self.put_text_marks(out, t, &mp);
         }
         // 2D families placed in the view (detail components, symbols)
         for (k, (_, sym, tf)) in self.instances.iter().enumerate().filter(|(_, i)| i.0 == vp.view) {
+            if self.inst_ids.get(k).is_some_and(|id| view.hidden.contains(id)) {
+                continue;
+            }
             let Some(sy) = self.symbols.get(sym) else { continue };
-            let pl = mp.after(tf);
-            self.put_symbol(out, sy, &pl);
+            let flip = self.inst_flips.get(k).copied().unwrap_or_default();
+            // (annotation families: `tf` already holds the view's scale)
+            let at = mp.after(tf);
+            let pl = at.after(&Trf::new([if flip.0 { -1.0 } else { 1.0 }, 0.0, 0.0, 0.0, if flip.1 { -1.0 } else { 1.0 }, 0.0, 0.0, 0.0, 1.0], [0.0; 3]));
+            // the drawing flips, its texts stay in place and readable
+            self.put_symbol(out, sy, &pl, self.inst_ints.get(k));
             for t in &sy.texts {
-                push_text(out, t, Some(&pl), 1.0, t.text.clone(), self.look(t));
+                push_text(out, t, Some(&at), 1.0, t.text.clone(), self.look(t));
+                self.put_text_marks(out, t, &at);
             }
             // labels: the instance's text parameters, else its type's, else the family's sample
             for t in &sy.tags {
@@ -1478,7 +1639,50 @@ impl Sheets {
                         (!v.is_empty()).then(|| format!("{pre}{v}{suf}"))
                     })
                     .collect();
-                push_text(out, t, Some(&pl), 1.0, vals.join(" "), self.look(t));
+                push_text(out, t, Some(&at), 1.0, vals.join(" "), self.look(t));
+            }
+        }
+        // levels: their line and head; on a sheet, cut to what the view shows
+        for (id, (p0, _)) in self.level_ends.iter().filter(|_| self.shows_levels(view)) {
+            let (Some(z), Some(name)) = (self.level_z.get(id), self.level_names.get(id)) else { continue };
+            let a = proj([p0[0], p0[1], *z]);
+            let (mut u0, mut u1) = self.level_span(vp.view, *id).unwrap_or_else(|| self.model_span(&proj));
+            if vp.owner != -1 {
+                if a[1] < ub[1] || a[1] > ub[3] {
+                    continue;
+                }
+                (u0, u1) = (u0.max(ub[0]), u1.min(ub[2]));
+            }
+            if u1 - u0 < 1e-6 {
+                continue;
+            }
+            let (p, q) = (to_paper([u0, a[1]]), to_paper([u1, a[1]]));
+            let w = m(self.ann.pen(1));
+            let (dash, gap) = (0.04, 0.02);
+            let mut x = p[0];
+            while x < q[0] {
+                let e = (x + dash).min(q[0]);
+                out.strokes.push(Stroke2d { pts: vec![[m(x), m(p[1])], [m(e), m(p[1])]], width: w, color: [0; 3] });
+                x = e + gap;
+            }
+            let head = self.level_types.get(id).and_then(|t| self.level_heads.get(t)).and_then(|h| self.symbols.get(h));
+            match head {
+                Some(sy) => {
+                    let tf = Trf::new([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], [q[0], q[1], 0.0]);
+                    self.put_symbol(out, sy, &tf, None);
+                    for t in &sy.texts {
+                        push_text(out, t, Some(&tf), 1.0, t.text.clone(), self.look(t));
+                    }
+                    for t in &sy.tags {
+                        // labels of a level head: its name, its elevation
+                        let text = t.params.iter().map(|(p, pre, suf, _)| format!("{pre}{}{suf}", if *p == LEVEL_ELEV { self.ann.length(*z) } else { name.clone() })).collect::<Vec<_>>().join(" ");
+                        push_text(out, t, Some(&tf), 1.0, text, self.look(t));
+                    }
+                }
+                None => {
+                    let h = 0.0078;
+                    out.texts.push(Text2d { pos: [m(q[0]), m(q[1] + h * 0.5)], dir: [1.0, 0.0], height: m(h), halign: 2, valign: 0, text: name.clone(), bold: false, wrap: 0.0, color: [0; 3] });
+                }
             }
         }
         for tg in self.ann.tags.iter().filter(|t| t.owner == vp.view) {
@@ -1489,7 +1693,7 @@ impl Sheets {
             }
             let (c, s) = (tg.angle.cos(), tg.angle.sin());
             let tf = Trf::new([c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0], [h[0], h[1], 0.0]);
-            self.put_symbol(out, sy, &tf);
+            self.put_symbol(out, sy, &tf, None);
             for t in &sy.texts {
                 push_text(out, t, Some(&tf), 1.0, t.text.clone(), self.look(t));
             }
@@ -1537,6 +1741,8 @@ fn push_text(out: &mut Sheet2d, t: &RawText, tf: Option<&Trf>, hk: f64, text: St
         0
     };
     let size = text_size(t.height, t.wrap, &text) * hk;
+    // a text turned over (mirrored group) still reads from left to right
+    let (b, h, v) = if b[0] / l < -0.99 { ([-b[0], -b[1], b[2]], 2 - h.min(2), 2 - v) } else { (b, h, v) };
     out.texts.push(Text2d { pos: [m(o[0]), m(o[1])], dir: [(b[0] / l) as f32, (b[1] / l) as f32], height: m(size), halign: h.min(2), valign: v, text, bold, wrap: m(t.wrap * hk), color });
 }
 
@@ -1665,6 +1871,11 @@ fn family_strs(tr: &Tree, s: &Schema) -> HashMap<i64, String> {
         }
     }
     out
+}
+
+/// Integer values of a family instance or type (`FamilyParams.m_params`: `m_int`).
+fn family_ints(tr: &Tree, s: &Schema) -> HashMap<i64, i64> {
+    tr.objs.iter().filter(|o| s.name(o.tag) == "FamilyParams").flat_map(|o| o.list("m_params").iter()).filter_map(|p| Some((p.int("m_paramId")?, p.int("m_int")?))).collect()
 }
 
 fn ids_of(tr: &Tree, s: &Schema, class: &str, field: &str) -> std::collections::HashSet<i64> {

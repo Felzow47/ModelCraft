@@ -13,7 +13,7 @@ fn main() {
         let inf = rd(&mut cf, &n);
         let w = craft_formats::rvt_model::walk_chain(&inf).id_width;
         let w = if w == 0 { 8 } else { w };
-        elements_dbg(&sc, &inf, w, &|t: u16| sc.name(t) == std::env::var("CLASS").unwrap_or("Viewport".into()), &mut |_, t, _, tr| {
+        elements_dbg(&sc, &inf, w, &|t: u16| std::env::var("CLASS").unwrap_or("Viewport".into()).split(',').any(|c| c == sc.name(t)), &mut |_, t, _, tr| {
             let v = tr.root.int("m_dbViewId").unwrap_or(0);
             if let Ok(f) = std::env::var("FAM") { if tr.root.int("m_famId").unwrap_or(0).to_string() != f { return; } }
             if !ids.contains(&v) && !ids.contains(&tr.id) && std::env::var("EVERY").is_err() { return; }
