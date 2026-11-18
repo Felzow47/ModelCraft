@@ -18,7 +18,7 @@
 
 use crate::rvt_browser::Schema;
 use crate::rvt_geom::{elements, Obj, Tree, G};
-use std::collections::HashMap;
+use crate::det::HashMap;
 
 type V3 = [f64; 3];
 const FEET: f64 = 0.3048;
@@ -60,6 +60,87 @@ pub struct Mesh {
     pub runs: Vec<(u32, Mat)>,
     /// One of its materials has a surface pattern (drawn hatched in plan).
     pub patterned: bool,
+    /// One of its materials has a cut pattern: its sections are hatched.
+    pub cut_hatched: bool,
+    /// Family element visibility (`m_famElemVisibility`) of its triangles from each start
+    /// index on (empty: shown everywhere).
+    pub vis: Vec<(u32, i64)>,
+    /// Subcategory of its triangles from each start index on (`rvt_annot::scoped` family
+    /// subcategory, -1: its category's).
+    pub cats: Vec<(u32, i64)>,
+}
+
+/// A family's geometry fitted to one of its types (or to an instance with its own sizes): the
+/// family document holds the geometry of one type, and each type keeps its reference planes as
+/// Revit regenerated them for its sizes (`m_refFaces`). Along each axis of the family, the
+/// positions of the reference planes in the document and in the type, sorted: a point between
+/// two planes moves in proportion, one beyond the last plane moves with it (feet).
+#[derive(Debug, Clone, Default)]
+pub struct Stretch(pub [Vec<(f64, f64)>; 3]);
+
+impl Stretch {
+    /// Where coordinate `x` (feet) along axis `a` goes.
+    pub fn map(&self, a: usize, x: f64) -> f64 {
+        let k = &self.0[a];
+        let (Some(first), Some(last)) = (k.first(), k.last()) else { return x };
+        if x <= first.0 {
+            return x + first.1 - first.0;
+        }
+        if x >= last.0 {
+            return x + last.1 - last.0;
+        }
+        let i = k.partition_point(|p| p.0 <= x).clamp(1, k.len() - 1);
+        let (a0, a1) = (k[i - 1], k[i]);
+        a0.1 + (x - a0.0) * (a1.1 - a0.1) / (a1.0 - a0.0)
+    }
+
+    /// Where point `p` (feet, family frame) goes.
+    pub fn apply(&self, p: V3) -> V3 {
+        [self.map(0, p[0]), self.map(1, p[1]), self.map(2, p[2])]
+    }
+
+    /// A mesh (metres, family frame) moved by the stretch.
+    fn mesh(&self, m: &Mesh) -> Mesh {
+        let mut m = m.clone();
+        for q in m.pos.iter_mut() {
+            let r = self.apply([q[0] as f64 / FEET, q[1] as f64 / FEET, q[2] as f64 / FEET]);
+            *q = [(r[0] * FEET) as f32, (r[1] * FEET) as f32, (r[2] * FEET) as f32];
+        }
+        m
+    }
+
+    /// Built from (document, type) positions along each axis: sorted, a position given twice
+    /// kept once; None when the planes would cross (not a stretch).
+    fn new(mut axes: [Vec<(f64, f64)>; 3]) -> Option<Stretch> {
+        for k in axes.iter_mut() {
+            k.sort_by(|a, b| a.0.total_cmp(&b.0));
+            k.dedup_by(|b, a| (b.0 - a.0).abs() < 1e-6);
+            if k.windows(2).any(|w| w[1].1 < w[0].1 - 1e-6) {
+                return None;
+            }
+        }
+        Some(Stretch(axes))
+    }
+
+    /// Total distance the planes move (feet).
+    fn amount(&self) -> f64 {
+        self.0.iter().flatten().map(|(d, n)| (d - n).abs()).sum()
+    }
+}
+
+/// The mirror a family instance's flips (hand, facing) put on its family's x and y: one flip
+/// mirrors that axis; both are a half turn, already in the instance's stored placement.
+pub(crate) fn flip_signs(hand: bool, facing: bool) -> (f64, f64) {
+    if hand && facing {
+        return (1.0, 1.0);
+    }
+    (if hand { -1.0 } else { 1.0 }, if facing { -1.0 } else { 1.0 })
+}
+
+/// Origin and normal of a `Plane` surface.
+fn plane_of(o: &Obj) -> Option<(V3, V3)> {
+    let (p, x, y) = (v3(o.fs("m_origin"))?, v3(o.fs("m_xVec"))?, v3(o.fs("m_yVec"))?);
+    Some((p, cross(x, y)))
 }
 
 /// Material of a family solid: none, a material element, the family parameter giving it, or
@@ -661,7 +742,7 @@ fn orient(mut loops: Vec<Vec<[f64; 2]>>) -> Vec<Vec<[f64; 2]>> {
 fn cap2d(loops: &[Vec<[f64; 2]>]) -> (Vec<[f64; 2]>, Vec<[u32; 3]>) {
     let (pts, tri) = extrude_region(loops, &[], 0.0, 1.0);
     let mut out = Vec::new();
-    let mut ix: HashMap<usize, u32> = HashMap::new();
+    let mut ix: HashMap<usize, u32> = HashMap::default();
     let mut t2 = Vec::new();
     for t in tri {
         if t.iter().all(|&k| (pts[k as usize][2] - 1.0).abs() < 1e-12) {
@@ -888,6 +969,20 @@ fn revolution(sk: &SketchData, a0: f64, a1: f64) -> Option<Mesh> {
 
 /// A profile family's loops (its XY plane) set across the start of a sweep path: the
 /// profile's X along the horizontal square to the path, its Y up (Revit's default).
+/// Direction of a path at its start `p[0]`: its first chord, turned back by half the turn to
+/// the next one where the path follows a curve (chords turning by less than 20 degrees).
+fn start_tangent(p: &[V3]) -> Option<V3> {
+    let s0 = norm(sub(*p.get(1)?, p[0]))?;
+    let Some(s1) = p.get(2).and_then(|q| norm(sub(*q, p[1]))) else { return Some(s0) };
+    let c = dot(s0, s1);
+    if c < 0.94 || c > 1.0 - 1e-12 {
+        return Some(s0);
+    }
+    // the next chord mirrored across the first turns back a whole step: half of it
+    let back = sub(mul(s0, 2.0 * c), s1);
+    norm(add(s0, back)).or(Some(s0))
+}
+
 fn profile_on_path(
     loops: &[Vec<V3>],
     off: [f64; 3],
@@ -899,8 +994,13 @@ fn profile_on_path(
     if p.len() < 2 {
         return None;
     }
-    let o = p[0];
-    let t = norm(sub(p[1], p[0]))?;
+    // across the path's direction at its start (not its first chord, on an arc)
+    profile_at(loops, off, flip, p[0], start_tangent(p)?)
+}
+
+/// A profile family's loops placed at `o`, across direction `t` (its x level, its y up),
+/// moved by `off` (x, y, angle) and flipped.
+fn profile_at(loops: &[Vec<V3>], off: [f64; 3], flip: bool, o: V3, t: V3) -> Option<SketchData> {
     let x = norm(cross([0.0, 0.0, 1.0], t)).or_else(|| norm(cross([0.0, 1.0, 0.0], t)))?;
     let y = cross(t, x);
     let (c, sn) = (off[2].cos(), off[2].sin());
@@ -923,6 +1023,7 @@ fn profile_on_path(
         user: -1,
         plane: Some((o, x, y)),
         curves,
+        exact: Vec::new(),
     })
 }
 
@@ -994,10 +1095,18 @@ fn sweep(profile: &SketchData, path: &SketchData) -> Option<Mesh> {
         );
     }
     let n = p.len();
+    // the ends across the path's direction there (an arc's, not its chord's)
+    let rev: Vec<V3> = p.iter().rev().copied().collect();
+    let ends = [start_tangent(&p), start_tangent(&rev).map(|t| mul(t, -1.0))];
     let at = |i: usize, c: [f64; 2]| -> V3 {
         let s = if i == 0 { 0 } else { i - 1 };
         let (u, v) = ax[s];
         let x = add(p[i], add(mul(u, c[0]), mul(v, c[1])));
+        if i == 0 || i + 1 == n {
+            let (Some(t), d) = (ends[usize::from(i != 0)], seg[s]) else { return x };
+            let c = dot(d, t);
+            return if c > 0.2 { sub(x, mul(d, dot(sub(x, p[i]), t) / c)) } else { x };
+        }
         if i > 0 && i + 1 < n {
             // mitre joint: onto the plane halfway between the two segments
             if let Some(t) = norm(add(seg[i - 1], seg[i])) {
@@ -1049,6 +1158,29 @@ fn resample(l: &[V3], n: usize) -> Vec<V3> {
     out
 }
 
+/// The corners of a closed loop: its points less the closing one and those on a straight run.
+fn corners(l: &[V3]) -> Vec<V3> {
+    let mut v: Vec<V3> = l.to_vec();
+    v.dedup_by(|a, b| dot(sub(*a, *b), sub(*a, *b)) < 1e-14);
+    if v.len() > 1 && dot(sub(v[0], v[v.len() - 1]), sub(v[0], v[v.len() - 1])) < 1e-14 {
+        v.pop();
+    }
+    let m = v.len();
+    if m < 3 {
+        return v;
+    }
+    (0..m)
+        .filter(|&i| {
+            let (p, q, r) = (v[(i + m - 1) % m], v[i], v[(i + 1) % m]);
+            match (norm(sub(q, p)), norm(sub(r, q))) {
+                (Some(d0), Some(d1)) => dot(d0, d1) < 1.0 - 1e-6,
+                _ => false,
+            }
+        })
+        .map(|i| v[i])
+        .collect()
+}
+
 fn blend(a: &SketchData, b: &SketchData, first: f64, second: f64) -> Option<Mesh> {
     let (la, _) = loops_from(&a.curves);
     let (lb, _) = loops_from(&b.curves);
@@ -1067,15 +1199,17 @@ fn blend(a: &SketchData, b: &SketchData, first: f64, second: f64) -> Option<Mesh
         }
         l
     };
-    let n = la[0].len().max(lb[0].len()).clamp(12, 96);
-    let ra: Vec<V3> = resample(&ccw(&la[0]), n)
-        .into_iter()
-        .map(|p| add(p, mul(f.n, first)))
-        .collect();
-    let rb0: Vec<V3> = resample(&ccw(&lb[0]), n)
-        .into_iter()
-        .map(|p| add(p, mul(f.n, second)))
-        .collect();
+    // two polygons of as many corners: corner to corner (flat sides), else both resampled
+    let (ca, cb) = (corners(&ccw(&la[0])), corners(&ccw(&lb[0])));
+    let (ra, rb0) = if ca.len() == cb.len() && (3..=96).contains(&ca.len()) {
+        (ca, cb)
+    } else {
+        let n = la[0].len().max(lb[0].len()).clamp(12, 96);
+        (resample(&ccw(&la[0]), n), resample(&ccw(&lb[0]), n))
+    };
+    let n = ra.len();
+    let ra: Vec<V3> = ra.into_iter().map(|p| add(p, mul(f.n, first))).collect();
+    let rb0: Vec<V3> = rb0.into_iter().map(|p| add(p, mul(f.n, second))).collect();
     // start of the second loop: the rotation closest to the first loop
     let ua: Vec<[f64; 2]> = ra.iter().map(|&p| f.uv(p)).collect();
     let ub: Vec<[f64; 2]> = rb0.iter().map(|&p| f.uv(p)).collect();
@@ -1122,11 +1256,13 @@ impl Trf {
         let m = [x[0], x[1], x[2], y[0], y[1], y[2], z[0], z[1], z[2]];
         Trf { m, or: self.apply(inner.apply([0.0; 3])) }
     }
+    /// A stored placement (`m_3x3`, `m_or`): the matrix is stored row by row (the image of x
+    /// is its first column), as Revit's `GetTransform` gives it.
     pub(crate) fn from(o: &Obj) -> Option<Trf> {
         let m = o.fs("m_3x3")?;
         let or = v3(o.fs("m_or"))?;
         (m.len() == 9 && m.iter().all(|x| x.is_finite())).then(|| Trf {
-            m: m.try_into().unwrap(),
+            m: [m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]],
             or,
         })
     }
@@ -1312,7 +1448,12 @@ fn vis_flags(tr: &Tree) -> i64 {
 /// A family form not part of the loaded family: hidden by its `Visible` parameter
 /// (-1006205 = 0 for the type stored), or the sample host of a hosted family template
 /// (the extrusion that the family's voids cut in the family editor).
-fn not_in_family(tr: &Tree, s: &Schema) -> bool {
+/// Whether a family document's form shows: its "Visible" value and the family parameter
+/// driving it (-1: none). None: never (the sample host of a hosted family's template).
+fn family_shown(tr: &Tree, s: &Schema) -> Option<(bool, i64)> {
+    if tr.objs.iter().any(|o| s.name(o.tag) == "AddGeomToHostInFamEnvGStep") {
+        return None;
+    }
     let hidden = tr
         .root
         .ptr("m_pParamValueSetInt")
@@ -1322,16 +1463,22 @@ fn not_in_family(tr: &Tree, s: &Schema) -> bool {
                 .iter()
                 .any(|p| p.int("m_paramId") == Some(-1006205) && p.int("m_value") == Some(0))
         });
-    hidden
-        || tr
-            .objs
-            .iter()
-            .any(|o| s.name(o.tag) == "AddGeomToHostInFamEnvGStep")
+    let param = tr
+        .objs
+        .iter()
+        .filter(|o| s.name(o.tag) == "FamilyParametrizedElemParamsCell")
+        .flat_map(|o| o.list("m_paramDrivenData").iter())
+        .find(|d| d.int("m_elemPropId") == Some(-1006205))
+        .and_then(|d| d.int("m_famParamId"))
+        .unwrap_or(-1);
+    Some((!hidden, param))
 }
 
 struct Form {
     id: i64,
     fam: i64,
+    /// its subcategory in its family (`m_categoryId`, -1: the family's category)
+    cat: i64,
     mat: Mat,
     /// A void: it cuts the family's solids.
     void: bool,
@@ -1356,11 +1503,15 @@ enum Kind {
     },
     /// Two sketches of one form, offset along their normal, joined by ruled faces.
     Blend { first: f64, second: f64 },
+    /// Two profiles at the ends of a path joined by ruled faces: each a sketch or a profile
+    /// family (sketch, profile type, offset x y angle, flipped).
+    SweptBlend { path: i64, ends: [(i64, i64, [f64; 3], bool); 2] },
 }
 
 struct Form2 {
     id: i64,
     fam: i64,
+    cat: i64,
     mat: Mat,
     void: bool,
     vis: i64,
@@ -1372,6 +1523,67 @@ struct SketchData {
     user: i64,
     plane: Option<(V3, V3, V3)>,
     curves: Vec<Vec<V3>>,
+    /// A sweep path's curves as defined (to rebuild it for other sizes), when all are known.
+    exact: Vec<Exact>,
+}
+
+/// A path curve as defined: a line (its ends), an arc (centre, axes, radius, angles).
+#[derive(Debug, Clone, Copy)]
+enum Exact {
+    Line(V3, V3),
+    Arc { c: V3, x: V3, y: V3, r: f64, t0: f64, t1: f64 },
+}
+
+impl Exact {
+    fn of(c: &Obj, s: &Schema) -> Option<Exact> {
+        let ep = c.fs("m_endParams")?;
+        let (t0, t1) = (*ep.first()?, *ep.get(1)?);
+        match s.name(c.tag) {
+            "GLine" => {
+                let (o, d) = (v3(c.fs("m_origin"))?, v3(c.fs("m_dirVec"))?);
+                Some(Exact::Line(add(o, mul(d, t0)), add(o, mul(d, t1))))
+            }
+            "GArc" => {
+                let r = match c.get("m_radius") {
+                    Some(G::F(r)) => *r,
+                    _ => return None,
+                };
+                let span = if t1 == t0 { std::f64::consts::TAU } else { t1 - t0 };
+                Some(Exact::Arc { c: v3(c.fs("m_center"))?, x: v3(c.fs("m_xVec"))?, y: v3(c.fs("m_yVec"))?, r, t0, t1: t0 + span })
+            }
+            _ => None,
+        }
+    }
+
+    /// The curve moved by `st`: a line by its ends, an arc by its centre and ends (it keeps
+    /// its plane and angle, its radius from the centre to its ends); as points, fine.
+    /// `angle`: an arc's angle for its own (one an angle parameter drives), if it changes:
+    /// it then keeps its start, its radius from the centre to it.
+    fn stretched(&self, st: &Stretch, angle: &dyn Fn(f64) -> Option<f64>) -> Vec<V3> {
+        match *self {
+            Exact::Line(a, b) => vec![st.apply(a), st.apply(b)],
+            Exact::Arc { c, x, y, r, t0, t1 } => {
+                let at = |t: f64| add(c, add(mul(x, r * t.cos()), mul(y, r * t.sin())));
+                let (c2, a2, b2) = (st.apply(c), st.apply(at(t0)), st.apply(at(t1)));
+                let len = |v: V3| dot(v, v).sqrt();
+                let turned = angle((t1 - t0).abs()).filter(|a| *a > 1e-6 && *a <= std::f64::consts::TAU + 1e-9);
+                let r2 = match turned {
+                    Some(_) => len(sub(a2, c2)),
+                    None => 0.5 * (len(sub(a2, c2)) + len(sub(b2, c2))),
+                };
+                let Some(u) = norm(sub(a2, c2)) else { return vec![a2, b2] };
+                let v = cross(cross(x, y), u);
+                let span = turned.map_or(t1 - t0, |a| a.copysign(t1 - t0));
+                let n = ((span.abs() / (std::f64::consts::PI / 72.0)).ceil() as usize).clamp(2, 288);
+                (0..=n)
+                    .map(|i| {
+                        let t = span * i as f64 / n as f64;
+                        add(c2, add(mul(u, r2 * t.cos()), mul(v, r2 * t.sin())))
+                    })
+                    .collect()
+            }
+        }
+    }
 }
 
 /// Collects the data of the elements with a rebuilt shape, partition by partition.
@@ -1395,12 +1607,33 @@ pub struct Shapes {
     symbols: HashMap<i64, (i64, i64)>,
     /// material element -> its colour; element -> its family parameter element values
     mat_colors: HashMap<i64, [u8; 3]>,
-    mat_patterned: std::collections::HashSet<i64>,
+    mat_patterned: crate::det::HashSet<i64>,
+    mat_cut: crate::det::HashSet<i64>,
     /// family parameter -> its name
     param_names: HashMap<i64, String>,
     elem_values: HashMap<i64, HashMap<i64, i64>>,
     /// Type width and height (feet) of the family symbols that have them (doors, windows).
     sym_size: HashMap<i64, (f64, f64)>,
+    /// The reference planes of each family document (by root): id, kind (`m_refName`: 0-8
+    /// left, centre, right, front, centre, back, bottom, centre, top), origin, normal (feet).
+    ref_planes: HashMap<i64, Vec<(i64, i64, V3, V3)>>,
+    /// The reference faces of each family type as Revit regenerated them for its sizes
+    /// (`m_refFaces`): first its left … top references (kinds 0-8: such a plane, else its
+    /// extents), then its other reference planes by id (origin, normal, feet).
+    sym_faces: HashMap<i64, Vec<Option<(V3, V3)>>>,
+    /// Flipped instances having their own type (sizes of their own): its faces are flipped
+    /// with it (the signs of the family axes).
+    inst_signs: HashMap<i64, [f64; 3]>,
+    /// Length values of each family type's parameters (feet).
+    sym_lengths: HashMap<i64, HashMap<i64, f64>>,
+    /// A nested family type's parameters driven by its host family's: (host, its own).
+    sym_driven: HashMap<i64, Vec<(i64, i64)>>,
+    /// Integer values (yes/no…) of each family type's parameters.
+    sym_ints: HashMap<i64, HashMap<i64, i64>>,
+    /// The angles of each family document that a parameter labels: (parameter, value).
+    labelled_angles: HashMap<i64, Vec<(i64, f64)>>,
+    /// Family forms whose visibility a family parameter drives: (shown by default, parameter).
+    form_shown: HashMap<i64, (bool, i64)>,
     /// Meshes of the boundary representations stored by stairs, landings, parts and roofs.
     breps: Vec<(i64, Mesh)>,
     /// Rebar: id, bar type, bars (centre lines, feet).
@@ -1688,6 +1921,18 @@ fn append(out: &mut Mesh, m: &Mesh, t: &Trf) {
         }
         out.runs.extend(m.runs.iter().map(|&(k, mat)| (k + first, mat)));
     }
+    if !m.vis.is_empty() || !out.vis.is_empty() {
+        if m.vis.first().map_or(true, |r| r.0 > 0) {
+            out.vis.push((first, -1));
+        }
+        out.vis.extend(m.vis.iter().map(|&(k, v)| (k + first, v)));
+    }
+    if !m.cats.is_empty() || !out.cats.is_empty() {
+        if m.cats.first().map_or(true, |r| r.0 > 0) {
+            out.cats.push((first, -1));
+        }
+        out.cats.extend(m.cats.iter().map(|&(k, c)| (k + first, c)));
+    }
     for p in &m.pos {
         let q = t.apply([p[0] as f64 / FEET, p[1] as f64 / FEET, p[2] as f64 / FEET]);
         out.pos.push([
@@ -1709,7 +1954,7 @@ fn append(out: &mut Mesh, m: &Mesh, t: &Trf) {
 /// sheet's boundary (the edges of a single triangle).
 fn thicken_down(m: &mut Mesh, z0: f32) {
     let n = m.pos.len() as u32;
-    let mut count: HashMap<(u32, u32), i32> = HashMap::new();
+    let mut count: HashMap<(u32, u32), i32> = HashMap::default();
     for t in &m.tri {
         for k in 0..3 {
             let (a, b) = (t[k], t[(k + 1) % 3]);
@@ -2105,7 +2350,7 @@ fn delaunay(p: &[[f64; 2]]) -> Vec<[usize; 3]> {
     let (cc, r2) = circ(st, &v);
     tris.push((st, cc, r2));
     let eps = 1e-12 * span * span;
-    let mut seen: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
+    let mut seen: crate::det::HashSet<(i64, i64)> = crate::det::HashSet::default();
     for i in 0..n {
         let q = v[i];
         let key = (
@@ -2125,7 +2370,7 @@ fn delaunay(p: &[[f64; 2]]) -> Vec<[usize; 3]> {
             }
         });
         // the boundary of the cavity: the edges of a single removed triangle
-        let mut count: HashMap<(usize, usize), i32> = HashMap::new();
+        let mut count: HashMap<(usize, usize), i32> = HashMap::default();
         for e in &edges {
             *count.entry((e[0].min(e[1]), e[0].max(e[1]))).or_default() += 1;
         }
@@ -2341,7 +2586,7 @@ fn param(tr: &Tree, id: i64) -> Option<f64> {
 
 impl Shapes {
     /// Element classes read.
-    const CLASSES: [&'static str; 37] = [
+    const CLASSES: [&'static str; 40] = [
         "ParamElemFamily",
         "MaterialElem",
         "ContFooting",
@@ -2368,6 +2613,8 @@ impl Shapes {
         "RevolutionElem",
         "SweepElem",
         "BlendElem",
+        "SweptBlendElem",
+        "AngularDim",
         "Family",
         "FamilyInstance",
         "FamilySymbol",
@@ -2379,6 +2626,7 @@ impl Shapes {
         "StairsSupport",
         "FilledRegion",
         "FormElem",
+        "RefPlane",
     ];
 
     /// Element classes read, by tag.
@@ -2399,6 +2647,10 @@ impl Shapes {
 
     /// One decoded element (of a class in [`Self::wants`]).
     pub fn take(&mut self, s: &Schema, t: u16, tr: &Tree) {
+        // a member of a group type not placed: not drawn
+        if tr.root.int("m_unplacedOwnerId").unwrap_or(-1) != -1 {
+            return;
+        }
         if s.isa(t, "RbsSingleCurve") {
             self.mep_curve(s, s.name(t), tr);
         } else {
@@ -2464,6 +2716,236 @@ impl Shapes {
                 self.content.insert(guid, r);
             }
         }
+    }
+
+    /// How the geometry of family document `root` fits type `sym` of instance `inst` (see
+    /// `Stretch`). `solid`: the box of the family's solids (feet, family frame): the extents
+    /// of the type (its left … top references held by no plane) count where the solids reach
+    /// them. `doc_ext`: by family document, the extents of a type of the document's own sizes,
+    /// once looked for among `types` (the family's types: id, faces).
+    fn stretch_for(
+        &self,
+        inst: i64,
+        root: i64,
+        sym: i64,
+        solid: Option<(V3, V3)>,
+        doc_ext: &mut HashMap<i64, Option<Vec<Option<f64>>>>,
+        types: &dyn Fn(i64) -> Vec<i64>,
+    ) -> Option<Stretch> {
+        let faces = self.sym_faces.get(&sym)?;
+        let planes = self.ref_planes.get(&root)?;
+        let axis = |(o, n): (V3, V3)| -> Option<(usize, f64)> {
+            (0..3).find(|&a| n[a].abs() > 0.999).map(|a| (a, o[a]))
+        };
+        let named = |k: i64| (0..=8).contains(&k);
+        if faces.len() != 9 + planes.iter().filter(|p| !named(p.1)).count() {
+            return None;
+        }
+        let mut by_kind: [Option<(V3, V3)>; 9] = [None; 9];
+        for p in planes.iter().filter(|p| named(p.1)) {
+            by_kind[p.1 as usize] = Some((p.2, p.3));
+        }
+        // each plane of the document and its face in a type
+        let pairs = |faces: &[Option<(V3, V3)>]| -> Vec<((V3, V3), (V3, V3))> {
+            let named_pairs = by_kind.iter().zip(faces).filter_map(|(d, t)| Some(((*d)?, (*t)?)));
+            let rest = planes.iter().filter(|p| !named(p.1)).zip(&faces[9..]).filter_map(|(p, t)| Some(((p.2, p.3), (*t)?)));
+            named_pairs.chain(rest).collect()
+        };
+        let mine = pairs(faces);
+        // the extents of a type of the document's sizes (all its planes where the document's are)
+        let ext = doc_ext.entry(root).or_insert_with(|| {
+            types(root).into_iter().filter_map(|t| self.sym_faces.get(&t)).filter(|f| f.len() == faces.len()).find(|f| {
+                pairs(f).iter().all(|(d, t)| match (axis(*d), axis(*t)) {
+                    (Some((a, x)), Some((b, y))) => a == b && (x - y).abs() < 1e-5,
+                    _ => true,
+                })
+            }).map(|f| f[..9].iter().map(|t| t.and_then(axis).map(|(_, x)| x)).collect())
+        });
+        let build = |sg: [f64; 3]| -> Option<Stretch> {
+            let mut axes: [Vec<(f64, f64)>; 3] = Default::default();
+            for (d, t) in &mine {
+                if let (Some((a, x)), Some((b, y))) = (axis(*d), axis(*t)) {
+                    if a == b {
+                        axes[a].push((x, y * sg[a]));
+                    }
+                }
+            }
+            // the sides of the solids no plane holds: as the type's extents
+            if let (Some(ext), Some((lo, hi))) = (ext.as_ref(), solid) {
+                for k in [0, 2, 3, 5, 6, 8] {
+                    let a = k / 3;
+                    let side = if k % 3 == 0 { lo[a] } else { hi[a] };
+                    let (Some(Some(d)), Some(Some(t))) = (ext.get(k), faces.get(k)) else { continue };
+                    if by_kind[k].is_some() || (d - side).abs() > 1e-3 || axes[a].iter().any(|(x, _)| (x - d).abs() < 1e-6) {
+                        continue;
+                    }
+                    if let Some((b, y)) = axis(*t) {
+                        if b == a {
+                            axes[a].push((*d, y * sg[a]));
+                        }
+                    }
+                }
+            }
+            Stretch::new(axes)
+        };
+        // a flipped instance's own type is flipped with it: its faces unflipped (taking the
+        // reading whose planes move least)
+        let mut best = build([1.0; 3]);
+        if let Some(sg) = self.inst_signs.get(&inst) {
+            if let Some(b) = build(*sg) {
+                if best.as_ref().is_none_or(|a| b.amount() < a.amount()) {
+                    best = Some(b);
+                }
+            }
+        }
+        best.filter(|s| s.amount() > 1e-6)
+    }
+
+    /// Whether family form `id` is read: shown, or hidden by default but shown by a family
+    /// parameter for some types (kept with that parameter, see `form_shown`).
+    fn keep_form(&mut self, id: i64, tr: &Tree, s: &Schema) -> bool {
+        let Some(shown) = family_shown(tr, s) else { return false };
+        if shown.1 != -1 {
+            self.form_shown.insert(id, shown);
+        }
+        shown.0 || shown.1 != -1
+    }
+
+    /// Whether family form `fid` shows in a family instance of type `sym`: the value `sym`
+    /// gives the family parameter driving its visibility, else its own.
+    fn form_shows(&self, fid: i64, sym: i64) -> bool {
+        let Some(&(def, p)) = self.form_shown.get(&fid) else { return true };
+        let Some(name) = self.param_names.get(&p) else { return def };
+        self.sym_ints
+            .get(&sym)
+            .and_then(|v| v.iter().find(|(q, _)| self.param_names.get(q) == Some(name)))
+            .map_or(def, |(_, v)| *v != 0)
+    }
+
+    /// Sweep `f` rebuilt for type `sym`'s sizes: its path moved by `st` (its arcs kept round,
+    /// their radius from their moved centre and ends), its profile family's sizes as the
+    /// parameters of `sym` drive them (a profile sketch moved by `st`). None when its path is
+    /// not made of lines and arcs.
+    fn resweep(&self, f: &Form2, sym: i64, st: &Stretch) -> Option<Mesh> {
+        if let Kind::SweptBlend { path, ends } = f.kind {
+            let b = self.sketches.get(&path)?;
+            if b.exact.is_empty() {
+                return None;
+            }
+            let path2 = SketchData { user: b.user, plane: None, curves: b.exact.iter().map(|e| e.stretched(st, &|a| self.arc_angle(f.fam, sym, a))).collect(), exact: Vec::new() };
+            let mut m = self.swept_blend(&path2, ends, Some(sym), Some(st))?;
+            m.runs = vec![(0, f.mat)];
+            m.vis = vec![(0, f.vis)];
+            m.cats = vec![(0, if f.cat > 0 { crate::rvt_annot::scoped(f.fam, f.cat) } else { -1 })];
+            return Some(m);
+        }
+        let Kind::Sweep { profile, path, sym: psym, off, flip } = f.kind else { return None };
+        let b = self.sketches.get(&path)?;
+        if b.exact.is_empty() {
+            return None;
+        }
+        let path2 = SketchData { user: b.user, plane: None, curves: b.exact.iter().map(|e| e.stretched(st, &|a| self.arc_angle(f.fam, sym, a))).collect(), exact: Vec::new() };
+        let a = match self.sketches.get(&profile) {
+            Some(a) => SketchData {
+                user: a.user,
+                plane: a.plane.map(|(o, x, y)| (st.apply(o), x, y)),
+                curves: a.curves.iter().map(|c| c.iter().map(|p| st.apply(*p)).collect()).collect(),
+                exact: Vec::new(),
+            },
+            None => {
+                let loops = self.sym_profile.get(&psym)?;
+                let [sx, sy] = self.profile_scale(psym, sym, loops);
+                let loops: Vec<Vec<V3>> = loops.iter().map(|l| l.iter().map(|q| [q[0] * sx, q[1] * sy, q[2]]).collect()).collect();
+                profile_on_path(&loops, off, flip, &path2)?
+            }
+        };
+        let mut m = sweep(&a, &path2)?;
+        m.runs = vec![(0, f.mat)];
+        m.vis = vec![(0, f.vis)];
+        m.cats = vec![(0, if f.cat > 0 { crate::rvt_annot::scoped(f.fam, f.cat) } else { -1 })];
+        Some(m)
+    }
+
+    /// The angle type `sym` gives an arc of family document `fam` of angle `span` (radians)
+    /// when an angle dimension of that angle is labelled by a parameter: that parameter's
+    /// value in `sym` (matched by name).
+    fn arc_angle(&self, fam: i64, sym: i64, span: f64) -> Option<f64> {
+        if std::env::var_os("RVT_ANGLE_DEBUG").is_some() {
+            eprintln!("ANGLE fam {fam} sym {sym} span {span} dims {:?}", self.labelled_angles.get(&fam));
+        }
+        let (p, _) = self.labelled_angles.get(&fam)?.iter().find(|(_, v)| (v.abs() - span).abs() < 1e-6)?;
+        let name = self.param_names.get(p)?;
+        let v = self.sym_lengths.get(&sym)?.iter().find(|(q, _)| self.param_names.get(q) == Some(name)).map(|(_, v)| *v)?;
+        ((v - span).abs() > 1e-9).then_some(v)
+    }
+
+    /// A swept blend: its two profiles across the ends of `path` (a straight one), joined.
+    /// `sym`: the host type giving the profile families' sizes; `st`: the stretch moving its
+    /// profile sketches.
+    fn swept_blend(&self, path: &SketchData, ends: [(i64, i64, [f64; 3], bool); 2], sym: Option<i64>, st: Option<&Stretch>) -> Option<Mesh> {
+        let (pc, po) = loops_from(&path.curves);
+        let p = po.first().or(pc.first())?;
+        let t = norm(sub(*p.last()?, p[0]))?;
+        let place = |(sk, psym, off, flip): (i64, i64, [f64; 3], bool), o: V3| -> Option<SketchData> {
+            if let Some(a) = self.sketches.get(&sk) {
+                return Some(match st {
+                    Some(st) => SketchData {
+                        user: a.user,
+                        plane: a.plane.map(|(o, x, y)| (st.apply(o), x, y)),
+                        curves: a.curves.iter().map(|c| c.iter().map(|q| st.apply(*q)).collect()).collect(),
+                        exact: Vec::new(),
+                    },
+                    None => SketchData { user: a.user, plane: a.plane, curves: a.curves.clone(), exact: Vec::new() },
+                });
+            }
+            let loops = self.sym_profile.get(&psym)?;
+            let [sx, sy] = sym.map_or([1.0; 2], |s| self.profile_scale(psym, s, loops));
+            let loops: Vec<Vec<V3>> = loops.iter().map(|l| l.iter().map(|q| [q[0] * sx, q[1] * sy, q[2]]).collect()).collect();
+            profile_at(&loops, off, flip, o, t)
+        };
+        let a = place(ends[0], p[0])?;
+        let b = place(ends[1], *p.last()?)?;
+        blend(&a, &b, 0.0, 0.0)
+    }
+
+    /// How a profile family's loops grow for type `sym` of its host: along its x and y, the
+    /// ratio of the value `sym` gives each parameter of the host driving one of the profile's
+    /// to the profile's own (the side it sizes: the one of its length, else by its name).
+    fn profile_scale(&self, psym: i64, sym: i64, loops: &[Vec<V3>]) -> [f64; 2] {
+        let mut sc = [1.0; 2];
+        let (Some(driven), Some(own), Some(mine)) = (self.sym_driven.get(&psym), self.sym_lengths.get(&psym), self.sym_lengths.get(&sym)) else {
+            return sc;
+        };
+        let ext = |a: usize| {
+            let hi = loops.iter().flatten().map(|p| p[a]).fold(f64::NEG_INFINITY, f64::max);
+            let lo = loops.iter().flatten().map(|p| p[a]).fold(f64::INFINITY, f64::min);
+            hi - lo
+        };
+        let (ex, ey) = (ext(0), ext(1));
+        for (i, (host, p)) in driven.iter().enumerate() {
+            let (Some(&v0), Some(name)) = (own.get(p), self.param_names.get(host)) else { continue };
+            let Some(v) = mine.iter().find(|(q, _)| self.param_names.get(q) == Some(name)).map(|(_, v)| *v) else { continue };
+            if v0 <= 1e-9 || v <= 1e-9 {
+                continue;
+            }
+            let near = |e: f64| (v0 - e).abs() < 1e-6;
+            let a = match (near(ex), near(ey)) {
+                (true, false) => 0,
+                (false, true) => 1,
+                _ => {
+                    let n = self.param_names.get(p).map(|s| s.to_lowercase()).unwrap_or_default();
+                    if ["haut", "height", "höhe", "alt", "h"].iter().any(|k| n.starts_with(k)) {
+                        1
+                    } else if ["larg", "width", "breit", "anch", "b", "w"].iter().any(|k| n.starts_with(k)) {
+                        0
+                    } else {
+                        i.min(1)
+                    }
+                }
+            };
+            sc[a] = v / v0;
+        }
+        sc
     }
 
     /// `Family` element -> root of its family document (after `content_docs`).
@@ -2814,7 +3296,7 @@ impl Shapes {
             "FormElem" => {
                 // a conceptual form: its edge lines; two equal parallel loops offset along
                 // their normal are an extrusion
-                if not_in_family(tr, s) {
+                if !self.keep_form(id, tr, s) {
                     return;
                 }
                 let curves: Vec<Vec<V3>> = tr
@@ -2864,6 +3346,7 @@ impl Shapes {
                             self.forms.push(Form {
                                 id,
                                 fam: tr.root.int("m_famId").unwrap_or(-1),
+                                cat: tr.root.int("m_categoryId").unwrap_or(-1),
 mat: mat_of(tr, s),
 void: tr.root.int("m_cutting").unwrap_or(0) != 0,
                                 vis: vis_flags(tr),
@@ -2986,7 +3469,7 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
                 }
             }
             "ExtrusionElem" => {
-                if not_in_family(tr, s) {
+                if !self.keep_form(id, tr, s) {
                     return;
                 }
                 let Some(h) = tr
@@ -3005,6 +3488,7 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
                 self.forms.push(Form {
                     id,
                     fam: tr.root.int("m_famId").unwrap_or(-1),
+                    cat: tr.root.int("m_categoryId").unwrap_or(-1),
 mat: mat_of(tr, s),
 void: tr.root.int("m_cutting").unwrap_or(0) != 0,
                     vis: vis_flags(tr),
@@ -3026,20 +3510,26 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
                 }
                 let user = tr.root.int("m_userId").unwrap_or(-1);
                 if user > 0 {
-                    let curves = tr
+                    let objs: Vec<&Obj> = tr
                         .root
                         .ptrs("m_absorbedCurves")
                         .iter()
                         .filter_map(|&i| tr.objs.get(i))
+                        .collect();
+                    let curves = objs
+                        .iter()
                         .map(|c| curve_points(c, s))
                         .filter(|p| p.len() >= 2)
                         .collect();
+                    let exact: Vec<Exact> = objs.iter().filter_map(|c| Exact::of(c, s)).collect();
+                    let exact = if exact.len() == objs.len() { exact } else { Vec::new() };
                     self.sketches.insert(
                         id,
                         SketchData {
                             user,
                             plane,
                             curves,
+                            exact,
                         },
                     );
                 }
@@ -3047,16 +3537,21 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
             "Path3d" => {
                 // 3D sweep path: open or closed curve loops, kept like a path sketch
                 let user = tr.root.int("m_userId").unwrap_or(-1);
-                let curves: Vec<Vec<V3>> = tr
+                let objs: Vec<&Obj> = tr
                     .root
                     .ptrs("m_curveLoops")
                     .iter()
                     .filter_map(|&i| tr.objs.get(i))
                     .flat_map(|l| l.ptrs("m_curves"))
                     .filter_map(|i| tr.objs.get(i))
+                    .collect();
+                let curves: Vec<Vec<V3>> = objs
+                    .iter()
                     .map(|c| curve_points(c, s))
                     .filter(|p| p.len() >= 2)
                     .collect();
+                let exact: Vec<Exact> = objs.iter().filter_map(|c| Exact::of(c, s)).collect();
+                let exact = if exact.len() == objs.len() { exact } else { Vec::new() };
                 if user > 0 && !curves.is_empty() {
                     self.sketches.insert(
                         id,
@@ -3064,12 +3559,13 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
                             user,
                             plane: None,
                             curves,
+                            exact,
                         },
                     );
                 }
             }
-            "RevolutionElem" | "SweepElem" | "BlendElem" => {
-                if not_in_family(tr, s) {
+            "RevolutionElem" | "SweepElem" | "BlendElem" | "SweptBlendElem" => {
+                if !self.keep_form(id, tr, s) {
                     return;
                 }
                 let fam = tr.root.int("m_famId").unwrap_or(-1);
@@ -3103,6 +3599,22 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
                                 flip: pd.int("m_flippedX").unwrap_or(0) != 0,
                             }
                         }
+                        "SweptBlendElem" => {
+                            let pd = tr.root.list("m_profileData");
+                            let end = |o: &Obj| {
+                                (
+                                    o.int("m_profileSketchId").unwrap_or(-1),
+                                    o.int("m_profileFamSymId").unwrap_or(-1),
+                                    [o.float("m_xOffset").unwrap_or(0.0), o.float("m_yOffset").unwrap_or(0.0), o.float("m_angle").unwrap_or(0.0)],
+                                    o.int("m_flippedX").unwrap_or(0) != 0,
+                                )
+                            };
+                            let (Some(a), Some(b)) = (pd.first(), pd.get(1)) else { return };
+                            Kind::SweptBlend {
+                                path: tr.root.int("m_pathSketchId").filter(|&v| v > 0).or_else(|| tr.root.int("m_path3dId")).unwrap_or(-1),
+                                ends: [end(a), end(b)],
+                            }
+                        }
                         _ => Kind::Blend {
                             first: param(tr, -1001804).unwrap_or(0.0),
                             second: param(tr, -1001805).unwrap_or(1.0),
@@ -3111,6 +3623,7 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
                 self.forms2.push(Form2 {
                     id,
                     fam,
+                    cat: tr.root.int("m_categoryId").unwrap_or(-1),
                     mat: mat_of(tr, s),
                     void: tr.root.int("m_cutting").unwrap_or(0) != 0,
                     vis: vis_flags(tr),
@@ -3169,7 +3682,16 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
                 let Some(t) = ii.obj("m_Trf").and_then(Trf::from) else {
                     return;
                 };
+                // flipped (hand: `m_flippedX`, facing: `m_flippedY`): its family mirrored on
+                // its own axes before being placed (flipped both ways it is only turned, which
+                // its placement already holds)
+                let (sx, sy) = flip_signs(tr.root.int("m_flippedX").unwrap_or(0) != 0, tr.root.int("m_flippedY").unwrap_or(0) != 0);
+                let t = t.after(&Trf::new([sx, 0.0, 0.0, 0.0, sy, 0.0, 0.0, 0.0, 1.0], [0.0; 3]));
                 let sym = ii.int("m_symbolId").unwrap_or(-1);
+                let master = tr.root.int("m_masterSymbolId").unwrap_or(-1);
+                if master != -1 && master != sym && (sx < 0.0 || sy < 0.0) {
+                    self.inst_signs.insert(id, [sx, sy, 1.0]);
+                }
                 let own = family_elem_values(tr, s);
                 if !own.is_empty() {
                     self.elem_values.insert(id, own);
@@ -3219,6 +3741,36 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
                             self.framing
                                 .push((id, add(o, mul(dv, a)), add(o, mul(dv, b))));
                         }
+                    }
+                }
+            }
+            "AngularDim" => {
+                let fam = tr.root.int("m_famId").unwrap_or(-1);
+                if fam > 0 {
+                    // its segments (inline objects): the parameter labelling each, its value
+                    fn walk(o: &Obj, out: &mut Vec<(i64, f64)>) {
+                        if let (Some(p), Some(G::F(v))) = (o.int("m_paramId").filter(|p| *p > 0), o.get("m_lockedValue")) {
+                            out.push((p, *v));
+                        }
+                        for (_, g) in &o.fields {
+                            match g {
+                                G::O(x) => walk(x, out),
+                                G::L(v) => v.iter().for_each(|x| walk(x, out)),
+                                _ => {}
+                            }
+                        }
+                    }
+                    let mut found = Vec::new();
+                    walk(&tr.root, &mut found);
+                    tr.objs.iter().for_each(|o| walk(o, &mut found));
+                    self.labelled_angles.entry(fam).or_default().extend(found);
+                }
+            }
+            "RefPlane" => {
+                let fam = tr.root.int("m_famId").unwrap_or(-1);
+                if fam > 0 {
+                    if let Some((o, n)) = tr.root.ptr("m_pSurface").and_then(|i| tr.objs.get(i)).and_then(plane_of) {
+                        self.ref_planes.entry(fam).or_default().push((id, tr.root.int("m_refName").unwrap_or(-1), o, n));
                     }
                 }
             }
@@ -3292,6 +3844,10 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
                 }
             }
             "MaterialElem" => {
+                // a cut pattern (past the built-in solid fill): its sections are hatched
+                if tr.root.ptr("m_pMaterial").and_then(|i| tr.objs.get(i)).and_then(|m| m.int("m_cutPatternId")).is_some_and(|p| p > 3) {
+                    self.mat_cut.insert(id);
+                }
                 if tr.root.ptr("m_pMaterial").and_then(|i| tr.objs.get(i)).and_then(|m| m.int("m_surfacePatternId")).is_some_and(|p| p > 0) {
                     self.mat_patterned.insert(id);
                 }
@@ -3301,6 +3857,48 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
             }
             "FamilySymbol" => {
                 self.elem_values.insert(id, family_elem_values(tr, s));
+                let faces: Vec<Option<(V3, V3)>> = tr
+                    .root
+                    .ptrs("m_refFaces")
+                    .into_iter()
+                    .map(|k| {
+                        tr.objs
+                            .get(k)
+                            .and_then(|f| f.ptr("m_pSurf"))
+                            .and_then(|i| tr.objs.get(i))
+                            .and_then(plane_of)
+                    })
+                    .collect();
+                if faces.len() > 9 {
+                    self.sym_faces.insert(id, faces);
+                }
+                if let Some(ps) = tr.root.ptr("m_pParams").and_then(|k| tr.objs.get(k)) {
+                    let v: HashMap<i64, f64> = ps
+                        .list("m_params")
+                        .iter()
+                        .filter_map(|p| match p.get("m_value") {
+                            Some(G::F(v)) if v.is_finite() => Some((p.int("m_paramId")?, *v)),
+                            _ => None,
+                        })
+                        .collect();
+                    if !v.is_empty() {
+                        self.sym_lengths.insert(id, v);
+                    }
+                    let ints: HashMap<i64, i64> = ps.list("m_params").iter().filter_map(|p| Some((p.int("m_paramId")?, p.int("m_int")?))).collect();
+                    if !ints.is_empty() {
+                        self.sym_ints.insert(id, ints);
+                    }
+                }
+                let driven: Vec<(i64, i64)> = tr
+                    .objs
+                    .iter()
+                    .filter(|o| s.name(o.tag) == "FamilyParametrizedElemParamsCell")
+                    .flat_map(|o| o.list("m_paramDrivenData").iter())
+                    .filter_map(|d| Some((d.int("m_famParamId")?, d.int("m_elemPropId")?)))
+                    .collect();
+                if !driven.is_empty() {
+                    self.sym_driven.insert(id, driven);
+                }
                 self.symbols.insert(
                     id,
                     (
@@ -3361,7 +3959,32 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
         boxes: &HashMap<i64, ([f64; 3], [f64; 3])>,
         family_doc: bool,
     ) -> HashMap<i64, Mesh> {
-        let mut out: HashMap<i64, Mesh> = HashMap::new();
+        self.finish_with(boxes, family_doc, &|_| {})
+    }
+
+    /// Same, telling `progress` how far it is (the family instances take most of the time).
+    pub fn finish_with(
+        self,
+        boxes: &HashMap<i64, ([f64; 3], [f64; 3])>,
+        family_doc: bool,
+        progress: &dyn Fn(f32),
+    ) -> HashMap<i64, Mesh> {
+        self.finish_full(boxes, family_doc, progress).0
+    }
+
+    /// Same, with how each family instance's family was fitted to its sizes (by instance).
+    pub fn finish_full(
+        mut self,
+        boxes: &HashMap<i64, ([f64; 3], [f64; 3])>,
+        family_doc: bool,
+        progress: &dyn Fn(f32),
+    ) -> (HashMap<i64, Mesh>, HashMap<i64, Stretch>) {
+        let mut out: HashMap<i64, Mesh> = HashMap::default();
+        let mut stretches: HashMap<i64, Stretch> = HashMap::default();
+        // the reference planes of each family document by id (the order of its types' faces)
+        for v in self.ref_planes.values_mut() {
+            v.sort_by_key(|p| p.0);
+        }
         let t0 = std::time::Instant::now();
         if std::env::var_os("RVT_SHAPE_DEBUG").is_some() {
             eprintln!(
@@ -3419,7 +4042,7 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
             }
         }
         // a stairs: its runs and landings
-        let mut stairs: HashMap<i64, Mesh> = HashMap::new();
+        let mut stairs: HashMap<i64, Mesh> = HashMap::default();
         for &(p, g) in &self.stair_parts {
             if let Some(m) = out.get(&p) {
                 let e = stairs.entry(g).or_default();
@@ -3521,7 +4144,7 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
             }
         }
         if std::env::var_os("RVT_SHAPE_DEBUG").is_some() {
-            let mut h: HashMap<i64, usize> = HashMap::new();
+            let mut h: HashMap<i64, usize> = HashMap::default();
             for v in self
                 .forms
                 .iter()
@@ -3541,8 +4164,13 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
             );
         }
         // family solids, in their family's coordinates
-        let mut by_fam: HashMap<i64, Vec<Mesh>> = HashMap::new();
-        let mut voids: HashMap<i64, Vec<Mesh>> = HashMap::new();
+        progress(0.1);
+        let mut by_fam: HashMap<i64, Vec<Mesh>> = HashMap::default();
+        let mut voids: HashMap<i64, Vec<Mesh>> = HashMap::default();
+        // the form each of a family's solids comes from (same order)
+        let mut src_of: HashMap<i64, Vec<i64>> = HashMap::default();
+        // the solids hidden by default that a family parameter shows for some types
+        let mut extra_fam: HashMap<i64, Vec<(i64, Mesh)>> = HashMap::default();
         for f in self.forms.iter() {
             if let Some(mut m) = self.form(f) {
                 if f.void {
@@ -3552,11 +4180,18 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
                     continue;
                 }
                 m.runs = vec![(0, f.mat)];
-                if family_doc {
+                m.vis = vec![(0, f.vis)];
+                m.cats = vec![(0, if f.cat > 0 { crate::rvt_annot::scoped(f.fam, f.cat) } else { -1 })];
+                if self.form_shown.get(&f.id).is_some_and(|s| !s.0) {
+                    if !family_doc {
+                        extra_fam.entry(f.fam).or_default().push((f.id, m));
+                    }
+                } else if family_doc {
                     // the family file itself: its solids as they are
                     out.insert(f.id, m);
                 } else {
                     by_fam.entry(f.fam).or_default().push(m);
+                    src_of.entry(f.fam).or_default().push(f.id);
                 }
             }
         }
@@ -3581,6 +4216,7 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
                         .and_then(|a| sweep(&a, b)),
                     _ => None,
                 },
+                Kind::SweptBlend { path, ends } => self.sketches.get(&path).and_then(|p| self.swept_blend(p, ends, None, None)),
                 Kind::Blend { first, second } => {
                     let mut sk: Vec<(&i64, &SketchData)> = self
                         .sketches
@@ -3606,6 +4242,7 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
                         self.sketches.contains_key(&path)
                     ),
                     Kind::Blend { .. } => "blend".into(),
+                    Kind::SweptBlend { path, .. } => format!("swept blend path {path} {}", self.sketches.contains_key(&path)),
                 };
                 eprintln!("FORM2 FAIL {} fam {} {kind}", f.id, f.fam);
             }
@@ -3617,17 +4254,25 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
                     continue;
                 }
                 m.runs = vec![(0, f.mat)];
-                if family_doc {
+                m.vis = vec![(0, f.vis)];
+                m.cats = vec![(0, if f.cat > 0 { crate::rvt_annot::scoped(f.fam, f.cat) } else { -1 })];
+                if self.form_shown.get(&f.id).is_some_and(|s| !s.0) {
+                    if !family_doc {
+                        extra_fam.entry(f.fam).or_default().push((f.id, m));
+                    }
+                } else if family_doc {
                     out.insert(f.id, m);
                 } else {
                     by_fam.entry(f.fam).or_default().push(m);
+                    src_of.entry(f.fam).or_default().push(f.id);
                 }
             }
         }
         if family_doc {
-            return out;
+            return (out, stretches);
         }
         // the voids of each family cut the solids they reach
+        progress(0.25);
         for (fam, vs) in &voids {
             let Some(solids) = by_fam.get_mut(fam) else { continue };
             for m in solids.iter_mut() {
@@ -3638,13 +4283,15 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
                     }
                     if let Some((pos, tri)) = crate::rvt_csg::subtract((&m.pos, &m.tri), (&v.pos, &v.tri)) {
                         let runs = m.runs.first().map(|r| vec![(0, r.1)]).unwrap_or_default();
-                        *m = Mesh { pos, tri, runs, patterned: m.patterned };
+                        let vis = m.vis.first().map(|r| vec![(0, r.1)]).unwrap_or_default();
+                        let cats = m.cats.first().map(|r| vec![(0, r.1)]).unwrap_or_default();
+                        *m = Mesh { pos, tri, runs, patterned: m.patterned, cut_hatched: m.cut_hatched, vis, cats };
                     }
                 }
             }
         }
         // families drawn only as plan symbols (no solids): their filled regions as 1 cm plates
-        let solid: std::collections::HashSet<i64> = by_fam.keys().copied().collect();
+        let solid: crate::det::HashSet<i64> = by_fam.keys().copied().collect();
         for &(id, fam, sk) in &self.regions {
             if solid.contains(&fam) {
                 continue;
@@ -3659,9 +4306,10 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
             let f = Form {
                 id,
                 fam,
+                cat: -1,
                 mat: Mat::None,
                 void: false,
-                vis: 0,
+                vis: -1,
                 sketch: sk,
                 loops: closed,
                 start: 0.0,
@@ -3671,7 +4319,7 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
                 by_fam.entry(fam).or_default().push(m);
             }
         }
-        let plan_only: std::collections::HashSet<i64> = self
+        let plan_only: crate::det::HashSet<i64> = self
             .regions
             .iter()
             .map(|r| r.1)
@@ -3683,7 +4331,7 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
         }
         // a `Family` element → the root of its family document (ContentDocuments GUID)
         // (the family document's elements have the root as their `m_famId`)
-        let mut owner: HashMap<i64, i64> = HashMap::new();
+        let mut owner: HashMap<i64, i64> = HashMap::default();
         for (id, (f, _)) in &self.symbols {
             owner.insert(*id, *f);
         }
@@ -3742,7 +4390,7 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
             );
         }
         // instances: family doc of the symbol, nested instances inside family docs
-        let hosts: std::collections::HashSet<i64> = self
+        let hosts: crate::det::HashSet<i64> = self
             .instances
             .iter()
             .map(|i| i.2)
@@ -3755,7 +4403,7 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
                 .flatten()
                 .find(|f| *f > 0 && (by_fam.contains_key(f) || hosts.contains(f)))
         };
-        let mut nested: HashMap<i64, Vec<(i64, Trf)>> = HashMap::new();
+        let mut nested: HashMap<i64, Vec<(i64, Trf)>> = HashMap::default();
         for &(_, sym, owner, t) in &self.instances {
             if owner > 0 {
                 if let Some(f) = fam_of(sym) {
@@ -3771,6 +4419,7 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
             fam: i64,
             by_fam: &HashMap<i64, Vec<Mesh>>,
             nested: &HashMap<i64, Vec<(i64, Trf)>>,
+            symbols_only: &crate::det::HashSet<i64>,
             depth: u32,
             memo: &mut HashMap<i64, Parts>,
         ) -> Parts {
@@ -3781,10 +4430,12 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
             let mut size: usize = out.iter().map(|m| m.pos.len()).sum();
             if depth < 4 {
                 for (f, ti) in nested.get(&fam).map(|v| v.as_slice()).unwrap_or(&[]) {
-                    if *f == fam || size > CAP {
+                    // a 2D symbol nested in a family (flow arrows…) has no volume: Revit
+                    // shows it only in the views and states its parameters select
+                    if *f == fam || size > CAP || symbols_only.contains(f) {
                         continue;
                     }
-                    for m in flat(*f, by_fam, nested, depth + 1, memo).iter() {
+                    for m in flat(*f, by_fam, nested, symbols_only, depth + 1, memo).iter() {
                         let mut q = Mesh::default();
                         append(&mut q, m, ti);
                         size += q.pos.len();
@@ -3814,12 +4465,26 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
             (lo, hi)
         }
         let cover = 0.6;
-        let mut memo: HashMap<i64, Parts> = HashMap::new();
+        let mut memo: HashMap<i64, Parts> = HashMap::default();
+        // the types of each family document, and the extents of one of its own sizes
+        let mut types_of: HashMap<i64, Vec<i64>> = HashMap::default();
+        for &t in self.sym_faces.keys() {
+            if let Some(f) = fam_of(t) {
+                types_of.entry(f).or_default().push(t);
+            }
+        }
+        let mut doc_ext: HashMap<i64, Option<Vec<Option<f64>>>> = HashMap::default();
+        let forms2_by_id: HashMap<i64, usize> = self.forms2.iter().enumerate().map(|(k, f)| (f.id, k)).collect();
         let mut part_boxes: HashMap<i64, std::rc::Rc<Vec<Option<([f32; 3], [f32; 3])>>>> =
-            HashMap::new();
+            HashMap::default();
         let dbg = std::env::var_os("RVT_SHAPE_DEBUG").is_some();
         let mut st = [0usize; 6];
-        for &(id, sym, owner, t) in &self.instances {
+        progress(0.4);
+        let step = (self.instances.len() / 100).max(1);
+        for (k, &(id, sym, owner, t)) in self.instances.iter().enumerate() {
+            if k % step == 0 {
+                progress(0.4 + 0.55 * k as f32 / self.instances.len() as f32);
+            }
             if owner > 0 {
                 continue;
             }
@@ -3842,15 +4507,78 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
             if plan_only.contains(&f) {
                 plan_insts.push(id);
             }
-            let parts = flat(f, &by_fam, &nested, 0, &mut memo);
+            let parts = flat(f, &by_fam, &nested, &plan_only, 0, &mut memo);
             if parts.iter().all(|m| m.tri.is_empty()) {
                 continue;
             }
             st[2] += 1;
-            let pb = part_boxes
-                .entry(f)
-                .or_insert_with(|| std::rc::Rc::new(parts.iter().map(|m| m.bbox()).collect()))
-                .clone();
+            // its type's sizes (or its own): the family's solids stretched to them
+            let solid = parts.iter().filter_map(|m| m.bbox()).fold(None, |acc: Option<(V3, V3)>, (lo, hi)| {
+                let (lo, hi) = (lo.map(|x| x as f64 / FEET), hi.map(|x| x as f64 / FEET));
+                Some(match acc {
+                    Some((a, b)) => ([a[0].min(lo[0]), a[1].min(lo[1]), a[2].min(lo[2])], [b[0].max(hi[0]), b[1].max(hi[1]), b[2].max(hi[2])]),
+                    None => (lo, hi),
+                })
+            });
+            let stretch = self.stretch_for(id, f, sym, solid, &mut doc_ext, &|r| types_of.get(&r).cloned().unwrap_or_default());
+            let parts: Parts = match &stretch {
+                Some(st) => {
+                    // its sweeps rebuilt for the sizes (arcs kept round, profiles resized),
+                    // unless a void of the family cuts them; its other solids stretched
+                    let src = src_of.get(&f).filter(|_| !voids.contains_key(&f));
+                    std::rc::Rc::new(
+                        parts
+                            .iter()
+                            .enumerate()
+                            .map(|(k, m)| {
+                                let re = src.and_then(|v| v.get(k))
+                                    .and_then(|fid| forms2_by_id.get(fid))
+                                    .and_then(|&i| self.resweep(&self.forms2[i], sym, st));
+                                if std::env::var("RVT_STRETCH_DEBUG").is_ok_and(|v| v == id.to_string()) {
+                                    eprintln!("  part {k} form {:?} resweep {} pts {}", src.and_then(|v| v.get(k)), re.is_some(), m.pos.len());
+                                }
+                                re.unwrap_or_else(|| st.mesh(m))
+                            })
+                            .collect(),
+                    )
+                }
+                None => parts,
+            };
+            // the solids a family parameter hides or shows for its type
+            let hide: Vec<usize> = src_of.get(&f).map_or(Vec::new(), |v| {
+                v.iter().enumerate().filter(|(k, fid)| *k < parts.len() && !self.form_shows(**fid, sym)).map(|(k, _)| k).collect()
+            });
+            let shown: Vec<&(i64, Mesh)> = extra_fam.get(&f).map_or(Vec::new(), |v| v.iter().filter(|(fid, _)| self.form_shows(*fid, sym)).collect());
+            let changed = !hide.is_empty() || !shown.is_empty();
+            let parts: Parts = if changed {
+                let mut v: Vec<Mesh> = parts.as_ref().clone();
+                for k in hide {
+                    v[k] = Mesh::default();
+                }
+                for (fid, m) in shown {
+                    let m = match &stretch {
+                        Some(st) => forms2_by_id.get(fid).and_then(|&i| self.resweep(&self.forms2[i], sym, st)).unwrap_or_else(|| st.mesh(m)),
+                        None => m.clone(),
+                    };
+                    v.push(m);
+                }
+                std::rc::Rc::new(v)
+            } else {
+                parts
+            };
+            let pb = match (&stretch, changed) {
+                (None, false) => part_boxes
+                    .entry(f)
+                    .or_insert_with(|| std::rc::Rc::new(parts.iter().map(|m| m.bbox()).collect()))
+                    .clone(),
+                _ => std::rc::Rc::new(parts.iter().map(|m| m.bbox()).collect()),
+            };
+            if let Some(s) = stretch {
+                if std::env::var("RVT_STRETCH_DEBUG").is_ok_and(|v| v == id.to_string()) {
+                    eprintln!("STRETCH {id} sym {sym} fam {f}: {s:?}");
+                }
+                stretches.insert(id, s);
+            }
             let Some(&(blo, bhi)) = boxes.get(&id) else {
                 let mut m = Mesh::default();
                 for p in parts.iter() {
@@ -3890,8 +4618,13 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
             // all three axes, or two when the solids lie inside the box: a door or window
             // whose box also holds its swing, frame depth or opening (the panel and trims
             // span the width and height but not the whole depth)
-            let covers =
-                !keep.is_empty() && (covered == 3 || (covered == 2 && keep.len() == parts.len()));
+            // (or every solid lands inside it: its box also holds the reference planes, lines
+            // and texts of its family, as an equipment's maintenance zone; doors and windows
+            // excepted, their default type being stretched below)
+            let covers = !keep.is_empty()
+                && (covered == 3
+                    || (covered == 2 && keep.len() == parts.len())
+                    || (keep.len() == parts.len() && !self.sym_size.contains_key(&sym)));
             if covers {
                 let mut m = Mesh::default();
                 for &k in &keep {
@@ -3902,47 +4635,6 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
                 }
                 out.insert(id, m);
                 continue;
-            }
-            // the rotation read the other way round (rows for columns): some placements
-            // store it so (the parts land mirrored about the insertion point)
-            {
-                let m3 = t.m;
-                let t2 = Trf::new(
-                    [
-                        m3[0], m3[3], m3[6], m3[1], m3[4], m3[7], m3[2], m3[5], m3[8],
-                    ],
-                    t.or,
-                );
-                let placed2: Vec<Option<([f64; 3], [f64; 3])>> =
-                    pb.iter().map(|b| b.map(|b| placed_box(b, &t2))).collect();
-                let keep2: Vec<usize> = (0..parts.len())
-                    .filter(|&k| placed2[k].is_some_and(inside))
-                    .collect();
-                let (mut lo2, mut hi2) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
-                for &k in &keep2 {
-                    let (lo, hi) = placed2[k].unwrap();
-                    for a in 0..3 {
-                        lo2[a] = lo2[a].min(lo[a]);
-                        hi2[a] = hi2[a].max(hi[a]);
-                    }
-                }
-                let with_box = placed2.iter().filter(|p| p.is_some()).count();
-                let cov2 = (0..3)
-                    .filter(|&a| {
-                        let e = bhi[a] - blo[a];
-                        e < 0.1 || hi2[a] - lo2[a] >= cover * e
-                    })
-                    .count();
-                if keep2.len() > keep.len() && (cov2 == 3 || (cov2 == 2 && keep2.len() == with_box))
-                {
-                    let mut m = Mesh::default();
-                    for &k in &keep2 {
-                        append(&mut m, &parts[k], &t2);
-                    }
-                    st[5] += 1;
-                    out.insert(id, m);
-                    continue;
-                }
             }
             if dbg {
                 eprintln!("OFFBOX {id} sym {sym} fam {f} aligned {} parts {} in box {} box {blo:?} {bhi:?}", t.axis_aligned(), parts.len(), keep.len());
@@ -4046,6 +4738,7 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
                 st[0], st[1], st[2], st[3], st[4], st[5]
             );
         }
+        progress(0.96);
         // wall footings: the profile swept along the driver line; the driver stops at the
         // wall's ends, the footing at its joins, so an axis-aligned sweep is extended or
         // trimmed to the footing's box along its axis
@@ -4214,13 +4907,16 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
                     Mat::Elem(e) => Some(e),
                     _ => None,
                 };
+                if e.is_some_and(|e| self.mat_cut.contains(&e)) {
+                    m.cut_hatched = true;
+                }
                 if e.is_some_and(|e| self.mat_patterned.contains(&e)) {
                     m.patterned = true;
                 }
                 r.1 = e.and_then(|e| self.mat_colors.get(&e)).map_or(Mat::None, |c| Mat::Color(*c));
             }
         }
-        out
+        (out, stretches)
     }
 
     /// Rails: a 5 cm square bar hanging under their top line; railings: balusters along
@@ -4248,7 +4944,7 @@ void: tr.root.int("m_cutting").unwrap_or(0) != 0,
             pts
         };
         let bar = 0.05 / FEET;
-        let mut rail_path: HashMap<i64, Vec<V3>> = HashMap::new();
+        let mut rail_path: HashMap<i64, Vec<V3>> = HashMap::default();
         for &(id, p) in &self.rails {
             let pts = path_of(p);
             if let Some(m) = swept_band(&pts, bar / 2.0, -bar, 0.0) {
@@ -4668,6 +5364,40 @@ pub fn classes() -> &'static [&'static str] {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stretch_between_planes() {
+        // planes at 0 and 1 moved to 0 and 2; beyond the last, points move with it
+        let st = super::Stretch::new([vec![(0.0, 0.0), (1.0, 2.0)], vec![], vec![(0.0, 0.0)]]).unwrap();
+        assert!((st.map(0, 0.5) - 1.0).abs() < 1e-12);
+        assert!((st.map(0, 3.0) - 4.0).abs() < 1e-12);
+        assert!((st.map(0, -1.0) + 1.0).abs() < 1e-12);
+        assert_eq!(st.map(1, 7.0), 7.0);
+        // planes that would cross: no stretch
+        assert!(super::Stretch::new([vec![(0.0, 1.0), (1.0, 0.0)], vec![], vec![]]).is_none());
+    }
+
+    #[test]
+    fn arc_start_tangent() {
+        // a quarter circle in 36 chords: its direction at the start is the tangent, not the
+        // first chord's
+        let p: Vec<[f64; 3]> = (0..=36).map(|i| {
+            let t = std::f64::consts::FRAC_PI_2 * i as f64 / 36.0;
+            [t.cos(), t.sin(), 0.0]
+        }).collect();
+        let t = super::start_tangent(&p).unwrap();
+        assert!(t[0].abs() < 1e-9 && (t[1] - 1.0).abs() < 1e-9, "{t:?}");
+        // a straight path: its direction
+        let t = super::start_tangent(&[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]]).unwrap();
+        assert!((t[0] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn double_flip_is_a_turn() {
+        assert_eq!(super::flip_signs(true, true), (1.0, 1.0));
+        assert_eq!(super::flip_signs(true, false), (-1.0, 1.0));
+        assert_eq!(super::flip_signs(false, true), (1.0, -1.0));
+    }
+
     #[test]
     fn prism_box() {
         let prof = vec![

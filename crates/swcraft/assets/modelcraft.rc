@@ -1,7 +1,7 @@
 1 ICON "modelcraft.ico"
 1 VERSIONINFO
-FILEVERSION 0,2,0,0
-PRODUCTVERSION 0,2,0,0
+FILEVERSION @V4@
+PRODUCTVERSION @V4@
 BEGIN
   BLOCK "StringFileInfo"
   BEGIN
@@ -9,8 +9,8 @@ BEGIN
     BEGIN
       VALUE "FileDescription", "ModelCraft - visionneuse 3D"
       VALUE "ProductName", "ModelCraft"
-      VALUE "FileVersion", "0.2.0"
-      VALUE "ProductVersion", "0.2.0"
+      VALUE "FileVersion", "@V@"
+      VALUE "ProductVersion", "@V@"
       VALUE "LegalCopyright", "MIT"
     END
   END

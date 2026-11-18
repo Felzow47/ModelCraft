@@ -14,6 +14,8 @@ pub(crate) struct Hlr {
     h: usize,
     /// nearest depth seen at each pixel (larger = closer), -inf where nothing
     z: Vec<f32>,
+    /// whose face that is (`u32::MAX`: none, or not told)
+    own: Vec<u32>,
     pub(crate) faces: usize,
 }
 
@@ -27,15 +29,15 @@ impl Hlr {
         let px = dw.max(dh) / max_px.max(16) as f64;
         let w = (dw / px).ceil() as usize + 3;
         let h = (dh / px).ceil() as usize + 3;
-        Some(Hlr { x0: r[0] - px, y0: r[1] - px, px, w, h, z: vec![f32::NEG_INFINITY; w * h], faces: 0 })
+        Some(Hlr { x0: r[0] - px, y0: r[1] - px, px, w, h, z: vec![f32::NEG_INFINITY; w * h], own: vec![u32::MAX; w * h], faces: 0 })
     }
 
     pub(crate) fn pixel(&self) -> f64 {
         self.px
     }
 
-    /// Draws a triangle (view coordinates).
-    pub(crate) fn tri(&mut self, a: V3, b: V3, c: V3) {
+    /// Draws a triangle of `owner` (view coordinates).
+    pub(crate) fn tri_of(&mut self, a: V3, b: V3, c: V3, owner: u32) {
         let s = |p: V3| [(p[0] - self.x0) / self.px, (p[1] - self.y0) / self.px, p[2]];
         let (a, b, c) = (s(a), s(b), s(c));
         let area = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
@@ -62,9 +64,10 @@ impl Hlr {
                     continue;
                 }
                 let d = (w0 * a[2] + w1 * b[2] + w2 * c[2]) as f32;
-                let z = &mut self.z[y * self.w + x];
-                if d > *z {
-                    *z = d;
+                let i = y * self.w + x;
+                if d > self.z[i] {
+                    self.z[i] = d;
+                    self.own[i] = owner;
                 }
             }
         }
@@ -86,6 +89,62 @@ impl Hlr {
             }
         }
         d
+    }
+
+    /// Whose face is nearest at a point.
+    fn owner_at(&self, u: f64, v: f64) -> u32 {
+        let x = ((u - self.x0) / self.px).floor() as isize;
+        let y = ((v - self.y0) / self.px).floor() as isize;
+        if x < 0 || y < 0 || x >= self.w as isize || y >= self.h as isize {
+            return u32::MAX;
+        }
+        self.own[y as usize * self.w + x as usize]
+    }
+
+    /// The parts of segment a-b of `me` that no face hides, and those that faces of others
+    /// of a kind (`kind`) hide: (from, to, hidden by those).
+    pub(crate) fn parts(&self, a: V3, b: V3, tol: f64, me: u32, kind: &dyn Fn(u32) -> bool) -> Vec<(V3, V3, bool)> {
+        let len = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt();
+        let n = ((len / (self.px * 0.5)).ceil() as usize).clamp(1, 20_000);
+        let at = |t: f64| -> V3 { std::array::from_fn(|k| a[k] + (b[k] - a[k]) * t) };
+        // 0 seen, 1 hidden by another of the kind, 2 hidden
+        let state = |t: f64| {
+            let p = at(t);
+            if p[2] as f32 >= self.depth_at(p[0], p[1]) - tol as f32 {
+                return 0u8;
+            }
+            let o = self.owner_at(p[0], p[1]);
+            if o != me && o != u32::MAX && kind(o) {
+                1
+            } else {
+                2
+            }
+        };
+        let mut out = Vec::new();
+        let mut run: Option<(u8, f64)> = None;
+        for i in 0..=n {
+            let t = i as f64 / n as f64;
+            let st = state(t);
+            match run {
+                Some((s0, t0)) if s0 == st => {
+                    let _ = t0;
+                }
+                Some((s0, t0)) => {
+                    let t1 = t - 0.5 / n as f64;
+                    if s0 < 2 && t1 > t0 {
+                        out.push((at(t0), at(t1), s0 == 1));
+                    }
+                    run = Some((st, t1));
+                }
+                None => run = Some((st, 0.0)),
+            }
+        }
+        if let Some((s0, t0)) = run {
+            if s0 < 2 && t0 < 1.0 {
+                out.push((at(t0), b, s0 == 1));
+            }
+        }
+        out
     }
 
     /// The parts of segment a-b that no face hides (view coordinates).
@@ -146,8 +205,8 @@ mod tests {
     fn square_hides_line_behind() {
         let mut h = Hlr::new([0.0, 0.0, 10.0, 10.0], 200).unwrap();
         // square at depth 1 covering x 2..6
-        h.tri([2.0, 0.0, 1.0], [6.0, 0.0, 1.0], [6.0, 10.0, 1.0]);
-        h.tri([2.0, 0.0, 1.0], [6.0, 10.0, 1.0], [2.0, 10.0, 1.0]);
+        h.tri_of([2.0, 0.0, 1.0], [6.0, 0.0, 1.0], [6.0, 10.0, 1.0], 0);
+        h.tri_of([2.0, 0.0, 1.0], [6.0, 10.0, 1.0], [2.0, 10.0, 1.0], 0);
         // a line behind it, across
         let v = h.visible([0.0, 5.0, 0.0], [10.0, 5.0, 0.0], 0.01);
         assert_eq!(v.len(), 2);

@@ -160,6 +160,8 @@ pub struct Document {
     /// Active Revit view or sheet (browser row), as when it is opened in Revit; `None` = the
     /// whole model in 3D.
     pub view_ctx: Option<usize>,
+    /// The open plan or section shown in 3D (its frame on the model) instead of its 2D drawing.
+    pub view_3d: bool,
     /// Scroll the browser to the selected row for this many frames (the list height is only
     /// known after its first frame).
     pub browser_reveal: u8,
@@ -321,6 +323,7 @@ impl Document {
             browser_open: HashSet::new(),
             browser_sel: None,
             view_ctx: None,
+            view_3d: false,
             browser_reveal: 0,
             load_time: None,
             reveal_in_tree: false,
@@ -451,7 +454,17 @@ impl Document {
     /// 2D-only browser rows (sheets, drafting views, legends, schedules): no 3D camera.
     pub fn view_is_flat(&self, row: usize) -> bool {
         use sw_format::BrowserKind as K;
-        self.scene.as_ref().and_then(|s| s.browser.get(row)).is_some_and(|r| matches!(r.kind, K::Sheet | K::Drafting | K::Legend | K::Schedule) || self.scene.as_ref().is_some_and(|s| s.sheets.iter().any(|x| x.id == r.id)))
+        self.scene.as_ref().and_then(|s| s.browser.get(row)).is_some_and(|r| {
+            matches!(r.kind, K::Sheet | K::Drafting | K::Legend | K::Schedule)
+                || self.scene.as_ref().is_some_and(|s| s.sheets.iter().any(|x| x.id == r.id) && !(self.view_3d && s.view_frames.iter().any(|f| f.id == r.id)))
+        })
+    }
+
+    /// Whether the open view (`view_ctx`) has both a 2D drawing and a 3D frame (a plan or a
+    /// section), so that it can be switched between them.
+    pub fn view_switchable(&self) -> bool {
+        let Some(id) = self.view_ctx.and_then(|i| self.scene.as_ref().and_then(|s| s.browser.get(i))).map(|r| r.id) else { return false };
+        self.scene.as_ref().is_some_and(|s| s.sheets.iter().any(|x| x.id == id) && s.view_frames.iter().any(|f| f.id == id))
     }
 
     /// Can this browser row be opened like a Revit view (double-click in Revit)?
@@ -485,6 +498,7 @@ impl Document {
         self.browser_open.extend(parents);
         self.browser_sel = Some(row);
         self.view_ctx = Some(row);
+        self.view_3d = false;
         self.sheet_cam = (1.0, egui::Vec2::ZERO);
         self.show_browser = true;
         self.browser_reveal = if animate { 0 } else { 4 };
@@ -538,6 +552,7 @@ impl Document {
     /// Back to the whole model in 3D.
     pub fn leave_view(&mut self) {
         self.view_ctx = None;
+        self.view_3d = false;
         self.view_box = None;
         self.view_clip = None;
         self.view_hide.clear();

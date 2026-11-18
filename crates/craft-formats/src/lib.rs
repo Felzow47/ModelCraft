@@ -15,6 +15,14 @@
 pub mod easm;
 pub mod hsf;
 pub mod obj;
+/// Hash maps and sets whose iteration order is the same on every run (the standard ones are
+/// seeded at random): the Revit reader draws in their order, and its drawings must not change
+/// from one opening to the next.
+pub mod det {
+    type Fixed = std::hash::BuildHasherDefault<std::collections::hash_map::DefaultHasher>;
+    pub type HashMap<K, V> = std::collections::HashMap<K, V, Fixed>;
+    pub type HashSet<T> = std::collections::HashSet<T, Fixed>;
+}
 pub mod rvt;
 pub mod rvt_browser;
 pub mod rvt_geom;

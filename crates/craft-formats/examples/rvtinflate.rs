@@ -1,4 +1,5 @@
-//! Probe (local only, never commit outputs): inflate every stream to <outdir>/<name>.bin.
+//! Probe (local only, never commit outputs): inflate every stream (or those whose name holds
+//! [filter]) to <outdir>/<name>.bin. Usage: rvtinflate <file> <outdir> [filter]
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
     let mut cf = cfb::CompoundFile::open(std::fs::File::open(&a[0]).unwrap()).unwrap();
@@ -10,6 +11,7 @@ fn main() {
     std::fs::create_dir_all(&a[1]).unwrap();
     for n in names {
         if !(n.starts_with("/Partitions") || n.starts_with("/Global") || n.starts_with("/Formats"))
+            || a.get(2).is_some_and(|f| !n.contains(f.as_str()))
         {
             continue;
         }
@@ -19,7 +21,7 @@ fn main() {
             let f = format!(
                 "{}/{}.bin",
                 a[1],
-                n.trim_start_matches('/').replace('/', "_")
+                n.trim_start_matches(['/', '\\']).replace(['/', '\\'], "_")
             );
             eprintln!("{n} -> {} ({} members)", inf.data.len(), inf.verified);
             std::fs::write(f, &inf.data).unwrap();

@@ -3,16 +3,27 @@ fn main() {
     icons();
     println!("cargo:rerun-if-changed=assets/modelcraft.rc");
     println!("cargo:rerun-if-changed=assets/modelcraft.ico");
+    // (the version lives in the workspace manifest)
+    println!("cargo:rerun-if-changed=../../Cargo.toml");
     let target = std::env::var("TARGET").unwrap_or_default();
     if !target.contains("windows") || !target.contains("gnu") {
         return;
     }
     let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let obj = out.join("modelcraft_res.o");
+    // the version info: the package's version, written into the resource script
+    let v = std::env::var("CARGO_PKG_VERSION").unwrap_or_default();
+    let n: Vec<u32> = v.split(['.', '-', '+']).take(3).map(|p| p.parse().unwrap_or(0)).collect();
+    let v4 = format!("{},{},{},0", n.first().unwrap_or(&0), n.get(1).unwrap_or(&0), n.get(2).unwrap_or(&0));
+    let rc = std::fs::read_to_string("assets/modelcraft.rc").unwrap().replace("@V4@", &v4).replace("@V@", &v);
+    let rc_path = out.join("modelcraft.rc");
+    std::fs::write(&rc_path, rc).unwrap();
     let windres = if cfg!(windows) { "windres" } else { "x86_64-w64-mingw32-windres" };
+    // (the icon found from assets)
     let ok = std::process::Command::new(windres)
         .current_dir("assets")
-        .args(["modelcraft.rc", "-O", "coff", "-o"])
+        .arg(&rc_path)
+        .args(["--include-dir", ".", "-O", "coff", "-o"])
         .arg(&obj)
         .status()
         .map(|s| s.success())

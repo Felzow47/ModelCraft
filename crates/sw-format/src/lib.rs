@@ -266,15 +266,315 @@ pub struct Text2d {
     /// Width its lines wrap at (paper metres; 0: no wrapping).
     pub wrap: f32,
     pub color: [u8; 3],
+    /// Its font ("Arial", "Arial Narrow"…; empty: the viewer's own).
+    pub font: String,
+    pub italic: bool,
+    pub underline: bool,
+    /// Parts of `text` written their own way (a rich text's bold, italic or underlined
+    /// words), in order, covering the whole text; empty: all of it as the text says.
+    pub spans: Vec<TextSpan>,
+    /// Distance between tab stops (paper metres; 0: unknown).
+    pub tab: f32,
+    /// A word wider than a row is broken between characters (a text note's), else it runs
+    /// past (a label's: Revit never breaks "103" or "AC-401" in a tag).
+    pub break_words: bool,
 }
 
+impl Text2d {
+    /// The font size it is drawn at (paper metres): see [`font_size`].
+    pub fn font_size(&self) -> f32 {
+        font_size(self.height)
+    }
+}
+
+/// The font size of a text `height` high (paper metres, its capitals' height), as Revit sizes
+/// it: its typeface's capitals that high (Arial's 'H': 1466 of its 2048 units, 3.96 points a
+/// millimetre), rounded to half a point (on Revit's PDF prints: 2.5 mm → 10 pt, 2.6 mm →
+/// 10.5 pt, 5.2 mm → 20.5 pt, 7 mm → 27.5 pt; Arial Narrow alike).
+pub fn font_size(height: f32) -> f32 {
+    const POINT: f32 = 0.0254 / 72.0;
+    let pt = text_em(height) / POINT;
+    ((pt * 2.0).round() / 2.0).max(0.5) * POINT
+}
+
+/// The font size of a text `height` high before its rounding (see [`font_size`]): Revit cuts a
+/// schedule cell's text measured at this size (a 7.84/96" text, 8.2 pt written at 8).
+pub fn text_em(height: f32) -> f32 {
+    height / (1466.0 / 2048.0)
+}
+
+/// How much higher above its baseline (font sizes) and lower below it a bold or italic line of a
+/// text reaches than a regular one, as Revit lays them out (measured on its PDF prints: bold
+/// 0.024 and 0.019, italic 0.006 and 0.019).
+fn face_extra(bold: bool, italic: bool) -> (f32, f32) {
+    if bold {
+        (0.024, 0.019)
+    } else if italic {
+        (0.006, 0.019)
+    } else {
+        (0.0, 0.0)
+    }
+}
+
+/// The distance from the baseline of a line of a text to the next one's, `size` its font size
+/// (paper metres), `prev` and `next` the two lines' (bold, italic) (any of their characters, or
+/// their paragraph's end), as Revit spaces them: 1.125 font sizes between regular lines, more
+/// below a bold or italic line and above one (1.15 between italic lines, 1.168 between bold
+/// ones), on a grid of 1/384 inch.
+pub fn line_pitch(size: f32, prev: (bool, bool), next: (bool, bool)) -> f32 {
+    const UNIT: f32 = 0.0254 / 384.0;
+    let k = 1.125 + face_extra(prev.0, prev.1).1 + face_extra(next.0, next.1).0;
+    ((size * k / UNIT).round() * UNIT).max(UNIT)
+}
+
+/// How much higher above its baseline and lower below it (paper metres) a line of a text `size`
+/// large reaches than a regular one when it is bold or italic: for the first line's top and the
+/// last line's bottom.
+pub fn line_extra(size: f32, bold: bool, italic: bool) -> (f32, f32) {
+    let (a, d) = face_extra(bold, italic);
+    (a * size, d * size)
+}
+
+/// Where `line` (byte range `r` of `text`, one paragraph, no line break) breaks into rows when
+/// it wraps at `width` (the units `measure` gives a byte range's width in), as Revit breaks it:
+/// before a word that would run past it, and before a tab when the tab's stop (`tab` apart) and
+/// the word after it would (the tab then starting the row, at its first stop); a word wider
+/// than a row stays whole. Rows end with their spaces.
+pub fn break_line(text: &str, r: std::ops::Range<usize>, width: f32, tab: f32, break_words: bool, measure: &mut dyn FnMut(std::ops::Range<usize>) -> f32) -> Vec<std::ops::Range<usize>> {
+    let b = text.as_bytes();
+    let end = r.end.min(b.len());
+    let mut rows = Vec::new();
+    if width <= 0.0 || tab <= 0.0 || r.start >= end {
+        rows.push(r);
+        return rows;
+    }
+    let word_end = |i: usize| (i..end).find(|&j| b[j] == b' ' || b[j] == b'\t').unwrap_or(end);
+    let space_end = |i: usize| (i..end).find(|&j| b[j] != b' ').unwrap_or(end);
+    let (mut start, mut x, mut i) = (r.start, 0.0f32, r.start);
+    while i < end {
+        match b[i] {
+            b'\t' => {
+                let stop = ((x / tab).floor() + 1.0) * tab;
+                // with the spaces and the word after it
+                let (s1, w1) = (space_end(i + 1), word_end(space_end(i + 1)));
+                let after = if s1 > i + 1 { measure(i + 1..s1) } else { 0.0 } + if w1 > s1 { measure(s1..w1) } else { 0.0 };
+                if i > start && stop + after > width {
+                    rows.push(start..i);
+                    start = i;
+                    x = tab;
+                } else {
+                    x = stop;
+                }
+                i += 1;
+            }
+            b' ' => {
+                let j = space_end(i);
+                x += measure(i..j);
+                i = j;
+            }
+            _ => {
+                let j = word_end(i);
+                let w = measure(i..j);
+                if i > start && x + w > width {
+                    rows.push(start..i);
+                    start = i;
+                    x = 0.0;
+                }
+                if break_words && start == i && w > width {
+                    // a word wider than a row: broken between characters, each piece filling a
+                    // row, the rest going on (Revit's notes: "AUTOVIDANGEAB" / "LE EKSOL 50")
+                    let mut s = i;
+                    while measure(s..j) > width {
+                        let mut e = s + text[s..j].chars().next().map_or(1, char::len_utf8);
+                        for (o, _) in text[s..j].char_indices().skip(1) {
+                            if measure(s..s + o) > width {
+                                break;
+                            }
+                            e = s + o;
+                        }
+                        rows.push(s..e);
+                        s = e;
+                    }
+                    start = s;
+                    x = measure(s..j);
+                } else {
+                    x += w;
+                }
+                i = j;
+            }
+        }
+    }
+    rows.push(start..r.end);
+    rows
+}
+
+/// Advance widths of Arial (Helvetica metrics, 1/1000 em) for ASCII 32..126, regular and bold.
+const ARIAL: [u16; 95] = [
+    278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278, 556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 278, 278, 584, 584, 584, 556, 1015, 667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833, 722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 278, 278, 278, 469, 556, 333, 556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500, 222, 833, 556, 556, 556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500, 334, 260, 334, 584,
+];
+const ARIAL_BOLD: [u16; 95] = [
+    278, 333, 474, 556, 556, 889, 722, 238, 333, 333, 389, 584, 278, 333, 278, 278, 556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 333, 333, 584, 584, 584, 611, 975, 722, 722, 722, 722, 667, 611, 778, 722, 278, 556, 722, 611, 833, 722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 333, 278, 333, 584, 556, 333, 556, 611, 556, 611, 556, 333, 611, 611, 278, 278, 556, 278, 889, 611, 611, 611, 611, 389, 556, 333, 611, 556, 778, 556, 556, 500, 389, 280, 389, 584,
+];
+
+/// Width of `s` in Arial at font size `fs` (same unit as `fs`), from its advance widths (accented
+/// letters as their base letter, others as a digit).
+pub fn arial_width(s: &str, fs: f32, bold: bool) -> f32 {
+    let w = if bold { &ARIAL_BOLD } else { &ARIAL };
+    s.chars()
+        .map(|c| {
+            // accented letters as their base letter
+            let base = match c.to_ascii_lowercase() {
+                'à' | 'á' | 'â' | 'ä' => 'a',
+                'ç' => 'c',
+                'è' | 'é' | 'ê' | 'ë' => 'e',
+                'ì' | 'í' | 'î' | 'ï' => 'i',
+                'ò' | 'ó' | 'ô' | 'ö' => 'o',
+                'ù' | 'ú' | 'û' | 'ü' => 'u',
+                _ => c,
+            };
+            let base = match c {
+                'À' | 'Á' | 'Â' | 'Ä' => 'A',
+                'Ç' => 'C',
+                'È' | 'É' | 'Ê' | 'Ë' => 'E',
+                'Ì' | 'Í' | 'Î' | 'Ï' => 'I',
+                'Ò' | 'Ó' | 'Ô' | 'Ö' => 'O',
+                'Ù' | 'Ú' | 'Û' | 'Ü' => 'U',
+                _ => base,
+            };
+            let i = base as u32;
+            if (32..127).contains(&i) {
+                return w[(i - 32) as usize] as f32;
+            }
+            // (Arial's other common signs, regular; bold as regular but "°", "•")
+            match base {
+                '\u{a0}' => 278.0,
+                '²' | '³' | '¹' => 333.0,
+                '°' => 400.0,
+                '±' | '×' | '÷' => 584.0,
+                '·' => 278.0,
+                '¼' | '½' | '¾' => 834.0,
+                '‘' | '’' | '‚' => if bold { 278.0 } else { 222.0 },
+                '“' | '”' | '„' => if bold { 500.0 } else { 333.0 },
+                '•' => 350.0,
+                '…' | '—' | '‰' => 1000.0,
+                'Ø' => 778.0,
+                'ø' => 611.0,
+                'æ' => 889.0,
+                'Æ' | 'Œ' => 1000.0,
+                'œ' => 944.0,
+                'ß' => 611.0,
+                // (not in Arial: Revit's PDF writes them in Segoe UI Symbol, `fallback_glyph`)
+                '∅' => 965.0,
+                '⌀' => 845.0,
+                _ => 556.0,
+            }
+        })
+        .sum::<f32>()
+        / 1000.0
+        * fs
+}
+
+/// Whether Revit writes `c` in Segoe UI Symbol rather than Arial (its PDF prints it as a text
+/// of its own): the empty set and diameter signs.
+pub fn fallback_glyph(c: char) -> bool {
+    matches!(c, '∅' | '⌀')
+}
+
+/// `text` as Revit shows it in a box `rows` lines high and `width` wide (Arial at font size
+/// `size`, bold or not, all in the same unit): its lines wrapped at the box's width (a word
+/// wider than it broken between its characters: "Embarquemen" / "t"), one per line; when they
+/// do not all fit, its first `rows` rows, the last one cut to end with "..." within the width
+/// ("Local EER 1 / PE...").
+pub fn cell_lines(text: &str, size: f32, bold: bool, width: f32, rows: usize) -> String {
+    let w = |s: &str| arial_width(s, size, bold);
+    let mut lines: Vec<String> = Vec::new();
+    for para in text.split('\n').map(|p| p.trim_end_matches('\r')) {
+        // each word with the spaces before it (all of them counted, as Revit counts them; those
+        // where the line breaks dropped)
+        let mut cur = String::new();
+        let mut rest_para = para;
+        while !rest_para.is_empty() {
+            let after = rest_para.trim_start_matches(' ');
+            let gap = &rest_para[..rest_para.len() - after.len()];
+            let end = after.find(' ').unwrap_or(after.len());
+            let word = &after[..end];
+            rest_para = &after[end..];
+            let joined = format!("{cur}{gap}{word}");
+            if word.is_empty() || w(&joined) <= width {
+                cur = joined;
+                continue;
+            }
+            if !cur.trim_end().is_empty() {
+                lines.push(cur.trim_end().to_string());
+            }
+            // a word wider than a line: as many of its characters as fit on each, its rest
+            // starting the next one
+            let mut rest = word;
+            while w(rest) > width && rest.chars().count() > 1 {
+                let mut n = rest.chars().next().map_or(0, char::len_utf8);
+                for (i, c) in rest.char_indices().skip(1) {
+                    if w(&rest[..i + c.len_utf8()]) > width {
+                        break;
+                    }
+                    n = i + c.len_utf8();
+                }
+                lines.push(rest[..n].to_string());
+                rest = &rest[n..];
+            }
+            cur = rest.to_string();
+        }
+        lines.push(cur.trim_end().to_string());
+    }
+    let rows = rows.max(1);
+    if lines.len() > rows {
+        lines.truncate(rows);
+        let last = &mut lines[rows - 1];
+        let mut kept = last.trim_end().to_string();
+        while !kept.is_empty() && w(&format!("{kept}...")) > width {
+            kept.pop();
+        }
+        *last = kept + "...";
+    }
+    lines.join("\n")
+}
+
+/// How many rows `text` takes in Arial at font size `size`, bold or not, its lines wrapping at
+/// `width` (0: not wrapped; tab stops `tab` apart; all in the same unit), as `break_line` breaks
+/// them.
+pub fn wrapped_rows(text: &str, size: f32, bold: bool, width: f32, tab: f32) -> usize {
+    let mut start = 0;
+    let mut n = 0;
+    for line in text.split('\n') {
+        let r = start..start + line.len();
+        start = r.end + 1;
+        n += if width > 0.0 && !line.is_empty() { break_line(text, r, width, tab, false, &mut |q| arial_width(&text[q], size, bold)).len() } else { 1 };
+    }
+    n.max(1)
+}
+
+/// A part of a text written its own way: its length in bytes of the text, and its style
+/// (`script`: 1 superscript, -1 subscript, written [`SCRIPT_SIZE`] as large).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct TextSpan {
+    pub len: usize,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub script: i8,
+}
+
+/// How large a superscript or subscript is written, against its line (Revit: 8 pt in 12).
+pub const SCRIPT_SIZE: f32 = 2.0 / 3.0;
+
 /// A raster image placed on a sheet (rendered views, imported images), `rect` in paper metres;
-/// `turns`: quarter turns counter-clockwise of the image in it.
+/// `turns`: quarter turns counter-clockwise of the image in it; `front`: drawn over the
+/// sheet's lines and texts (a picture in the foreground), else under them.
 #[derive(Debug, Clone)]
 pub struct Image2d {
     pub rect: [f32; 4],
     pub image: std::sync::Arc<Rgba>,
     pub turns: u8,
+    pub front: bool,
 }
 
 /// A view placed on a sheet: its frame (paper metres), the view element id and its name.
@@ -1037,5 +1337,76 @@ mod resolve_tests {
         let mut c = std::collections::HashMap::new();
         assert!(super::resolve_component_path(&asm, r"C:\X\nope.sldprt", &mut c).is_none());
         std::fs::remove_dir_all(&root).ok();
+    }
+}
+
+#[cfg(test)]
+mod text_tests {
+    const MM: f32 = 0.001;
+    const UNIT: f32 = 0.0254 / 384.0;
+
+    #[test]
+    fn font_sizes_round_to_half_points() {
+        let pt = |h_mm: f32| super::font_size(h_mm * MM) / (0.0254 / 72.0);
+        // as Revit prints them
+        for (h, size) in [(2.5, 10.0), (2.6, 10.5), (3.0, 12.0), (5.2, 20.5), (6.0, 24.0), (7.0, 27.5)] {
+            assert!((pt(h) - size).abs() < 1e-3, "{h} mm: {} pt", pt(h));
+        }
+    }
+
+    #[test]
+    fn line_pitches_on_the_384th_inch() {
+        let em = super::font_size(3.0 * MM);
+        let u = |p: f32| (p / UNIT).round() as i32;
+        let (r, b, i) = ((false, false), (true, false), (false, true));
+        // measured on Revit's prints of 12 pt notes: 72, 75 and 74 units
+        assert_eq!(u(super::line_pitch(em, r, r)), 72);
+        assert_eq!(u(super::line_pitch(em, b, b)), 75);
+        assert_eq!(u(super::line_pitch(em, i, i)), 74);
+        assert_eq!(u(super::line_pitch(em, b, i)), 74);
+    }
+
+    #[test]
+    fn a_word_wider_than_a_row_is_broken() {
+        // one unit a character, rows 13 wide (P-403: "AUTOVIDANGEAB" / "LE EKSOL 50")
+        let text = "STATION SOLAIRE AUTOVIDANGEABLE EKSOL 50";
+        let rows = super::break_line(text, 0..text.len(), 13.0, 4.0, true, &mut |r| r.len() as f32);
+        let got: Vec<&str> = rows.iter().map(|r| text[r.clone()].trim_end()).collect();
+        assert_eq!(got, ["STATION", "SOLAIRE", "AUTOVIDANGEAB", "LE EKSOL 50"]);
+        let text = "CANIVEAU 01";
+        let rows = super::break_line(text, 0..text.len(), 5.0, 4.0, true, &mut |r| r.len() as f32);
+        assert_eq!(rows.iter().map(|r| text[r.clone()].trim_end()).collect::<Vec<_>>(), ["CANIV", "EAU", "01"]);
+        // a label's word runs past its row
+        let rows = super::break_line(text, 0..text.len(), 5.0, 4.0, false, &mut |r| r.len() as f32);
+        assert_eq!(rows.iter().map(|r| text[r.clone()].trim_end()).collect::<Vec<_>>(), ["CANIVEAU", "01"]);
+    }
+
+    #[test]
+    fn a_tab_that_does_not_fit_starts_the_row() {
+        // one unit a character, tab stops 4 apart, rows 11 wide
+        let text = "1.\tAAAA BB\tCCCC";
+        let rows = super::break_line(text, 0..text.len(), 11.0, 4.0, false, &mut |r| r.len() as f32);
+        let got: Vec<&str> = rows.iter().map(|r| &text[r.clone()]).collect();
+        assert_eq!(got, ["1.\tAAAA BB", "\tCCCC"]);
+        assert_eq!(super::wrapped_rows("AAAA BBBB\nCC", 1.0, false, 0.0, 1.0), 2);
+    }
+
+    #[test]
+    fn cut_cells_end_with_dots() {
+        // Revit's EMS schedules (8.2 and 7.2 pt laid out, in cells 27.519 and 25.138 mm wide
+        // less 1/32")
+        let em = |pt: f32| pt * 25.4 / 72.0;
+        let cut = |t: &str, pt: f32, w: f32| super::cell_lines(t, em(pt), false, w, 1);
+        assert_eq!(cut("Local EER 1 / PER 3", 8.218, 27.519 - 0.794), "Local EER 1 / PE...");
+        assert_eq!(cut("Synthese Défaut DCR2", 7.19, 25.138 - 0.794), "Synthese Défaut...");
+        assert_eq!(cut("DCR2", 7.19, 25.138 - 0.794), "DCR2");
+        // wrapped narrower than at the printed size; a word wider than its cell broken between
+        // its characters (AC-701: 19.846 mm cells)
+        let lines = |t: &str| super::cell_lines(t, em(8.218), false, 19.846 - 0.794, 3);
+        assert_eq!(lines("RIDEAU D'AIR RA 05"), "RIDEAU\nD'AIR RA 05");
+        assert_eq!(lines("CTA 02 Embarquement /"), "CTA 02\nEmbarquemen\nt /");
+        // spaces kept as written: a run of them pushes the next word down (P-101)
+        assert_eq!(lines("RA 05          FIN"), "RA 05\nFIN");
+        assert_eq!(lines("RA 05 FIN\r\nX"), "RA 05 FIN\nX");
     }
 }

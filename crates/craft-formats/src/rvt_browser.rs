@@ -642,7 +642,9 @@ pub struct Model {
 impl Model {
     fn absorb(&mut self, s: &Schema, elems: &[Elem]) {
         for e in elems {
-            if int(&e.f, "m_famId").unwrap_or(-1) != -1 {
+            // (a family document's, or a member of a group type not placed: the views of a
+            // detail group's definition are not listed)
+            if int(&e.f, "m_famId").unwrap_or(-1) != -1 || int(&e.f, "m_unplacedOwnerId").unwrap_or(-1) != -1 {
                 continue;
             }
             let cls = s.name(e.tag);
@@ -889,7 +891,7 @@ fn family(idx: i64) -> Option<(K, &'static str, &'static str, &'static str)> {
         0x6c => (K::Drafting, "Vues de dessin", "Vue de dessin", "Drafting View"),
         0x6d => (K::Plan, "Plans d'étage", "Plan d'étage", "Floor Plan"),
         0x6e => (K::Plan, "Plans de surface", "Plan de surface", "Area Plan"),
-        0x6f => (K::CeilingPlan, "Plans de plafond", "Plan de plafond", "Ceiling Plan"),
+        0x6f => (K::CeilingPlan, "Plans de faux-plafond", "Plan de faux-plafond", "Ceiling Plan"),
         0x70 => (K::Section, "Coupes", "Coupe", "Section"),
         0x71 => (K::Detail, "Vues de détail", "Vue de détail", "Detail View"),
         0x72 => (K::Elevation, "Élévations", "Élévation", "Elevation"),
@@ -914,7 +916,7 @@ pub const LABELS_EN: &[(&str, &str)] = &[
     ("Rapports de coûts", "Cost Reports"),
     ("Visites virtuelles", "Walkthroughs"),
     ("Plans de structure", "Structural Plans"),
-    ("Plans de plafond", "Ceiling Plans"),
+    ("Plans de faux-plafond", "Ceiling Plans"),
     ("Plans de surface", "Area Plans"),
     ("Vues de dessin", "Drafting Views"),
     ("Vues de détail", "Detail Views"),
@@ -1011,6 +1013,14 @@ pub const LABELS_EN: &[(&str, &str)] = &[
 
 /// A section or folder label in English (view names are left as they are).
 pub fn label_en(label: &str) -> String {
+    // a view named with its type ("Plan d'étage: …"): the type in English
+    for idx in 0x66..=0x78 {
+        if let Some((_, _, fr, en)) = family(idx) {
+            if let Some(rest) = label.strip_prefix(&format!("{fr}: ")) {
+                return format!("{en}: {rest}");
+            }
+        }
+    }
     let mut s = label.to_string();
     let mut done = false;
     for (fr, en) in LABELS_EN {
@@ -1311,8 +1321,17 @@ pub fn build(m: &Model) -> Vec<BrowserNode> {
     let (ov, osh, osc) = (org(0, 0), org(1, 1), org(2, 3));
     let title = |base: &str, o: Option<&Org>| format!("{base} ({})", org_label(o.map(|o| o.name.as_str()).unwrap_or("")));
     let mut out = Vec::new();
-    let view_leaf = |v: &View| (v.name.clone(), family(c.family_idx(v)).map(|f| f.0).unwrap_or(K::Other));
     let stock = Org { kind: 0, default: true, folders: vec![(P_FAMILY_TYPE, 0)], sort_asc: true, ..Default::default() };
+    // views grouped other than by their type: Revit names each with its type ("Vue 3D: …")
+    let typed = ov.unwrap_or(&stock).folders.iter().any(|f| f.0 == P_FAMILY_TYPE);
+    let view_leaf = |v: &View| {
+        let f = family(c.family_idx(v));
+        let label = match f {
+            Some(f) if !typed => format!("{}: {}", f.2, v.name),
+            _ => v.name.clone(),
+        };
+        (label, f.map(|f| f.0).unwrap_or(K::Other))
+    };
     c.section(title("Vues", ov), K::Views, &views, ov.or(Some(&stock)), view_leaf).flatten(0, &mut out);
     if !legends.is_empty() {
         c.section("Légendes".into(), K::Legends, &legends, None, |v| (v.name.clone(), K::Legend)).flatten(0, &mut out);
