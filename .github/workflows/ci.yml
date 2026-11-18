@@ -41,7 +41,9 @@ jobs:
   build:
     name: Windows build (all formats)
     needs: test
-    runs-on: ubuntu-latest
+    # 24.04 = the toolchain of scripts/Dockerfile.cross (mingw GCC 13, CMake 3.x); ubuntu-latest moves to
+    # 26.04, whose CMake 4 refuses OCCT 7.8's cmake_minimum_required(3.1)
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
