@@ -11,7 +11,7 @@ installer), no licence, fully offline. Neither SolidWorks, eDrawings nor Revit n
 
 ## Screenshots
 
-All screenshots use **public sample files only** (credits below), in the English interface.
+All screenshots use **public sample files only** (credits below)
 
 | SolidWorks assembly (`.SLDASM`) | SolidWorks part with measurements (`.SLDPRT`) |
 |---|---|
