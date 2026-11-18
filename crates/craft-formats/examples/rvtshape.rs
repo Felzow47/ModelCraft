@@ -20,7 +20,7 @@ fn main() {
         let w = if w == 0 { 4 } else { w };
         sh.partition(&sc, &inf.data, w);
     }
-    let bm: HashMap<i64, ([f64; 3], [f64; 3])> = boxes.iter().filter(|b| b.id != 0).map(|b| (b.id, (b.min, b.max))).collect();
+    let bm: craft_formats::det::HashMap<i64, ([f64; 3], [f64; 3])> = boxes.iter().filter(|b| b.id != 0).map(|b| (b.id, (b.min, b.max))).collect();
     let meshes = sh.finish(&bm, family);
     eprintln!("decode+build {:?}", t.elapsed());
     let matched = meshes.keys().filter(|k| bm.contains_key(k)).count();

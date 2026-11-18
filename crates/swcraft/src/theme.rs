@@ -231,7 +231,88 @@ pub fn font_definitions() -> FontDefinitions {
         stack.extend(fallback.iter().cloned());
         fonts.families.insert(FontFamily::Name(fam.into()), stack);
     }
+    // the typefaces of Revit's texts, from the system's fonts (none bundled): Inter for the
+    // characters they lack, and the viewer's own when they are missing
+    let dir = std::env::var_os("WINDIR").map(|w| std::path::PathBuf::from(w).join("Fonts"));
+    let mut loaded = std::collections::HashSet::new();
+    let mut metrics = std::collections::HashMap::new();
+    for (name, file) in SHEET_FONT_FILES {
+        let Some(bytes) = dir.as_ref().and_then(|d| std::fs::read(d.join(file)).ok()) else { continue };
+        if let Some(a) = vertical_ratios(&bytes) {
+            metrics.insert(name.to_string(), a);
+        }
+        fonts.font_data.insert(name.to_owned(), Arc::new(FontData::from_owned(bytes)));
+        let mut stack = vec![name.to_owned()];
+        stack.extend(fallback.iter().cloned());
+        fonts.families.insert(FontFamily::Name(name.into()), stack);
+        loaded.insert(name.to_string());
+    }
+    let _ = SHEET_FONTS.set(loaded);
+    let _ = SHEET_METRICS.set(metrics);
     fonts
+}
+
+/// A TrueType typeface's ascent (`hhea`) and Windows descent (`OS/2` `usWinDescent`), in font
+/// sizes: where the viewer's text rows have their baseline below their top, and how far Revit
+/// keeps a line's baseline above the bottom of its box.
+fn vertical_ratios(bytes: &[u8]) -> Option<(f32, f32)> {
+    let be16 = |o: usize| -> Option<i32> { Some(i16::from_be_bytes([*bytes.get(o)?, *bytes.get(o + 1)?]) as i32) };
+    let n = be16(4)? as usize;
+    let table = |tag: &[u8; 4]| -> Option<usize> {
+        (0..n).map(|i| 12 + 16 * i).find(|&r| bytes.get(r..r + 4) == Some(tag.as_slice())).and_then(|r| Some(u32::from_be_bytes(bytes.get(r + 8..r + 12)?.try_into().ok()?) as usize))
+    };
+    let upem = be16(table(b"head")? + 18)? as f32;
+    let asc = be16(table(b"hhea")? + 4)? as f32;
+    let desc = be16(table(b"OS/2")? + 76)? as u16 as f32;
+    (upem > 0.0 && asc > 0.0).then(|| (asc / upem, desc / upem))
+}
+
+/// Ascents and descents of the sheet typefaces found (see `vertical_ratios`).
+static SHEET_METRICS: std::sync::OnceLock<std::collections::HashMap<String, (f32, f32)>> = std::sync::OnceLock::new();
+
+/// The ascent of a sheet text written in `font` and its descent (see `vertical_ratios`), in
+/// font sizes (Arial's when unknown).
+pub fn sheet_ascent_descent(font: &str) -> (f32, f32) {
+    let base = if font.to_ascii_lowercase().starts_with("arial narrow") { "Arial Narrow" } else { "Arial" };
+    SHEET_METRICS.get().and_then(|r| r.get(base).copied()).unwrap_or((0.9053, 0.2119))
+}
+
+/// System typefaces drawing sheet texts, by the name the viewer gives them, and their files.
+const SHEET_FONT_FILES: [(&str, &str); 8] = [
+    ("Arial", "arial.ttf"),
+    ("Arial Bold", "arialbd.ttf"),
+    ("Arial Italic", "ariali.ttf"),
+    ("Arial Bold Italic", "arialbi.ttf"),
+    ("Arial Narrow", "ARIALN.TTF"),
+    ("Arial Narrow Bold", "ARIALNB.TTF"),
+    ("Arial Narrow Italic", "ARIALNI.TTF"),
+    ("Arial Narrow Bold Italic", "ARIALNBI.TTF"),
+];
+
+/// The sheet typefaces found on the system.
+static SHEET_FONTS: std::sync::OnceLock<std::collections::HashSet<String>> = std::sync::OnceLock::new();
+
+/// The font family drawing a sheet text written in `font` (a Revit typeface name), bold or
+/// italic, at `size` px; and whether its italics must be slanted by the viewer (no italic face
+/// on the system). The viewer's own family when the system lacks the typeface.
+pub fn sheet_font(font: &str, bold: bool, italic: bool, size: f32) -> (FontId, bool) {
+    let have = |n: &str| SHEET_FONTS.get().is_some_and(|s| s.contains(n));
+    // Revit's typefaces as the system has them: the narrow one, else Arial
+    let base = if font.to_ascii_lowercase().starts_with("arial narrow") { "Arial Narrow" } else { "Arial" };
+    let name = match (bold, italic) {
+        (false, false) => base.to_string(),
+        (true, false) => format!("{base} Bold"),
+        (false, true) => format!("{base} Italic"),
+        (true, true) => format!("{base} Bold Italic"),
+    };
+    if have(&name) {
+        return (FontId::new(size, FontFamily::Name(name.into())), false);
+    }
+    let upright = if bold { format!("{base} Bold") } else { base.to_string() };
+    if have(&upright) {
+        return (FontId::new(size, FontFamily::Name(upright.into())), italic);
+    }
+    (if bold { semibold(size) } else { FontId::proportional(size) }, italic)
 }
 
 pub fn regular(size: f32) -> FontId {

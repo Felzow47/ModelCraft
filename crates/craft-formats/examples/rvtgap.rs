@@ -67,7 +67,7 @@ fn main() {
             },
         );
     }
-    let bm: HashMap<i64, ([f64; 3], [f64; 3])> = boxes
+    let bm: craft_formats::det::HashMap<i64, ([f64; 3], [f64; 3])> = boxes
         .iter()
         .filter(|b| b.id != 0)
         .map(|b| (b.id, (b.min, b.max)))

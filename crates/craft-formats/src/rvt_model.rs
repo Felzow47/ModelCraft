@@ -23,7 +23,7 @@
 //! Every read is bounds-checked and every buffer capped.
 
 use std::io::Read;
-use std::collections::HashMap;
+use crate::det::HashMap;
 
 pub const PAGE: usize = 65_249;
 pub const PAGE_DATA: usize = 64_896;
@@ -325,7 +325,7 @@ pub fn scan_boxes(p: &[u8], chain: &Chain, outline: u16, max_boxes: usize) -> Sc
     mk.extend_from_slice(&[0xff; 4]);
     let region = &p[..chain.end.min(p.len())];
     // the tag after the marker: the most frequent one (it is not tied to the constant before 2024)
-    let mut tags: std::collections::HashMap<u16, usize> = Default::default();
+    let mut tags: crate::det::HashMap<u16, usize> = Default::default();
     let mut i = 0;
     while let Some(j) = find(region, &mk, i) {
         i = j + 1;
@@ -336,7 +336,7 @@ pub fn scan_boxes(p: &[u8], chain: &Chain, outline: u16, max_boxes: usize) -> Sc
     let Some(tag) = tags.into_iter().max_by_key(|&(t, n)| (n, t)).map(|(t, _)| t) else { return s };
     mk.extend_from_slice(&tag.to_le_bytes());
     let (cat_back, wide) = if chain.id_width == 4 { (0x26, false) } else { (0x3e, true) };
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = crate::det::HashSet::default();
     let mut i = 0;
     while let Some(j) = find(region, &mk, i) {
         i = j + 1;
@@ -506,7 +506,7 @@ pub fn push_box(b: &ElemBox, pos: &mut Vec<[f32; 3]>, tri: &mut Vec<[u32; 3]>) {
 /// type 0.
 pub fn worksets(p: &[u8]) -> HashMap<[u8; 16], u32> {
     let u = |i: usize| u32::from_le_bytes(p[i..i + 4].try_into().unwrap());
-    let mut out = HashMap::new();
+    let mut out = HashMap::default();
     let mut i = 6;
     while i + 45 <= p.len() {
         let len = u(i + 41) as usize;
@@ -525,12 +525,12 @@ pub fn worksets(p: &[u8]) -> HashMap<[u8; 16], u32> {
 /// two ids the element's is the second with 8-byte ids, the first with 4-byte ones; the other
 /// is kept for the ids no record has as its own. Empty when the table reads as neither.
 pub fn elem_worksets(e: &[u8], known: &HashMap<[u8; 16], u32>) -> HashMap<i64, u32> {
-    let ids: std::collections::HashSet<u32> = known.values().copied().collect();
+    let ids: crate::det::HashSet<u32> = known.values().copied().collect();
     let u32_ = |i: usize| u32::from_le_bytes(e[i..i + 4].try_into().unwrap());
     // (record size, element id at, other id at, id width, partition at)
     for (size, at, alt, w, ws_at) in [(40usize, 20usize, 0usize, 8usize, 36usize), (28, 0, 4, 4, 20)] {
         let id_at = |i: usize| if w == 8 { i64::from_le_bytes(e[i..i + 8].try_into().unwrap()) } else { u32_(i) as i32 as i64 };
-        let mut out = HashMap::new();
+        let mut out = HashMap::default();
         let (mut i, mut miss) = (6, 0);
         while i + size <= e.len() {
             let ws = u32_(i + ws_at);
@@ -549,7 +549,7 @@ pub fn elem_worksets(e: &[u8], known: &HashMap<[u8; 16], u32>) -> HashMap<i64, u
             return out;
         }
     }
-    HashMap::new()
+    HashMap::default()
 }
 
 #[cfg(test)]

@@ -361,7 +361,27 @@ fn browser_panel(ui: &mut egui::Ui, doc: &mut Document, full: bool) {
             }
         }
     } else {
-        rows = (0..b.len()).filter(|&i| shown[i] && !has_kids(i) && b[i].label.to_lowercase().contains(&filter)).collect();
+        // as Revit's search: the matching rows under their folders, unfolded
+        let mut parent = vec![usize::MAX; b.len()];
+        let mut stack: Vec<usize> = Vec::new();
+        for (i, r) in b.iter().enumerate() {
+            while stack.last().is_some_and(|&p| b[p].depth >= r.depth) {
+                stack.pop();
+            }
+            parent[i] = stack.last().copied().unwrap_or(usize::MAX);
+            stack.push(i);
+        }
+        let mut keep = vec![false; b.len()];
+        for i in 0..b.len() {
+            if shown[i] && !has_kids(i) && b[i].label.to_lowercase().contains(&filter) {
+                let mut j = i;
+                while j != usize::MAX && !keep[j] {
+                    keep[j] = true;
+                    j = parent[j];
+                }
+            }
+        }
+        rows = (0..b.len()).filter(|&i| keep[i]).collect();
     }
     let row_h = 24.0;
     let mut toggle = None;
@@ -377,7 +397,7 @@ fn browser_panel(ui: &mut egui::Ui, doc: &mut Document, full: bool) {
     area.show_rows(ui, row_h, rows.len(), |ui, range| {
         for &i in &rows[range] {
             let r = &b[i];
-            let depth = if filter.is_empty() { r.depth } else { 0 };
+            let depth = r.depth;
             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_h), Sense::click());
             let selected = doc.browser_sel == Some(i);
             let active = doc.view_ctx == Some(i);
@@ -388,8 +408,8 @@ fn browser_panel(ui: &mut egui::Ui, doc: &mut Document, full: bool) {
                 press.wash(ui, rect, 6, false);
             }
             let x0 = rect.left() + 6.0 + depth as f32 * 14.0;
-            let kids = filter.is_empty() && has_kids(i);
-            let open = doc.browser_open.contains(&i);
+            let kids = has_kids(i);
+            let open = !filter.is_empty() || doc.browser_open.contains(&i);
             if kids {
                 let cr = Rect::from_center_size(egui::pos2(x0 + 7.0, rect.center().y), vec2(16.0, 16.0));
                 icons::paint(ui, cr, if open { "chevron-down" } else { "chevron-right" }, 14.0, t.text_muted);
@@ -409,7 +429,7 @@ fn browser_panel(ui: &mut egui::Ui, doc: &mut Document, full: bool) {
                 resp
             };
             if resp.clicked() {
-                if kids {
+                if kids && filter.is_empty() {
                     toggle = Some(i);
                 }
                 select = Some(i);
@@ -836,7 +856,8 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
         let label = browser_label(&r.label, r.kind);
         let g = ui.painter().layout_no_wrap(format!("{} : {label}", tr("Vue")), theme::medium(12.5), t.text);
         let clips = doc.view_clip.is_some() || !doc.view_hide.is_empty();
-        let extra = if clips { 24.0 } else { 0.0 };
+        let flat = doc.view_switchable();
+        let extra = if clips { 24.0 } else { 0.0 } + if flat { 30.0 } else { 0.0 };
         let chip = Rect::from_min_size(rect.left_top() + vec2(12.0, 12.0), vec2(g.size().x + 44.0 + extra, 26.0));
         ui.painter().rect(chip, CornerRadius::same(13), t.card.gamma_multiply(0.94), Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
         ui.painter().galley(egui::pos2(chip.left() + 12.0, chip.center().y - g.size().y * 0.5), g, t.text);
@@ -853,6 +874,16 @@ pub fn viewport(ui: &mut egui::Ui, doc: &mut Document, st: &Settings, gfx: Gfx<'
             if tg.clicked() {
                 doc.view_clip_off = on;
                 doc.update_visibility();
+            }
+        }
+        if flat {
+            // back to the view's 2D drawing (as Revit shows it)
+            let at = Rect::from_center_size(egui::pos2(chip.right() - if clips { 66.0 } else { 42.0 }, chip.center().y), vec2(26.0, 18.0));
+            let fr = ui.interact(at, egui::Id::new(("view-2d", doc.id)), Sense::click()).on_hover_text(tr("Afficher la vue en 2D, comme dans Revit"));
+            ui.painter().text(at.center(), Align2::CENTER_CENTER, "2D", theme::semibold(11.0), if fr.hovered() { t.accent } else { t.text_muted });
+            if fr.clicked() {
+                doc.view_3d = false;
+                doc.sheet_cam = (1.0, egui::Vec2::ZERO);
             }
         }
         if cr.clicked() {
@@ -2070,9 +2101,10 @@ fn sheet_2d(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, r: &sw_format::Br
     let ink = Color32::from_gray(25);
     let thin = Color32::from_gray(90);
     let vis = rect.expand(4.0);
-    // placed views' images under the lines
-    if let Some(tex) = doc.sheet_tex.get(&sh.id) {
-        for (img, tx) in sh.images.iter().zip(tex) {
+    // placed views' images under the lines (pictures in front: over the texts, below)
+    let draw_images = |front: bool| {
+        let Some(tex) = doc.sheet_tex.get(&sh.id) else { return };
+        for (img, tx) in sh.images.iter().zip(tex).filter(|(i, _)| i.front == front) {
             let rr = Rect::from_two_pos(to([img.rect[0], img.rect[1]]), to([img.rect[2], img.rect[3]]));
             if rr.intersects(vis) {
                 // corners bottom left, bottom right, top right, top left; the image's own
@@ -2088,7 +2120,8 @@ fn sheet_2d(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, r: &sw_format::Br
                 p.add(egui::Shape::mesh(mesh));
             }
         }
-    }
+    };
+    draw_images(false);
     // filled regions (solid fills) under the lines
     for f in &sh.fills {
         let col = Color32::from_rgb(f.color[0], f.color[1], f.color[2]);
@@ -2109,7 +2142,7 @@ fn sheet_2d(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, r: &sw_format::Br
         }
     }
     // model edges of the placed views, thin
-    let fine = Stroke::new((s * 0.00018).clamp(0.5, 1.2), thin);
+    let fine = Stroke::new((s * 0.00018).clamp(1.0, 1.2), thin);
     for seg in &sh.fine {
         let (a, b) = (to(seg[0]), to(seg[1]));
         if vis.intersects(Rect::from_two_pos(a, b)) {
@@ -2122,7 +2155,8 @@ fn sheet_2d(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, r: &sw_format::Br
         if pts.len() < 2 || !pts.windows(2).any(|w| vis.intersects(Rect::from_two_pos(w[0], w[1]))) {
             continue;
         }
-        let w = (st.width * s).clamp(0.5, 16.0);
+        // never thinner than a pixel, as Revit draws its thinnest lines
+        let w = (st.width * s).clamp(1.0, 16.0);
         p.add(egui::Shape::line(pts, Stroke::new(w, Color32::from_rgb(st.color[0], st.color[1], st.color[2]))));
     }
     let bold = Stroke::new((s * 0.00035).clamp(0.8, 2.0), ink);
@@ -2132,9 +2166,10 @@ fn sheet_2d(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, r: &sw_format::Br
             p.add(egui::Shape::line(pts, bold));
         }
     }
-    // texts: Revit's size is the capital height, about 0.72 of the font size
+    // texts: at the font size Revit gives their height
     for tx in &sh.texts {
-        let px = tx.height / 0.72 * s;
+        let em = tx.font_size();
+        let px = em * s;
         // drawn however small, as Revit does (only below a pixel it would not show at all)
         if px < 1.0 || tx.text.is_empty() {
             continue;
@@ -2144,10 +2179,9 @@ fn sheet_2d(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, r: &sw_format::Br
         if !vis.expand(px * 40.0).contains(a) {
             continue;
         }
-        let font = if tx.bold { theme::semibold(px.min(400.0)) } else { egui::FontId::proportional(px.min(400.0)) };
         let d = vec2(tx.dir[0], -tx.dir[1]);
         let n = vec2(-d.y, d.x);
-        let (ax, ay) = ([0.0, 0.5, 1.0][tx.halign.min(2) as usize], [0.0, 0.5, 1.0][tx.valign.min(2) as usize]);
+        let ax = [0.0, 0.5, 1.0][tx.halign.min(2) as usize];
         // each line aligned on its own (centred, right-aligned paragraphs)
         // wrapped at the text box width when the file gives it, the lines broken once at a
         // fixed size so that they stay the same at any zoom
@@ -2155,30 +2189,144 @@ fn sheet_2d(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, r: &sw_format::Br
         // lines and their places measured once at a reference size, then scaled: the same at
         // any zoom (the font's own rounding at small sizes does not move them)
         const REF: f32 = 64.0;
-        let ref_font = if tx.bold { theme::semibold(REF) } else { egui::FontId::proportional(REF) };
-        let rows: Vec<String> = if tx.wrap > 0.0 {
-            let wrap = tx.wrap / (tx.height / 0.72) * REF;
-            tx.text
-                .split('\n')
-                .flat_map(|l| {
-                    let g = p.layout(l.to_string(), ref_font.clone(), ink, wrap);
-                    g.rows.iter().map(|r| r.glyphs.iter().map(|c| c.chr).collect::<String>().trim_end().to_string()).collect::<Vec<_>>()
+        let k = px / REF;
+        // its parts (its rich text's, else the whole of it): byte range, bold, italic,
+        // underlined; each in its typeface (Revit's, from the system)
+        let parts: Vec<(std::ops::Range<usize>, bool, bool, bool, i8)> = if tx.spans.is_empty() {
+            vec![(0..tx.text.len(), tx.bold, tx.italic, tx.underline, 0)]
+        } else {
+            let mut at = 0;
+            tx.spans
+                .iter()
+                .map(|sp| {
+                    let r = at.min(tx.text.len())..(at + sp.len).min(tx.text.len());
+                    at = r.end;
+                    (r, tx.bold || sp.bold, tx.italic || sp.italic, tx.underline || sp.underline, sp.script)
                 })
                 .collect()
-        } else {
-            tx.text.split('\n').map(str::to_string).collect()
         };
-        let k = px / REF;
-        let sizes: Vec<egui::Vec2> = rows.iter().map(|l| p.layout_no_wrap(l.clone(), ref_font.clone(), ink).size() * k).collect();
-        let total: f32 = sizes.iter().map(|s| s.y).sum();
-        let mut y = 0.0;
-        for (l, sz) in rows.into_iter().zip(sizes) {
-            let pos = a - d * (ax * sz.x) - n * (ay * total - y);
-            y += sz.y;
-            let g = p.layout_no_wrap(l, font.clone(), ink);
-            p.add(egui::epaint::TextShape::new(pos, g, ink).with_angle(d.y.atan2(d.x)));
+        let job_of = |range: &std::ops::Range<usize>, size: f32| -> egui::text::LayoutJob {
+            let mut job = egui::text::LayoutJob::default();
+            for (r, b, i, u, sc) in &parts {
+                let (s0, s1) = (r.start.max(range.start), r.end.min(range.end));
+                if s0 < s1 && tx.text.is_char_boundary(s0) && tx.text.is_char_boundary(s1) {
+                    // (a superscript or subscript smaller, a superscript at the top of its row)
+                    let sz = if *sc != 0 { size * sw_format::SCRIPT_SIZE } else { size };
+                    let (font_id, slant) = theme::sheet_font(&tx.font, *b, *i, sz);
+                    let underline = if *u { Stroke::new((size * 0.06).max(0.5), ink) } else { Stroke::NONE };
+                    let valign = if *sc > 0 { egui::Align::TOP } else { egui::Align::BOTTOM };
+                    job.append(&tx.text[s0..s1], 0.0, egui::TextFormat { font_id, color: ink, italics: slant, underline, valign, ..Default::default() });
+                }
+            }
+            job
+        };
+        // (reference size) distance between its tab stops
+        let tab = if tx.tab > 0.0 { tx.tab } else { 0.0127 } / em * REF;
+        // its rows: each line, broken where it wraps (byte ranges of the text)
+        let mut rows: Vec<std::ops::Range<usize>> = Vec::new();
+        let mut start = 0;
+        // (Revit lets a line run 1 % past its width before breaking it)
+        let width = tx.wrap * 1.01 / em * REF;
+        for line in tx.text.split('\n') {
+            let range = start..start + line.len();
+            start = range.end + 1;
+            if tx.wrap > 0.0 && line.contains('\t') {
+                // with tabs: broken word by word, a tab that does not fit starting the next row
+                rows.extend(sw_format::break_line(&tx.text, range, width, tab, tx.break_words, &mut |r| p.layout_job(job_of(&r, REF)).size().x));
+            } else if tx.wrap > 0.0 && !line.is_empty() {
+                let mut job = job_of(&range, REF);
+                job.wrap.max_width = width;
+                let g = p.layout_job(job);
+                let mut at = range.start;
+                for row in &g.rows {
+                    let len: usize = row.glyphs.iter().map(|c| c.chr.len_utf8()).sum();
+                    let end = (at + len).min(range.end);
+                    rows.push(at..end);
+                    at = end;
+                }
+                if at < range.end {
+                    rows.push(at..range.end);
+                }
+            } else {
+                rows.push(range);
+            }
+        }
+        // a row's pieces between its tabs, each at the next tab stop after the one before
+        // (reference size): (byte range, place along the row); its width
+        let layout_row = |r: &std::ops::Range<usize>| -> (Vec<(std::ops::Range<usize>, f32)>, egui::Vec2) {
+            let row = tx.text[r.clone()].trim_end_matches([' ', '\r']);
+            let r = r.start..r.start + row.len();
+            let mut pieces = Vec::new();
+            let (mut x, mut h) = (0.0f32, 0.0f32);
+            let mut at = r.start;
+            for (i, piece) in tx.text[r.clone()].split('\t').enumerate() {
+                if i > 0 {
+                    x = ((x / tab).floor() + 1.0) * tab;
+                }
+                let pr = at..at + piece.len();
+                at = pr.end + 1;
+                let sz = if piece.is_empty() { egui::Vec2::ZERO } else { p.layout_job(job_of(&pr, REF)).size() };
+                h = h.max(sz.y);
+                pieces.push((pr, x));
+                x += sz.x;
+            }
+            if h == 0.0 {
+                h = p.layout_job(job_of(&(0..tx.text.len()), REF)).rows.first().map_or(REF * 1.2, |r| r.size.y);
+            }
+            (pieces, egui::vec2(x, h) * k)
+        };
+        // (its lines Revit's distance apart: each from the one before by its own weight and
+        // slant, its characters' and its paragraph end's)
+        let face = |r: &std::ops::Range<usize>| -> (bool, bool) {
+            let end = if tx.text[r.end..].starts_with('\n') { r.end + 1 } else { r.end.max(r.start + 1) };
+            parts.iter().filter(|(q, ..)| q.start < end && r.start < q.end).fold((false, false), |(b, i), (_, pb, pi, _, _)| (b || *pb, i || *pi))
+        };
+        let faces: Vec<(bool, bool)> = rows.iter().map(face).collect();
+        let laid: Vec<(Vec<(std::ops::Range<usize>, f32)>, egui::Vec2)> = rows
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let (pieces, sz) = layout_row(r);
+                let pitch = if i == 0 { 0.0 } else { sw_format::line_pitch(em, faces[i - 1], faces[i]) * s };
+                (pieces, egui::vec2(sz.x, pitch))
+            })
+            .collect();
+        let size = px.min(400.0);
+        let angle = d.y.atan2(d.x);
+        // its first baseline below its anchor, as Revit places it: its lines from the top of the
+        // first (a regular line's box less the typeface's descent above its baseline, more when
+        // bold or italic) to the bottom of the last (the descent, more when bold or italic),
+        // going down from the anchor (top), centred on it (middle) or up to it (bottom); each
+        // row drawn from its top (the typeface's ascent above its baseline)
+        let (asc, desc) = theme::sheet_ascent_descent(&tx.font);
+        let (asc, desc) = (asc * px, desc * px);
+        let extra = |f: Option<&(bool, bool)>| f.map_or((0.0, 0.0), |f| sw_format::line_extra(em, f.0, f.1));
+        let above = sw_format::line_pitch(em, (false, false), (false, false)) * s - desc + extra(faces.first()).0 * s;
+        let below = desc + extra(faces.last()).1 * s;
+        let total: f32 = above + laid.iter().skip(1).map(|l| l.1.y).sum::<f32>() + below;
+        let first = above
+            - match tx.valign {
+                0 => 0.0,
+                1 => total * 0.5,
+                _ => total,
+            };
+        let mut y = first - asc;
+        for (row, (pieces, sz)) in laid.into_iter().enumerate() {
+            if row > 0 {
+                y += sz.y;
+            }
+            let pos = a - d * (ax * sz.x) + n * y;
+            for (pr, x) in pieces {
+                if pr.is_empty() {
+                    continue;
+                }
+                let g = p.layout_job(job_of(&pr, size));
+                p.add(egui::epaint::TextShape::new(pos + d * (x * k), g, ink).with_angle(angle));
+            }
         }
     }
+    // pictures in front of the drawing
+    draw_images(true);
     // placed views: hover frame, double-click opens the view
     let hover = resp.hover_pos();
     let mut over: Option<&sw_format::Viewport2d> = None;
@@ -2207,6 +2355,17 @@ fn sheet_2d(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, r: &sw_format::Br
         ui.ctx().set_cursor_icon(if resp.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Default });
     }
     doc.sheet_cam = (zoom, pan);
+    // a plan or a section: its frame on the model in 3D too
+    if doc.view_switchable() {
+        let b = Rect::from_min_size(rect.left_top() + vec2(12.0, 12.0), vec2(86.0, 26.0));
+        let br = ui.interact(b, egui::Id::new(("view-3d", doc.id)), Sense::click()).on_hover_text(tr("Voir cette vue sur la maquette en 3D"));
+        p.rect(b, CornerRadius::same(13), t.card.gamma_multiply(0.94), Stroke::new(1.0, if br.hovered() { t.accent } else { t.border }), egui::StrokeKind::Inside);
+        p.text(b.center(), Align2::CENTER_CENTER, tr("Vue 3D"), theme::medium(12.5), if br.hovered() { t.accent } else { t.text });
+        if br.clicked() {
+            doc.view_3d = true;
+            doc.needs_fit = true;
+        }
+    }
     // caption, over the pasteboard at the bottom
     let label = browser_label(&r.label, r.kind);
     let schedule = r.kind == sw_format::BrowserKind::Schedule;
@@ -2214,10 +2373,17 @@ fn sheet_2d(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, r: &sw_format::Br
         sw_format::BrowserKind::Schedule => tr("Nomenclature"),
         sw_format::BrowserKind::Legend => tr("Légende"),
         sw_format::BrowserKind::Drafting => tr("Vue de dessin"),
-        sw_format::BrowserKind::Section | sw_format::BrowserKind::Elevation => tr("Vue"),
+        sw_format::BrowserKind::Section | sw_format::BrowserKind::Elevation | sw_format::BrowserKind::Plan | sw_format::BrowserKind::CeilingPlan | sw_format::BrowserKind::Detail => tr("Vue"),
         _ => tr("Feuille"),
     };
-    let head = if r.start { format!("{what} : {label}  ·  {}", tr("vue de démarrage")) } else { format!("{what} : {label}") };
+    // a view's row already names its kind ("Vue de dessin: …", as Revit's browser)
+    let named = !matches!(r.kind, sw_format::BrowserKind::Sheet | sw_format::BrowserKind::Schedule | sw_format::BrowserKind::Legend) && label.contains(": ");
+    let head = match (r.start, named) {
+        (true, true) => format!("{label}  ·  {}", tr("vue de démarrage")),
+        (true, false) => format!("{what} : {label}  ·  {}", tr("vue de démarrage")),
+        (false, true) => label.clone(),
+        (false, false) => format!("{what} : {label}"),
+    };
     let band = Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 52.0), rect.right_bottom());
     p.rect_filled(band, CornerRadius::ZERO, t.pasteboard.gamma_multiply(0.92));
     p.text(band.center_top() + vec2(0.0, 8.0), Align2::CENTER_TOP, head, theme::medium(13.0), t.text);
@@ -2279,7 +2445,19 @@ fn loading_overlay(ui: &mut egui::Ui, doc: &Document, rect: Rect, cmds: &mut Cmd
     widgets::row_text(ui, card.left_top() + vec2(58.0, 66.0), stage, theme::regular(12.0), t.text_muted, 340.0);
     let track = Rect::from_min_size(card.left_top() + vec2(20.0, 92.0), vec2(380.0, 6.0));
     p.rect_filled(track, CornerRadius::same(3), t.hover);
-    let shown = ui.ctx().animate_value_with_time(egui::Id::new(("load-bar", doc.id)), lp.fraction.clamp(0.0, 1.0), 0.25);
+    // never stuck: while a step reports nothing new, the bar creeps on, ever slower and at most
+    // 4 % past the last report, and it never goes back
+    let f = lp.fraction.clamp(0.0, 1.0);
+    let now = ui.input(|i| i.time);
+    let key = egui::Id::new(("load-bar-creep", doc.id));
+    let (mut last, mut since, top) = ui.ctx().data(|d| d.get_temp::<(f32, f64, f32)>(key)).unwrap_or((f, now, f));
+    if f != last {
+        (last, since) = (f, now);
+    }
+    let creep = if f > 0.0 { 0.04 * (1.0 - (-((now - since) as f32) / 12.0).exp()) } else { 0.0 };
+    let top = top.max((f + creep).min(0.99)).max(f);
+    ui.ctx().data_mut(|d| d.insert_temp(key, (last, since, top)));
+    let shown = ui.ctx().animate_value_with_time(egui::Id::new(("load-bar", doc.id)), top, 0.25);
     if shown > 0.001 {
         p.rect_filled(Rect::from_min_size(track.min, vec2(track.width() * shown, 6.0)), CornerRadius::same(3), t.accent);
     } else {
@@ -2326,6 +2504,13 @@ pub const STAGES: &[&str] = &[
     "Maillage des éléments IFC…",
     "Construction de l'arbre…",
     "Vignette…",
+    "Éléments du modèle…",
+    "Lecture des vues et des formes…",
+    "Formes 3D…",
+    "Feuilles…",
+    "Nomenclatures et vues de dessin…",
+    "Assemblage de la scène…",
+    "Visibilité des vues…",
 ];
 
 pub fn tr_stage(s: &str) -> String {

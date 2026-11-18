@@ -180,8 +180,10 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
     }
     ctl.report(0.3, "Lecture des informations…");
     let mut props: Vec<(String, String)> = Vec::new();
+    let mut french = false;
     if let Some(b) = read_capped(&mut cf, "/BasicFileInfo") {
         let bfi = basic_file_info(&b);
+        french = bfi.iter().any(|(k, v)| k == "Locale when saved" && v == "FRA");
         if let Some((_, build)) = bfi.iter().find(|(k, _)| k == "Revit Build") {
             if let Some(i) = build.find("Revit ") {
                 let year: String = build[i + 6..].chars().take_while(|c| c.is_ascii_digit()).collect();
@@ -223,7 +225,17 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
     ctl.report(0.7, "Éléments du modèle…");
     let t0 = std::time::Instant::now();
     let family = matches!(crate::ext_of(path).as_str(), "rfa" | "rft");
-    let boxes = element_boxes(&mut cf, &names, family);
+    // the long part, step by step so that the bar keeps moving: each pass over the partitions
+    // by bytes read, then the shapes, the sheets and the scene
+    let times = std::env::var_os("RVT_TIMES").is_some();
+    let stage = |from: f32, to: f32, what: &'static str| {
+        let ctl = &ctl;
+        if times {
+            eprintln!("{:7.1}s {what}", t0.elapsed().as_secs_f64());
+        }
+        move |f: f32| ctl.report(from + (to - from) * f.clamp(0.0, 1.0), what)
+    };
+    let boxes = element_boxes_with(&mut cf, &names, family, &stage(STAGES[0], STAGES[1], "Éléments du modèle…"));
     s.timings.decode = t0.elapsed();
     ctl.check().map_err(|e| e.to_string())?;
     // element shapes rebuilt from their parameters (walls, floors, family solids…), read with
@@ -231,12 +243,29 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
     let mut shapes = crate::rvt_shape::Shapes::default();
     // and the sheets' 2D content
     let mut sheets = crate::rvt_sheet::Sheets::default();
+    sheets.french = french;
     let mut sheet_ids: Vec<(i64, String, String)> = Vec::new();
     let t1 = std::time::Instant::now();
     if !family {
+        let total = names.iter().filter(|(n, _)| n.starts_with("Partitions/")).map(|(_, l)| *l).sum::<u64>().max(1);
+        let mut read = 0u64;
+        let mut sizes = names.iter().filter(|(n, _)| n.starts_with("Partitions/")).map(|(_, l)| *l);
+        let report = stage(STAGES[1], STAGES[2], "Lecture des vues et des formes…");
+        report(0.0);
         let mut each = |sc: &crate::rvt_browser::Schema, d: &[u8], w: usize| {
+            // a partition's share: decompressed and scanned for the views (before this call),
+            // then its elements by position in it
+            let size = sizes.next().unwrap_or(0);
+            let (from, share) = (read as f32 / total as f32, size as f32 / total as f32);
+            read += size;
+            report(from + share * 0.4);
+            let (step, mut next) = ((d.len() / 200).max(1), 0);
             let (a, b) = (crate::rvt_shape::Shapes::wants(sc), crate::rvt_sheet::Sheets::wants(sc));
-            crate::rvt_geom::elements(sc, d, w, &|t| a[t as usize] || b[t as usize], |_, t, _, tr| {
+            crate::rvt_geom::elements(sc, d, w, &|t| a[t as usize] || b[t as usize], |at, t, _, tr| {
+                if at >= next {
+                    next = at + step;
+                    report(from + share * (0.4 + 0.6 * at as f32 / d.len().max(1) as f32));
+                }
                 if a[t as usize] {
                     shapes.take(sc, t, &tr);
                 }
@@ -247,7 +276,7 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
         };
         if let Some(m) = crate::rvt_browser::read_model_with(&mut cf, &names, MAX_PARTITION, &mut each) {
             s.browser = crate::rvt_browser::build(&m);
-            let rows: std::collections::HashSet<i64> = s.browser.iter().filter(|r| r.kind == sw_format::BrowserKind::Sheet && r.id > 0).map(|r| r.id).collect();
+            let rows: crate::det::HashSet<i64> = s.browser.iter().filter(|r| r.kind == sw_format::BrowserKind::Sheet && r.id > 0).map(|r| r.id).collect();
             sheet_ids = m.views.iter().filter(|v| rows.contains(&v.id)).map(|v| (v.id, v.sheet_number.clone(), v.name.clone())).collect();
         }
         // worksets: which one holds each element (views hide some)
@@ -276,8 +305,14 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
         }
     }
     ctl.check().map_err(|e| e.to_string())?;
+    let report = stage(STAGES[2], STAGES[3], "Formes 3D…");
+    report(0.0);
     let mut meshes = match &boxes {
-        Ok(b) => shapes.finish(&b.iter().filter(|b| b.id != 0).map(|b| (b.id, (b.min, b.max))).collect(), family),
+        Ok(b) => {
+            let (meshes, stretches) = shapes.finish_full(&b.iter().filter(|b| b.id != 0).map(|b| (b.id, (b.min, b.max))).collect(), family, &report);
+            sheets.set_stretches(stretches);
+            meshes
+        }
         Err(_) => Default::default(),
     };
     if let Ok(b) = &boxes {
@@ -312,14 +347,21 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
             }
         }
     }
+    // the model elements' edges, as the views see them (the sheets' views, plans and sections)
+    let model: Vec<(i64, i64, [f64; 3], [f64; 3], Option<&crate::rvt_shape::Mesh>)> = match &boxes {
+        Ok(b) if !family => b.iter().filter(|b| rvt_model::category_in(b.category, false).is_some()).map(|b| (b.id, b.category, b.min, b.max, meshes.get(&b.id))).collect(),
+        _ => vec![],
+    };
+    let te = std::time::Instant::now();
+    let edges = crate::rvt_sheet::Edges::new(&model);
+    if times {
+        eprintln!("  edges of {} elements: {:.1}s", model.len(), te.elapsed().as_secs_f64());
+    }
     if !sheet_ids.is_empty() {
-        let model: Vec<(i64, i64, [f64; 3], [f64; 3], Option<&crate::rvt_shape::Mesh>)> = match &boxes {
-            Ok(b) => b.iter().filter(|b| rvt_model::category_in(b.category, false).is_some()).map(|b| (b.id, b.category, b.min, b.max, meshes.get(&b.id))).collect(),
-            Err(_) => vec![],
-        };
-        s.sheets = sheets.finish(&sheet_ids, &model);
+        s.sheets = sheets.finish_edges(&sheet_ids, &edges, &stage(STAGES[3], STAGES[4], "Feuilles…"));
     }
     // schedules: their stored table
+    stage(STAGES[4], STAGES[5], "Nomenclatures et vues de dessin…")(0.0);
     let schedules: Vec<i64> = s.browser.iter().filter(|r| r.kind == sw_format::BrowserKind::Schedule && r.id > 0).map(|r| r.id).collect();
     s.sheets.extend(sheets.schedules(&schedules));
     // drafting views and legends: their own drawing
@@ -337,7 +379,7 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
             }
         }
         if lo[0].is_finite() {
-            let rows: std::collections::HashSet<i64> = s.browser.iter().filter(|r| r.id > 0).map(|r| r.id).collect();
+            let rows: crate::det::HashSet<i64> = s.browser.iter().filter(|r| r.id > 0).map(|r| r.id).collect();
             sheets.set_model_box(lo, hi);
             s.view_frames = sheets.frames(lo, hi).into_iter().filter(|f| rows.contains(&f.id)).collect();
         }
@@ -360,14 +402,16 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
         }
         let _ = std::fs::write(std::env::var("RVT_DUMP_OUT").unwrap_or("dump.obj".into()), out);
     }
+    let report = stage(STAGES[5], STAGES[6], "Assemblage de la scène…");
+    report(0.0);
     let mut owners = Vec::new();
     let (n, shaped) = match &boxes {
-        Ok(b) => build_boxes(&mut s, b, &meshes, family, &mut owners),
+        Ok(b) => build_boxes(&mut s, b, &meshes, family, &mut owners, &report),
         Err(_) => (0, 0),
     };
     // MEP elements in their system's colour, as Revit draws them
     // (only an element's own mesh: the box stand-ins share theirs with the category)
-    let mut users: std::collections::HashMap<usize, usize> = Default::default();
+    let mut users: crate::det::HashMap<usize, usize> = Default::default();
     for c in &s.components {
         if let Some(m) = c.mesh {
             *users.entry(m).or_default() += 1;
@@ -390,12 +434,21 @@ pub fn load(path: &Path, opts: &crate::Options) -> Result<Scene, String> {
         }
     }
     // what each view does not show: its switched-off categories and hidden elements
-    for f in &mut s.view_frames {
+    let report = stage(STAGES[6], STAGES[7], "Visibilité des vues…");
+    let views = s.view_frames.len().max(1);
+    for (i, f) in s.view_frames.iter_mut().enumerate() {
+        report(i as f32 / views as f32);
         f.hide = owners.iter().filter(|&&(_, id, cat)| sheets.view_hides(f.id, id, cat)).map(|&(c, _, _)| c).collect();
     }
-    // views that hide the whole model and show levels: their own drawing
-    let bare: Vec<i64> = s.view_frames.iter().filter(|f| f.hide.len() >= owners.len() && sheets.has_datums(f.id)).map(|f| f.id).collect();
-    s.sheets.extend(sheets.drawings(&bare));
+    // plans, sections and elevations: drawn as Revit shows them (the model elements they see,
+    // their annotations and datums)
+    let flat: crate::det::HashSet<i64> = s.browser.iter().filter(|r| matches!(r.kind, sw_format::BrowserKind::Plan | sw_format::BrowserKind::CeilingPlan | sw_format::BrowserKind::Section | sw_format::BrowserKind::Elevation | sw_format::BrowserKind::Detail)).map(|r| r.id).collect();
+    let views: Vec<i64> = s.view_frames.iter().map(|f| f.id).filter(|id| flat.contains(id)).collect();
+    let tv = std::time::Instant::now();
+    s.sheets.extend(sheets.drawings_with(&views, &edges));
+    if times {
+        eprintln!("  {} model views drawn: {:.1}s", views.len(), tv.elapsed().as_secs_f64());
+    }
     if n > 0 {
         props.push(("Éléments 3D".into(), format!("{n} dont {shaped} en forme reconstruite, {} en boîte englobante", n - shaped)));
         s.warnings.push(if shaped == n { WARN_SHAPES } else { WARN_SHAPES_PARTIAL }.into());
@@ -421,6 +474,10 @@ pub const NO_ELEMENTS: &str = "Aucun élément 3D placé dans ce fichier";
 /// Same when the element records are not recognised (Revit 2008 and similar old formats).
 pub const NO_ELEMENTS_FORMAT: &str = "Aucun élément 3D placé lisible dans ce fichier (format Revit trop ancien ou non reconnu)";
 
+/// Where each step of the element reading starts on the progress bar (from the element boxes
+/// to the views' visibility), in proportion to its usual time on a large project.
+const STAGES: [f32; 8] = [0.70, 0.705, 0.79, 0.85, 0.93, 0.935, 0.975, 0.998];
+
 /// Stored size above which a partition is not read (memory bound).
 const MAX_PARTITION: u64 = 2 << 30;
 /// Most boxes drawn.
@@ -428,6 +485,11 @@ const MAX_BOXES: usize = 400_000;
 
 /// The placed elements' boxes of every partition (see `rvt_model`).
 pub fn element_boxes<F: Read + std::io::Seek>(cf: &mut cfb::CompoundFile<F>, names: &[(String, u64)], family: bool) -> Result<Vec<rvt_model::ElemBox>, String> {
+    element_boxes_with(cf, names, family, &|_| {})
+}
+
+/// Same, telling `progress` the fraction of the partitions' bytes read.
+pub fn element_boxes_with<F: Read + std::io::Seek>(cf: &mut cfb::CompoundFile<F>, names: &[(String, u64)], family: bool, progress: &dyn Fn(f32)) -> Result<Vec<rvt_model::ElemBox>, String> {
     let schema = rvt_model::read_stream(cf, "/Formats/Latest", 64 << 20, 64 << 20, |_| true).ok_or("schéma illisible")?;
     if schema.verified == 0 {
         return Err("schéma illisible".into());
@@ -435,9 +497,13 @@ pub fn element_boxes<F: Read + std::io::Seek>(cf: &mut cfb::CompoundFile<F>, nam
     let outline = rvt_model::schema_inline_tag(&schema.data, "Outline").ok_or("format de modèle non reconnu (classe Outline absente)")?;
     drop(schema);
     let mut out = Vec::new();
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = crate::det::HashSet::default();
     let mut any_chain = false;
-    for (n, _) in names.iter().filter(|(n, _)| n.starts_with("Partitions/")) {
+    let total = names.iter().filter(|(n, _)| n.starts_with("Partitions/")).map(|(_, l)| *l).sum::<u64>().max(1);
+    let mut read = 0u64;
+    for (n, l) in names.iter().filter(|(n, _)| n.starts_with("Partitions/")) {
+        progress(read as f32 / total as f32);
+        read += l;
         let Some(inf) = rvt_model::read_stream(cf, &format!("/{n}"), MAX_PARTITION, rvt_model::MAX_INFLATED, rvt_model::until_chain_end()) else { continue };
         let chain = rvt_model::walk_chain(&inf.data);
         if chain.records.is_empty() {
@@ -468,7 +534,7 @@ const ZONES: f64 = 16.0;
 /// rebuilt shape in `shapes` (by id) gets it, the others their box. Returns the number of
 /// elements and how many have their shape. `owners` gets (component, element id, category) of each
 /// element and zone (element id 0) component.
-fn build_boxes(s: &mut Scene, boxes: &[rvt_model::ElemBox], shapes: &std::collections::HashMap<i64, crate::rvt_shape::Mesh>, family: bool, owners: &mut Vec<(usize, i64, i64)>) -> (usize, usize) {
+fn build_boxes(s: &mut Scene, boxes: &[rvt_model::ElemBox], shapes: &crate::det::HashMap<i64, crate::rvt_shape::Mesh>, family: bool, owners: &mut Vec<(usize, i64, i64)>, progress: &dyn Fn(f32)) -> (usize, usize) {
     let t = std::time::Instant::now();
     type Cat<'a> = (Vec<&'a rvt_model::ElemBox>, [f32; 4]);
     let mut by: std::collections::BTreeMap<&'static str, Cat> = Default::default();
@@ -494,7 +560,10 @@ fn build_boxes(s: &mut Scene, boxes: &[rvt_model::ElemBox], shapes: &std::collec
         }
     }
     let cell: [f64; 3] = std::array::from_fn(|a| ((hi[a] - lo[a]) / ZONES).max(1e-6));
+    let mut done = 0;
     for (name, (list, color)) in by {
+        progress(done as f32 / n as f32);
+        done += list.len();
         let group = s.components.len();
         s.components.push(crate::component(&format!("{name} ({})", list.len()), 1, Some(root), true, None));
         if per_element {
@@ -506,6 +575,9 @@ fn build_boxes(s: &mut Scene, boxes: &[rvt_model::ElemBox], shapes: &std::collec
             s.meshes.push(sw_format::SceneMesh { name: name.to_string(), mesh, source: sw_format::MeshSource::Embedded, color: Some(color) });
             let mi = s.meshes.len() - 1;
             for (k, b) in list.iter().enumerate() {
+                if k % 4096 == 4095 {
+                    progress((done - list.len() + k) as f32 / n as f32);
+                }
                 if let Some(m) = shapes.get(&b.id).filter(|m| !m.tri.is_empty()) {
                     // its own mesh, already in place; one part per material colour
                     let id4 = [1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1.];

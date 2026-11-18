@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 DEPS=${1:-deps}
-scripts/build-deps.sh "$DEPS"
+bash scripts/build-deps.sh "$DEPS"
 # shellcheck disable=SC1091
 source "$DEPS/env.sh"
 T=x86_64-pc-windows-gnu
