@@ -354,6 +354,9 @@ struct Dim {
     /// Each segment's text moved from its place (`m_offset`: model feet along the line's
     /// direction and across it), drawn with a leader.
     moved: Vec<[f64; 2]>,
+    /// Each segment's text as typed over its value (`m_values[0].m_oTextFields`): prefix,
+    /// replacing text (empty: the value), suffix ("250mm WEIR" for a weir's height, P-603).
+    typed: Vec<Option<[String; 3]>>,
 }
 
 /// A radial or angular dimension (model feet): centre, points on the arc, text position,
@@ -752,12 +755,24 @@ impl Annots {
                 let (Some(o), Some(d)) = (v3(l.fs("m_origin")), v3(l.fs("m_dirVec"))) else { return };
                 let texts = r.list("m_ArrSegInfo").iter().filter_map(|g| v3(g.fs("m_origin"))).collect();
                 let moved = r.list("m_ArrSegInfo").iter().map(|g| g.fs("m_offset").filter(|o| o.len() == 2).map_or([0.0; 2], |o| [o[0], o[1]])).collect();
+                let field = |f: &Obj, k: &str| match f.get(k) {
+                    Some(G::S(v)) => v.clone(),
+                    _ => String::new(),
+                };
+                let typed = r
+                    .list("m_ArrSegInfo")
+                    .iter()
+                    .map(|g| {
+                        let f = g.list("m_values").first()?.ptr("m_oTextFields").and_then(|i| tr.objs.get(i))?;
+                        Some([field(f, "m_prefix"), field(f, "m_valueOverride"), field(f, "m_suffix")])
+                    })
+                    .collect();
                 // a constraint (a dimension kept as a lock): not drawn
                 if r.int("m_flags").unwrap_or(0) & CONSTRAINT != 0 {
                     return;
                 }
                 if refs.len() >= 2 {
-                    self.dims.push(Dim { id: tr.id, owner, style: r.int("m_styleSymbolId").unwrap_or(-1), refs, line: (o, d), texts, moved });
+                    self.dims.push(Dim { id: tr.id, owner, style: r.int("m_styleSymbolId").unwrap_or(-1), refs, line: (o, d), texts, moved, typed });
                 }
             }
             "SpotElevation" if owner > 0 => {
@@ -1349,6 +1364,11 @@ impl Annots {
                     continue;
                 }
                 let mid = (p[0] + p[1]) * 0.5;
+                let value = self.length_as(v, self.dim_fmt(dm.style));
+                let text = match dm.typed.get(i).and_then(|t| t.as_ref()) {
+                    Some([pre, over, suf]) => format!("{pre}{}{suf}", if over.is_empty() { &value } else { over }),
+                    None => value,
+                };
                 // its text: the bottom of its letters' descent (its box's bottom) the type's gap
                 // off the line, as Revit sets it, or where it was moved to, centred along the
                 // line
@@ -1367,7 +1387,6 @@ impl Annots {
                     let off = [(mv[0] * stored[0] + mv[1] * sn[0]) * per_foot, (mv[0] * stored[1] + mv[1] * sn[1]) * per_foot];
                     pos = [pos[0] + off[0], pos[1] + off[1]];
                     let h = self.dim_text(dm.style) / k;
-                    let text = self.length_as(v, self.dim_fmt(dm.style));
                     let half = sw_format::arial_width(&text, sw_format::font_size((h * k * 0.3048) as f32), false) as f64 / 0.3048 / k * 0.5;
                     let line_mid = [o[0] + d[0] * mid, o[1] + d[1] * mid];
                     let along = sdot([pos[0] - line_mid[0], pos[1] - line_mid[1]], d);
@@ -1378,7 +1397,7 @@ impl Annots {
                     out.strokes.push((vec![line_mid, elbow, end], w, [0; 3]));
                 }
                 out.spans.push((out.texts.len(), [[o[0] + d[0] * p[0], o[1] + d[1] * p[0]], [o[0] + d[0] * p[1], o[1] + d[1] * p[1]]]));
-                out.texts.push((pos, d, self.dim_text(dm.style), self.length_as(v, self.dim_fmt(dm.style))));
+                out.texts.push((pos, d, self.dim_text(dm.style), text));
             }
         }
         // radial and angular dimensions
