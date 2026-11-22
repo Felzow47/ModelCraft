@@ -1347,6 +1347,9 @@ impl Sheets {
 
     pub fn take(&mut self, s: &Schema, t: u16, tr: &Tree) {
         let r = &tr.root;
+        if std::env::var("ELEM_CLASS").is_ok_and(|v| v.split(',').any(|x| x == tr.id.to_string())) {
+            eprintln!("ELEM {} class {} fields {:?}", tr.id, s.name(t), r.fields.iter().map(|(k, g)| format!("{k}={}", format!("{g:?}").chars().take(120).collect::<String>())).collect::<Vec<_>>());
+        }
         // a member of a group type not placed: not drawn
         if r.int("m_unplacedOwnerId").unwrap_or(-1) != -1 {
             return;
@@ -5000,6 +5003,18 @@ impl Sheets {
                     eprintln!("TAG {} view {} target {} not drawn, head at {:.4},{:.4} m (paper)", tg.id, vp.view, tg.target, h[0] * FEET, h[1] * FEET);
                 }
                 continue;
+            }
+            // a tag of a duct's or pipe's insulation: shown with its insulation (its category
+            // shown, its duct or pipe in the view's range: "SOUFFLAGE DEPUIS CTA 02" not on
+            // AC-213)
+            if let Some(&(_, _, icat)) = self.insulations.iter().find(|i| i.0 == tg.target) {
+                let host = self.elem_links.get(&tg.target).into_iter().flatten().find(|h| self.mep_lines.contains_key(h));
+                if self.hides(view, tg.target, icat) || host.is_some_and(|h| self.hides(view, *h, model_cats.get(h).copied().unwrap_or(0)) || (model_cats.contains_key(h) && !in_range.contains(h))) {
+                    if tag_debug {
+                        eprintln!("TAG {} view {} insulation {} hidden or out of range (host {host:?})", tg.id, vp.view, tg.target);
+                    }
+                    continue;
+                }
             }
             let Some(sy) = self.symbols.get(&tg.symbol) else {
                 if tag_debug {
