@@ -351,6 +351,9 @@ struct Dim {
     refs: Vec<V3>,
     line: (V3, V3),
     texts: Vec<V3>,
+    /// Each segment's text moved from its place (`m_offset`: model feet along the line's
+    /// direction and across it), drawn with a leader.
+    moved: Vec<[f64; 2]>,
 }
 
 /// A radial or angular dimension (model feet): centre, points on the arc, text position,
@@ -748,12 +751,13 @@ impl Annots {
                 let Some(l) = tr.objs.iter().find(|o| s.name(o.tag) == "GLine") else { return };
                 let (Some(o), Some(d)) = (v3(l.fs("m_origin")), v3(l.fs("m_dirVec"))) else { return };
                 let texts = r.list("m_ArrSegInfo").iter().filter_map(|g| v3(g.fs("m_origin"))).collect();
+                let moved = r.list("m_ArrSegInfo").iter().map(|g| g.fs("m_offset").filter(|o| o.len() == 2).map_or([0.0; 2], |o| [o[0], o[1]])).collect();
                 // a constraint (a dimension kept as a lock): not drawn
                 if r.int("m_flags").unwrap_or(0) & CONSTRAINT != 0 {
                     return;
                 }
                 if refs.len() >= 2 {
-                    self.dims.push(Dim { id: tr.id, owner, style: r.int("m_styleSymbolId").unwrap_or(-1), refs, line: (o, d), texts });
+                    self.dims.push(Dim { id: tr.id, owner, style: r.int("m_styleSymbolId").unwrap_or(-1), refs, line: (o, d), texts, moved });
                 }
             }
             "SpotElevation" if owner > 0 => {
@@ -1299,6 +1303,9 @@ impl Annots {
                 continue; // seen along its line
             }
             d = [d[0] / l, d[1] / l];
+            // (its direction as stored, before turned to read: what a moved text's offset is
+            // measured along, per foot of the model)
+            let (stored, per_foot) = (d, l / sdot([dm.line.1[0], dm.line.1[1]], [dm.line.1[0], dm.line.1[1]]).max(1e-18).sqrt().max(dm.line.1[2].abs()).max(1e-9));
             // text reads left to right, bottom to top
             if d[0] < -1e-6 || (d[0].abs() <= 1e-6 && d[1] < 0.0) {
                 d = [-d[0], -d[1]];
@@ -1350,7 +1357,26 @@ impl Annots {
                     let c = sdot([x[0] - o[0], x[1] - o[1]], nv);
                     [o[0] + d[0] * mid + nv[0] * c.max(gap), o[1] + d[1] * mid + nv[1] * c.max(gap)]
                 });
-                let pos = pos.unwrap_or([o[0] + d[0] * mid + nv[0] * gap, o[1] + d[1] * mid + nv[1] * gap]);
+                let mut pos = pos.unwrap_or([o[0] + d[0] * mid + nv[0] * gap, o[1] + d[1] * mid + nv[1] * gap]);
+                // moved off its place (too long for its segment): there, a leader from the
+                // segment's middle on the line to a shoulder as long as the text is high, along
+                // the line, ending at its end nearest the middle, halfway up its letters
+                // ("910" on AC-293)
+                if let Some(mv) = dm.moved.get(i).filter(|m| m[0].abs() + m[1].abs() > 1e-9) {
+                    let sn = [-stored[1], stored[0]];
+                    let off = [(mv[0] * stored[0] + mv[1] * sn[0]) * per_foot, (mv[0] * stored[1] + mv[1] * sn[1]) * per_foot];
+                    pos = [pos[0] + off[0], pos[1] + off[1]];
+                    let h = self.dim_text(dm.style) / k;
+                    let text = self.length_as(v, self.dim_fmt(dm.style));
+                    let half = sw_format::arial_width(&text, sw_format::font_size((h * k * 0.3048) as f32), false) as f64 / 0.3048 / k * 0.5;
+                    let line_mid = [o[0] + d[0] * mid, o[1] + d[1] * mid];
+                    let along = sdot([pos[0] - line_mid[0], pos[1] - line_mid[1]], d);
+                    let toward = if along > 0.0 { -1.0 } else { 1.0 };
+                    let up = h * 0.8;
+                    let end = [pos[0] + d[0] * half * toward + nv[0] * up, pos[1] + d[1] * half * toward + nv[1] * up];
+                    let elbow = [end[0] + d[0] * h * toward, end[1] + d[1] * h * toward];
+                    out.strokes.push((vec![line_mid, elbow, end], w, [0; 3]));
+                }
                 out.spans.push((out.texts.len(), [[o[0] + d[0] * p[0], o[1] + d[1] * p[0]], [o[0] + d[0] * p[1], o[1] + d[1] * p[1]]]));
                 out.texts.push((pos, d, self.dim_text(dm.style), self.length_as(v, self.dim_fmt(dm.style))));
             }
