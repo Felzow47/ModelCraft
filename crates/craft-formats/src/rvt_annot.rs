@@ -1230,6 +1230,8 @@ impl Annots {
         if std::env::var("ANNOT_DEBUG").is_ok_and(|v| v == (-owner).to_string()) {
             for c in self.curves.iter().filter(|c| c.owner == owner) {
                 eprintln!("  curve {} style {} sketch {} shows {} sketch hidden {} vis {:?} fev {:#x} pts {:?}", c.id, c.style, c.sketch, c.vis.shows(vals), hidden.contains(&c.sketch), c.vis, c.fev, c.pts.iter().map(|p| [(p[0] * 1000.0).round() / 1000.0, (p[1] * 1000.0).round() / 1000.0]).collect::<Vec<_>>().first());
+                let g = [scoped(doc, c.style), c.style].into_iter().find(|g| self.styles.contains_key(g));
+                eprintln!("    style {:?} cat {:?} name {:?} resolved {:?}", g, g.and_then(|g| self.gstyle_cats.get(&g)), g.and_then(|g| self.gstyle_cats.get(&g)).and_then(|c| self.cat_names.get(c)), self.family_line_style(doc, c.style));
             }
             eprintln!("  vals {vals:?}");
         }

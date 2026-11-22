@@ -3782,6 +3782,8 @@ impl Sheets {
         let mut line_only: crate::det::HashSet<u32> = Default::default();
         // the model elements drawn (their tags are shown only then)
         let mut drawn: crate::det::HashSet<i64> = Default::default();
+        // (the elements drawn that left lines or fills in the view)
+        let mut inked: crate::det::HashSet<i64> = Default::default();
         // (the elements within its range, up to its top clip plane, drawn or not: their tags show)
         let mut in_range: crate::det::HashSet<i64> = Default::default();
         let mut range_info: HashMap<i64, String> = HashMap::default();
@@ -3809,6 +3811,7 @@ impl Sheets {
             tri_owner.resize(tris.len(), me);
             who.push(*cat);
             let marks = (segs.len(), cuts.len(), fill_tris.len());
+            let sym0 = sym_fills.len();
             // inside a plan region: its own view range
             // (Revit shows the part of an element inside a region with the region's range, the
             // rest with the view's: a region it reaches that shows it, else the view's range when
@@ -4257,6 +4260,9 @@ impl Sheets {
                 }
             }
             owners.push((*id, *cat, marks.0, segs.len(), marks.1, cuts.len(), marks.2, fill_tris.len()));
+            if (segs.len(), cuts.len(), fill_tris.len(), sym_fills.len()) != (marks.0, marks.1, marks.2, sym0) {
+                inked.insert(*id);
+            }
             // the faces that hide edges: the rebuilt solid, else the element's box
             // (a duct or pipe drawn as one line hides nothing)
             if hlr_on && tris.len() < MAX_FACES && !single {
@@ -5018,10 +5024,14 @@ impl Sheets {
         for tg in self.ann.tags.iter().filter(|t| mine(t.owner) && !view.hidden.contains(&t.id)) {
             // a tag of a model element the view hides, or out of its range, is not shown either
             // (one within its range keeps its tag, drawn or not: above the cut plane)
-            if model_cats.contains_key(&tg.target) && !in_range.contains(&tg.target) {
+            // (nor, in a plan, one of a fixture or a component the view draws nothing of: P-403's
+            // flush valves "R 04" and mirrors "MI 01"; a duct's or pipe's kept, as one seen end on
+            // or past the cut plane may draw nothing and keep its tag)
+            let blank = plan_view && drawn.contains(&tg.target) && !inked.contains(&tg.target) && !model_cats.get(&tg.target).is_some_and(|c| ABOVE_CUT.contains(c));
+            if model_cats.contains_key(&tg.target) && (!in_range.contains(&tg.target) || blank) {
                 if tag_debug {
                     let h = mp.apply(tg.head);
-                    eprintln!("TAG {} view {} target {} not drawn, head at {:.4},{:.4} m (paper) {}", tg.id, vp.view, tg.target, h[0] * FEET, h[1] * FEET, range_info.get(&tg.target).map_or("", |s| s.as_str()));
+                    eprintln!("TAG {} view {} target {} not drawn (inked {}), head at {:.4},{:.4} m (paper) {}", tg.id, vp.view, tg.target, inked.contains(&tg.target), h[0] * FEET, h[1] * FEET, range_info.get(&tg.target).map_or("", |s| s.as_str()));
                 }
                 continue;
             }
