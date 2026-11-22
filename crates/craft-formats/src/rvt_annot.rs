@@ -340,7 +340,7 @@ fn family_param_strs(tr: &Tree, s: &Schema) -> HashMap<i64, String> {
 const CLOUD_ARC: f64 = 0.2;
 
 /// The "Visible" parameter of family elements.
-const VISIBLE_PARAM: i64 = -1006205;
+pub(crate) const VISIBLE_PARAM: i64 = -1006205;
 
 #[derive(Debug)]
 struct Dim {
@@ -449,6 +449,8 @@ pub struct Annots {
     /// filled region type → (fill pattern, category giving its colour)
     region_types: HashMap<i64, (i64, i64)>,
     curves: Vec<Curve>,
+    /// Area boundary lines (`AreaMeasureCurveData`): their level, their points (model feet).
+    pub(crate) area_lines: Vec<(i64, Vec<V3>)>,
     /// (owner, sketch, type, visibility, id)
     regions: Vec<(i64, i64, i64, Visible, i64)>,
     /// (family or family document, parameter name) -> parameter, and parameter -> name
@@ -584,6 +586,15 @@ impl Annots {
                         Some(G::S(c)) => Some(c.clone()),
                         _ => None,
                     }).unwrap_or_default());
+                }
+            }
+            // area boundary lines: on their level, for the area plans to find their areas in
+            "CurveElem" if tr.objs.iter().any(|o| s.name(o.tag) == "AreaMeasureCurveData") => {
+                if let Some(c) = obj("m_pCurveDriver").and_then(|d| d.ptr("m_pCrv")).and_then(|i| tr.objs.get(i)) {
+                    let pts = curve_points_within(c, s, 0.002);
+                    if pts.len() >= 2 {
+                        self.area_lines.push((r.int("m_assocLevelId").unwrap_or(-1), pts));
+                    }
                 }
             }
             "CurveElem" if owner != -1 => {
@@ -1512,7 +1523,7 @@ pub(crate) fn dashes(pts: &[P2], pat: &[(f64, bool)], phase: f64) -> Vec<Vec<P2>
 
 /// Even-odd fill of the area enclosed by `edges`, as triangles (slabs between the vertices'
 /// heights, trapezoids between pairs of crossing edges).
-fn fill(edges: &[[P2; 2]]) -> Vec<[P2; 3]> {
+pub(crate) fn fill(edges: &[[P2; 2]]) -> Vec<[P2; 3]> {
     let mut ys: Vec<f64> = edges.iter().flat_map(|e| [e[0][1], e[1][1]]).collect();
     ys.sort_by(f64::total_cmp);
     ys.dedup_by(|a, b| (*a - *b).abs() < 1e-9);

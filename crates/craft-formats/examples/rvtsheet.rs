@@ -126,17 +126,11 @@ fn main() {
             for line in t.text.split('\n') {
                 let range = start..start + line.len();
                 start = range.end + 1;
-                // (Revit lets a line run 1 % past its width before breaking it)
-                let wrap = t.wrap * k / squeeze * 1.01;
-                if wrap > 0.0 && line.contains('\t') {
-                    rows.extend(sw_format::break_line(&t.text, range, t.wrap * k * 1.01, tab, t.break_words, &mut |r| width_of(&r)));
-                } else if wrap > 0.0 {
-                    let mut at = range.start;
-                    for piece in wrap_line(line, fs, t.bold, wrap, t.break_words) {
-                        let p = t.text[at..range.end].find(piece.as_str()).map_or(at, |o| at + o);
-                        rows.push(p..p + piece.len());
-                        at = p + piece.len();
-                    }
+                if t.wrap > 0.0 {
+                    // (as the viewer breaks it; Revit lets a row run `WRAP_SLACK` past its width)
+                    // (its tab stops, fixed where Revit measures its words narrower, as far apart
+                    // as the slack makes its width: "\tNECESSARY" past AC-100's box)
+                    rows.extend(sw_format::break_line(&t.text, range, t.wrap * k * sw_format::WRAP_SLACK, tab * sw_format::WRAP_SLACK, t.break_words, &mut |r| width_of(&r)));
                 } else {
                     rows.push(range);
                 }
@@ -147,7 +141,9 @@ fn main() {
                 .iter()
                 .map(|r| {
                     let end = if t.text[r.end..].starts_with('\n') { r.end + 1 } else { r.end.max(r.start + 1) };
-                    parts.iter().filter(|(q, ..)| q.start < end && r.start < q.end).fold((false, false), |(b, i), (_, pb, pi, _, _)| (b || *pb, i || *pi))
+                    // (an empty last row: its paragraph ends the text, the break before it its face)
+                    let start = if r.start == t.text.len() { r.start.saturating_sub(1) } else { r.start };
+                    parts.iter().filter(|(q, ..)| q.start < end && start < q.end).fold((false, false), |(b, i), (_, pb, pi, _, _)| (b || *pb, i || *pi))
                 })
                 .collect();
             let em = t.font_size();
@@ -174,7 +170,9 @@ fn main() {
                 if n > 0 {
                     by += pitch[n];
                 }
-                // its pieces between tabs, each at the next tab stop
+                // its pieces between tabs, each at the next tab stop (the spaces it ends with take
+                // no room, as the viewer lays it out)
+                let row = &(row.start..row.start + t.text[row.clone()].trim_end_matches([' ', '\r']).len());
                 let mut pieces = Vec::new();
                 let (mut cx, mut at) = (0.0f32, row.start);
                 for (i, piece) in t.text[row.clone()].split('\t').enumerate() {
@@ -275,35 +273,3 @@ fn base64(b: &[u8]) -> String {
     s
 }
 
-/// A line broken at spaces so that each piece fits `wrap` (no wrapping when 0); a word wider than
-/// a row broken between characters when `break_words` (a text note).
-fn wrap_line(line: &str, fs: f32, bold: bool, wrap: f32, break_words: bool) -> Vec<String> {
-    if wrap <= 0.0 || text_width(line, fs, bold) <= wrap {
-        return vec![line.to_string()];
-    }
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    for word in line.split(' ') {
-        let next = if cur.is_empty() { word.to_string() } else { format!("{cur} {word}") };
-        if !cur.is_empty() && text_width(&next, fs, bold) > wrap {
-            out.push(std::mem::take(&mut cur));
-            cur = word.to_string();
-        } else {
-            cur = next;
-        }
-        // (a word wider than a row: broken between characters, as `sw_format::break_line`)
-        while break_words && text_width(&cur, fs, bold) > wrap && cur.chars().count() > 1 {
-            let mut e = cur.chars().next().map_or(1, char::len_utf8);
-            for (o, _) in cur.char_indices().skip(1) {
-                if text_width(&cur[..o], fs, bold) > wrap {
-                    break;
-                }
-                e = o;
-            }
-            out.push(cur[..e].to_string());
-            cur = cur[e..].to_string();
-        }
-    }
-    out.push(cur);
-    out
-}

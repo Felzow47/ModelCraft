@@ -427,7 +427,7 @@ dependencies = [
 
 [[package]]
 name = "craft-formats"
-version = "0.4.30"
+version = "0.4.31"
 dependencies = [
  "cc",
  "cfb",
@@ -2615,7 +2615,7 @@ dependencies = [
 
 [[package]]
 name = "sw-format"
-version = "0.4.30"
+version = "0.4.31"
 dependencies = [
  "cfb",
  "glam",
@@ -2630,7 +2630,7 @@ dependencies = [
 
 [[package]]
 name = "swcraft"
-version = "0.4.30"
+version = "0.4.31"
 dependencies = [
  "bytemuck",
  "craft-formats",
@@ -2653,7 +2653,7 @@ dependencies = [
 
 [[package]]
 name = "swcraft-scan"
-version = "0.4.30"
+version = "0.4.31"
 dependencies = [
  "craft-formats",
  "sw-format",

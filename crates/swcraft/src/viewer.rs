@@ -2225,28 +2225,16 @@ fn sheet_2d(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, r: &sw_format::Br
         // its rows: each line, broken where it wraps (byte ranges of the text)
         let mut rows: Vec<std::ops::Range<usize>> = Vec::new();
         let mut start = 0;
-        // (Revit lets a line run 1 % past its width before breaking it)
-        let width = tx.wrap * 1.01 / em * REF;
+        // (Revit lets a row run a little past its width: `WRAP_SLACK`)
+        let width = tx.wrap * sw_format::WRAP_SLACK / em * REF;
         for line in tx.text.split('\n') {
             let range = start..start + line.len();
             start = range.end + 1;
-            if tx.wrap > 0.0 && line.contains('\t') {
-                // with tabs: broken word by word, a tab that does not fit starting the next row
-                rows.extend(sw_format::break_line(&tx.text, range, width, tab, tx.break_words, &mut |r| p.layout_job(job_of(&r, REF)).size().x));
-            } else if tx.wrap > 0.0 && !line.is_empty() {
-                let mut job = job_of(&range, REF);
-                job.wrap.max_width = width;
-                let g = p.layout_job(job);
-                let mut at = range.start;
-                for row in &g.rows {
-                    let len: usize = row.glyphs.iter().map(|c| c.chr.len_utf8()).sum();
-                    let end = (at + len).min(range.end);
-                    rows.push(at..end);
-                    at = end;
-                }
-                if at < range.end {
-                    rows.push(at..range.end);
-                }
+            if tx.wrap > 0.0 && !line.is_empty() {
+                // broken where Revit breaks it, a tab that does not fit starting the next row
+                // (its tab stops, fixed where Revit measures its words narrower, as far apart
+                // as the slack makes its width: "\tNECESSARY" past AC-100's box)
+                rows.extend(sw_format::break_line(&tx.text, range, width, tab * sw_format::WRAP_SLACK, tx.break_words, &mut |r| p.layout_job(job_of(&r, REF)).size().x));
             } else {
                 rows.push(range);
             }
@@ -2279,7 +2267,9 @@ fn sheet_2d(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, r: &sw_format::Br
         // slant, its characters' and its paragraph end's)
         let face = |r: &std::ops::Range<usize>| -> (bool, bool) {
             let end = if tx.text[r.end..].starts_with('\n') { r.end + 1 } else { r.end.max(r.start + 1) };
-            parts.iter().filter(|(q, ..)| q.start < end && r.start < q.end).fold((false, false), |(b, i), (_, pb, pi, _, _)| (b || *pb, i || *pi))
+            // (an empty last row: its paragraph ends the text, the break before it its face)
+            let start = if r.start == tx.text.len() { r.start.saturating_sub(1) } else { r.start };
+            parts.iter().filter(|(q, ..)| q.start < end && start < q.end).fold((false, false), |(b, i), (_, pb, pi, _, _)| (b || *pb, i || *pi))
         };
         let faces: Vec<(bool, bool)> = rows.iter().map(face).collect();
         let laid: Vec<(Vec<(std::ops::Range<usize>, f32)>, egui::Vec2)> = rows

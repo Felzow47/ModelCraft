@@ -335,11 +335,18 @@ pub fn line_extra(size: f32, bold: bool, italic: bool) -> (f32, f32) {
     (a * size, d * size)
 }
 
+/// How far past its box width a row of a wrapped text may run, its font size rounded as Revit
+/// prints it (measured on Revit's sheet PDFs: rows fit up to 1.0178 of their box, break from
+/// 1.0183; 1.01 got 11 of 1727 rows wrong, this 4).
+pub const WRAP_SLACK: f32 = 1.018;
+
 /// Where `line` (byte range `r` of `text`, one paragraph, no line break) breaks into rows when
 /// it wraps at `width` (the units `measure` gives a byte range's width in), as Revit breaks it:
 /// before a word that would run past it, and before a tab when the tab's stop (`tab` apart) and
-/// the word after it would (the tab then starting the row, at its first stop); a word wider
-/// than a row stays whole. Rows end with their spaces.
+/// the word after it would (the tab then starting the row, at its first stop). With
+/// `break_words` (a text note's), a word also breaks after '-', '=' or ')' ("Pression =" /
+/// "6 Bars", "AUTO-" / "ÉQUILIBRANTE") and a word wider than a row between characters; else it
+/// stays whole. Rows end with their spaces.
 pub fn break_line(text: &str, r: std::ops::Range<usize>, width: f32, tab: f32, break_words: bool, measure: &mut dyn FnMut(std::ops::Range<usize>) -> f32) -> Vec<std::ops::Range<usize>> {
     let b = text.as_bytes();
     let end = r.end.min(b.len());
@@ -348,7 +355,17 @@ pub fn break_line(text: &str, r: std::ops::Range<usize>, width: f32, tab: f32, b
         rows.push(r);
         return rows;
     }
-    let word_end = |i: usize| (i..end).find(|&j| b[j] == b' ' || b[j] == b'\t').unwrap_or(end);
+    let gap = |c: u8| c == b' ' || c == b'\t';
+    let word_end = |i: usize| {
+        let mut j = i;
+        while j < end && !gap(b[j]) {
+            j += 1;
+            if break_words && j < end && matches!(b[j - 1], b'-' | b'=' | b')') && !gap(b[j]) {
+                break;
+            }
+        }
+        j
+    };
     let space_end = |i: usize| (i..end).find(|&j| b[j] != b' ').unwrap_or(end);
     let (mut start, mut x, mut i) = (r.start, 0.0f32, r.start);
     while i < end {
@@ -1379,6 +1396,20 @@ mod text_tests {
         // a label's word runs past its row
         let rows = super::break_line(text, 0..text.len(), 5.0, 4.0, false, &mut |r| r.len() as f32);
         assert_eq!(rows.iter().map(|r| text[r.clone()].trim_end()).collect::<Vec<_>>(), ["CANIVEAU", "01"]);
+    }
+
+    #[test]
+    fn a_note_breaks_a_word_after_a_dash_equals_or_parenthesis() {
+        // one unit a character (P-606/607, AC-607 on Revit's prints)
+        let rows = |text: &str, w: f32, notes: bool| {
+            let r = super::break_line(text, 0..text.len(), w, 4.0, notes, &mut |r| r.len() as f32);
+            r.iter().map(|r| text[r.clone()].trim_end().to_string()).collect::<Vec<_>>()
+        };
+        assert_eq!(rows("Pression =6 Bars", 10.0, true), ["Pression =", "6 Bars"]);
+        assert_eq!(rows("( P-611 )Pression =7.4 Bars", 10.0, true), ["( P-611 )", "Pression =", "7.4 Bars"]);
+        assert_eq!(rows("AUTO-EQUILIBRANTE TYPE", 12.0, true), ["AUTO-", "EQUILIBRANTE", "TYPE"]);
+        // a label keeps "AC-401" whole
+        assert_eq!(rows("VOIR AC-401", 5.0, false), ["VOIR", "AC-401"]);
     }
 
     #[test]
