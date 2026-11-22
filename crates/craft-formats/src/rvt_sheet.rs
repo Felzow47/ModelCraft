@@ -394,6 +394,8 @@ const FLEX_PIPES: i64 = -2008050;
 const ABOVE_CUT: [i64; 20] = [
     -2008000, -2008010, -2008016, -2008020, -2008013, -2008123, -2008124, -2008044, -2008049, -2008050, -2008055, -2008122, -2001140, -2008130, -2008126, -2008132, -2008128, -2008099, -2008001, -2008066,
 ];
+/// Plumbing fixtures (`OST_PlumbingFixtures`).
+const PLUMBING_FIXTURES: i64 = -2001160;
 /// Sprinklers (`OST_Sprinklers`).
 const SPRINKLERS: i64 = -2008099;
 /// A sheet's current revision (`SHEET_CURRENT_REVISION`).
@@ -3848,7 +3850,13 @@ impl Sheets {
                 (Some(k), Some(top)) if top.is_finite() => Some(to_top(k, top)),
                 (k, _) => k,
             };
-            if !self.hides(view, *id, *cat) && !range.is_some_and(|k| k.misses(ft(*lo), ft(*hi))) {
+            // (a plumbing fixture by its origin: P-222's floor drain "SS 03", standing below the
+            // plan's range and reaching into it, keeps no tag)
+            let origin_out = plan_view && *cat == PLUMBING_FIXTURES && range.zip(self.model_insts.get(id)).is_some_and(|(k, (_, t, _))| {
+                let c = k.coords(t.apply([0.0; 3]));
+                c[2] < k.lo[2] || c[2] > k.hi[2]
+            });
+            if !self.hides(view, *id, *cat) && !range.is_some_and(|k| k.misses(ft(*lo), ft(*hi))) && !origin_out {
                 in_range.insert(*id);
             }
             if let Some(k) = range.filter(|_| std::env::var_os("TAG_DEBUG").is_some()) {
