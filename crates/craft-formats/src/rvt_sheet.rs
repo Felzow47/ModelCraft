@@ -424,6 +424,10 @@ pub const SYSTEM_COLORED: [i64; 9] = [-2008000, -2008010, -2008016, -2008020, -2
 const SYSTEM_ABBREVIATION: i64 = -1150468;
 const MEP_SIZE: i64 = -1114240;
 const PIPE_DIAMETER: i64 = -1140225;
+/// A cable tray's width (mm).
+const CABLE_TRAY_WIDTH: i64 = -1140122;
+/// The air flow of an air terminal (its connector's).
+const TERMINAL_FLOW: i64 = -1013405;
 /// A room's or space's area, computed by Revit for tags.
 const ROOM_AREA: i64 = -1006902;
 /// Level elevation parameter, shown by level heads.
@@ -1144,6 +1148,8 @@ pub struct Sheets {
     system_lines: HashMap<i64, (Option<i64>, Option<i64>)>,
     /// element -> the elements its connectors are joined to
     elem_links: HashMap<i64, Vec<i64>>,
+    /// element -> the flow its connector carries (cubic feet a second)
+    elem_flows: HashMap<i64, f64>,
     /// view filters; family -> name; family type -> family; MEP curve -> its text values
     filters: HashMap<i64, Filter>,
     fam_names: HashMap<i64, String>,
@@ -1386,6 +1392,9 @@ impl Sheets {
                 self.multi_system.insert(tr.id);
             } else if let Some(&sys) = systems.first() {
                 self.elem_systems.insert(tr.id, sys);
+            }
+            if let Some(f) = tr.objs.iter().filter(|o| s.name(o.tag) == "SegmentConnectorCalculation" || o.get("m_dFlow").is_some()).find_map(|o| num(o, "m_dFlow")) {
+                self.elem_flows.insert(tr.id, f);
             }
             // what its connectors are joined to (a fitting takes their system)
             let links: Vec<i64> = tr.objs.iter().filter(|o| s.name(o.tag) == "Connector").flat_map(|o| o.list("m_arrRefs").iter()).filter_map(|r| r.int("m_id")).filter(|v| *v > 0 && *v != tr.id).collect();
@@ -5122,6 +5131,8 @@ impl Sheets {
                             None => format!("Ø{}", self.ann.size_mm(w)),
                         })),
                         PIPE_DIAMETER => self.mep_diams.get(&tg.target).cloned(),
+                        TERMINAL_FLOW => self.elem_flows.get(&tg.target).and_then(|v| self.ann.air_flow(*v, t.fmts.get(i).copied().flatten())),
+                        CABLE_TRAY_WIDTH => self.mep_sizes.get(&tg.target).map(|&(w, _)| self.ann.size_mm(w)),
                         ROOM_AREA => self.ann.enclosure(tg.target).map(|e| match e {
                             crate::rvt_annot::Enclosure::Area(a) => self.ann.area(a),
                             crate::rvt_annot::Enclosure::Open => if self.french { "Non fermée" } else { "Not Enclosed" }.into(),
@@ -5131,6 +5142,8 @@ impl Sheets {
                     };
                     let v = computed
                         .or_else(|| self.ann.strs.get(&tg.target).and_then(|x| x.get(p)).cloned())
+                        // (a duct's, pipe's or cable tray's own: a tray's service type, "CFO")
+                        .or_else(|| self.curve_strs.get(&tg.target).and_then(|x| x.get(p)).cloned())
                         .or_else(|| ty.and_then(|y| self.ann.strs.get(y)).and_then(|x| x.get(p)).cloned())?;
                     (!v.is_empty()).then(|| (i, format!("{pre}{v}{suf}")))
                 }).collect();

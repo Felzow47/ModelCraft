@@ -359,6 +359,9 @@ struct Dim {
     typed: Vec<Option<[String; 3]>>,
 }
 
+/// The unit kind of air flows.
+const AIR_FLOW: i64 = 15;
+
 /// A radial or angular dimension (model feet): centre, points on the arc, text position,
 /// value (radius in feet or angle in radians), plane normal.
 #[derive(Debug)]
@@ -1125,8 +1128,16 @@ impl Annots {
     /// label's), else the project's for its kind, with its unit when the format shows it.
     /// shortcut: air flow only (cubic metres an hour), add kinds as sheets show them.
     pub(crate) fn number(&self, param: i64, v: f64, own: Option<(Fmt, bool)>) -> Option<String> {
-        const AIR_FLOW: i64 = 15;
-        let kind = *self.param_units.get(&param)?;
+        self.number_of_kind(*self.param_units.get(&param)?, v, own)
+    }
+
+    /// An air flow (cubic feet a second) in format `own`, else the project's.
+    pub(crate) fn air_flow(&self, v: f64, own: Option<(Fmt, bool)>) -> Option<String> {
+        self.number_of_kind(AIR_FLOW, v, own)
+    }
+
+    /// Value `v` of a parameter of unit kind `kind`: see [`Self::number`].
+    fn number_of_kind(&self, kind: i64, v: f64, own: Option<(Fmt, bool)>) -> Option<String> {
         if kind != AIR_FLOW {
             return None;
         }
