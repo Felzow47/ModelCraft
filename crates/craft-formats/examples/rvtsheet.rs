@@ -184,7 +184,8 @@ fn main() {
                     pieces.push((pr.clone(), cx));
                     cx += width_of(&pr);
                 }
-                let x0 = x - ax * cx;
+                // (aligned as Revit aligns it: see `align_scale`)
+                let x0 = x - ax * cx * sw_format::align_scale(t.height);
                 for (pr, off) in pieces {
                     // its runs, each change of face (bold, italic) or superscript or subscript
                     // (smaller, raised or lowered) a text of its own, as the PDF prints split them

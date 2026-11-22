@@ -2305,7 +2305,8 @@ fn sheet_2d(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, r: &sw_format::Br
             if row > 0 {
                 y += sz.y;
             }
-            let pos = a - d * (ax * sz.x) + n * y;
+            // (aligned as Revit aligns it: see `align_scale`)
+            let pos = a - d * (ax * sz.x * sw_format::align_scale(tx.height)) + n * y;
             for (pr, x) in pieces {
                 if pr.is_empty() {
                     continue;

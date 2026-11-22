@@ -303,6 +303,14 @@ pub fn text_em(height: f32) -> f32 {
     height / (1466.0 / 2048.0)
 }
 
+/// How much of its width Revit counts when it centres or right-aligns a line of a text `height`
+/// high: its width measured at its size before rounding, when that is smaller than the size it
+/// is written at (a 2.853 mm text, 11.3 pt written at 11.5, centred 1.1 % of its width to the
+/// right of its middle, P-101; an 8.2 pt one written at 8 centred on its middle, AC-701).
+pub fn align_scale(height: f32) -> f32 {
+    (text_em(height) / font_size(height)).min(1.0)
+}
+
 /// How much higher above its baseline (font sizes) and lower below it a bold or italic line of a
 /// text reaches than a regular one, as Revit lays them out (measured on its PDF prints: bold
 /// 0.024 and 0.019, italic 0.006 and 0.019).
