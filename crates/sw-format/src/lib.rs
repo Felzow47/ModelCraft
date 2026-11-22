@@ -505,7 +505,8 @@ pub fn fallback_glyph(c: char) -> bool {
 pub fn cell_lines(text: &str, size: f32, bold: bool, width: f32, rows: usize) -> String {
     let w = |s: &str| arial_width(s, size, bold);
     let mut lines: Vec<String> = Vec::new();
-    for para in text.split('\n').map(|p| p.trim_end_matches('\r')) {
+    // (its line breaks at its end left out: "isolation" / "thermique", not "thermiq...")
+    for para in text.trim_end_matches(['\n', '\r']).split('\n').map(|p| p.trim_end_matches('\r')) {
         // each word with the spaces before it (all of them counted, as Revit counts them; those
         // where the line breaks dropped)
         let mut cur = String::new();
