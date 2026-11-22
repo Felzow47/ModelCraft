@@ -575,6 +575,9 @@ struct Table {
     /// lists revisions (`OST_Revisions`): its rows are then those of the sheet it is on.
     fields: Vec<i64>,
     revisions: bool,
+    /// What a schedule lists, to compute its rows again (its stored rows are those Revit last
+    /// computed, maybe stale): see [`Spec`].
+    spec: Option<Spec>,
     /// Merged cells (`m_cover*` of each cell): an area's first cell (section, row, column) ->
     /// how many more columns and rows it covers; the other cells of an area; whether the
     /// table says how its cells merge at all.
@@ -599,6 +602,51 @@ struct CellLook {
     background: Option<[u8; 3]>,
     color: [u8; 3],
     angle: f64,
+}
+
+/// A schedule's definition (`ScheduleSchema`): the category it lists, its fields (id, hidden,
+/// the parameters it shows: one, or several combined, each with its prefix, suffix and the
+/// separator after it; its own number format), its filters (field, kind, text) and its sort
+/// fields (field, descending, grouped).
+#[derive(Clone, Debug, Default)]
+struct Spec {
+    category: i64,
+    fields: Vec<(i64, bool, Vec<(String, i64, String, String)>, Option<(crate::rvt_annot::Fmt, bool)>)>,
+    filters: Vec<(i64, i64, Option<String>)>,
+    sorts: Vec<(i64, bool, bool)>,
+}
+
+impl Spec {
+    fn of(sc: &Obj, tr: &Tree) -> Option<Spec> {
+        let ids: Vec<i64> = sc.list("m_fieldIds").iter().map(|o| o.int("m_id").unwrap_or(-1)).collect();
+        let fields = sc
+            .ptrs("m_pFields")
+            .iter()
+            .enumerate()
+            .filter_map(|(k, &i)| Some((k, tr.objs.get(i)?)))
+            .map(|(k, f)| {
+                let parts: Vec<(String, i64, String, String)> = match f.list("m_combineParameters") {
+                    [] => vec![(String::new(), f.int("m_paramElemId").unwrap_or(-1), String::new(), String::new())],
+                    l => l.iter().map(|c| (text_of(c, "m_prefix").unwrap_or_default(), c.int("m_paramId").unwrap_or(-1), text_of(c, "m_suffix").unwrap_or_default(), text_of(c, "m_separator").unwrap_or_default())).collect(),
+                };
+                let fmt = f.ptr("m_pFormatOptions").and_then(|i| tr.objs.get(i)).and_then(|o| crate::rvt_annot::Fmt::of(o).map(|x| (x, o.int("m_unitSymbol").is_some_and(|s| s != 0))));
+                (ids.get(k).copied().unwrap_or(-1), f.int("m_hidden").unwrap_or(0) != 0, parts, fmt)
+            })
+            .collect();
+        let filters = sc
+            .ptrs("m_filterArr")
+            .iter()
+            .filter_map(|&i| tr.objs.get(i))
+            .map(|f| (f.obj("m_fieldId").and_then(|x| x.int("m_id")).unwrap_or(-1), f.int("m_filterType").unwrap_or(-1), f.obj("m_value").and_then(|v| v.obj("m_str")).and_then(|x| text_of(x, "m_str"))))
+            .collect();
+        let sorts = sc
+            .ptrs("m_sortFieldArr")
+            .iter()
+            .filter_map(|&i| tr.objs.get(i))
+            .map(|f| (f.obj("m_fieldId").and_then(|x| x.int("m_id")).unwrap_or(-1), f.int("m_sortOrder").unwrap_or(0) != 0, f.int("m_groupingFlags").unwrap_or(0) != 0))
+            .collect();
+        Some(Spec { category: sc.int("m_categoryId")?, fields, filters, sorts })
+    }
 }
 
 /// The look a `TableCellStyle` gives.
@@ -639,6 +687,7 @@ impl Default for Table {
             keynotes: None,
             fields: Vec::new(),
             revisions: false,
+            spec: None,
             spans: HashMap::default(),
             covered: Default::default(),
             merges: false,
@@ -2015,6 +2064,7 @@ impl Sheets {
                     // placed on the sheet by its top left corner
                     // drawn at the stored row heights (Revit keeps them, even below the text size)
                     let mut t = Table { top_down: true, ..table(data, tr) };
+                    t.spec = tr.objs.iter().find(|o| s.name(o.tag) == "ScheduleSchema").and_then(|sc| Spec::of(sc, tr));
                     // its appearance
                     if let Some(d) = tr.objs.iter().find(|o| o.get("m_showGridLines").is_some()) {
                         let on = |k: &str, def: bool| d.int(k).map_or(def, |v| v != 0);
@@ -3277,7 +3327,8 @@ impl Sheets {
                 eprintln!("TABLE sheet {id} schedule {sch} at {o:?} known {} view {:?} table {:?}", self.tables.contains_key(sch), self.views.get(sch).map(|v| (&v.name, &v.class)), self.tables.get(sch));
             }
             if let Some(tb) = self.tables.get(sch).filter(|t| t.keynotes.is_none()) {
-                self.draw_table(&mut out, tb, *o, &[]);
+                let fresh = self.regen(tb);
+                self.draw_table(&mut out, fresh.as_ref().unwrap_or(tb), *o, &[]);
             }
         }
         // placed views
@@ -3418,6 +3469,88 @@ impl Sheets {
                     .collect()
             })
             .collect()
+    }
+
+    /// Schedule `tb` with its body rows computed again from the elements it lists, as Revit does
+    /// when it prints it (the stored rows may be stale: AC-102's air flows missing, a size
+    /// written the other way round). Only for what this knows how to compute: model families
+    /// of its category, fields of their text, length or air flow parameters (or combined),
+    /// filters "equals" and plain sort fields; else none, and the stored rows are drawn.
+    fn regen(&self, tb: &Table) -> Option<Table> {
+        let spec = tb.spec.as_ref()?;
+        if spec.sorts.iter().any(|s| s.2) || spec.filters.iter().any(|f| f.1 != 2 || f.2.is_none()) {
+            return None;
+        }
+        let field = |id: i64| spec.fields.iter().find(|f| f.0 == id);
+        // a parameter's text for element `e` (its own value, else its type's)
+        let value = |e: i64, sym: i64, p: i64, fmt: Option<(crate::rvt_annot::Fmt, bool)>| -> Option<String> {
+            let (strs, reals) = self.model_vals.get(&e).map(|(a, b)| (Some(a), Some(b))).unwrap_or((None, None));
+            if let Some(v) = strs.and_then(|m| m.get(&p)).or_else(|| self.ann.strs.get(&e).and_then(|m| m.get(&p))).or_else(|| self.ann.strs.get(&sym).and_then(|m| m.get(&p))) {
+                return Some(v.clone());
+            }
+            let v = *reals?.get(&p)?;
+            match self.ann.param_kind(p)? {
+                0 => Some(self.ann.length_as(v, fmt.map(|f| f.0))),
+                15 => self.ann.air_flow(v, fmt),
+                _ => None,
+            }
+        };
+        // a field's text for element `e`; none when it shows a parameter this cannot write
+        let text = |e: i64, sym: i64, f: &(i64, bool, Vec<(String, i64, String, String)>, Option<(crate::rvt_annot::Fmt, bool)>)| -> Option<String> {
+            let mut s = String::new();
+            for (k, (pre, p, suf, sep)) in f.2.iter().enumerate() {
+                let v = value(e, sym, *p, f.3);
+                if v.is_none() && f.2.len() == 1 && self.ann.param_kind(*p).is_some_and(|k| k != 0 && k != 15) {
+                    return None;
+                }
+                if let Some(v) = v.filter(|v| !v.is_empty()) {
+                    s += &format!("{pre}{v}{suf}");
+                    if k + 1 < f.2.len() {
+                        s += sep;
+                    }
+                }
+            }
+            Some(s)
+        };
+        let mut rows: Vec<(i64, Vec<String>, Vec<String>)> = Vec::new();
+        for (e, (sym, _, _)) in &self.model_insts {
+            if self.sym_family.get(sym).and_then(|f| self.fam_cats.get(f)) != Some(&spec.category) {
+                continue;
+            }
+            let ok = spec.filters.iter().all(|(fid, _, want)| field(*fid).and_then(|f| text(*e, *sym, f)).as_deref() == want.as_deref());
+            if !ok {
+                continue;
+            }
+            let shown: Option<Vec<String>> = spec.fields.iter().filter(|f| !f.1).map(|f| text(*e, *sym, f)).collect();
+            let keys: Option<Vec<String>> = spec.sorts.iter().map(|s| field(s.0).and_then(|f| text(*e, *sym, f))).collect();
+            rows.push((*e, keys?, shown?));
+        }
+        rows.sort_by(|a, b| {
+            for (k, s) in spec.sorts.iter().enumerate() {
+                let o = a.1[k].cmp(&b.1[k]);
+                let o = if s.1 { o.reverse() } else { o };
+                if o != std::cmp::Ordering::Equal {
+                    return o;
+                }
+            }
+            a.0.cmp(&b.0)
+        });
+        // the body: its stored headers (row 0) and grand total kept, as many rows between
+        let mut t = tb.clone();
+        let sec = t.sections.iter_mut().find(|s| !s.0)?;
+        let total = sec.3.iter().find(|c| c.2.contains(':') && c.1 == 0 && c.0 > 0).map(|c| c.0);
+        let stored = total.unwrap_or(sec.2.len()).saturating_sub(1);
+        // shortcut: only as many rows as stored (row heights and looks are the stored ones)
+        if stored != rows.len() || stored == 0 {
+            return None;
+        }
+        sec.3.retain(|c| c.0 == 0 || Some(c.0) == total);
+        for (r, (_, _, cells)) in rows.into_iter().enumerate() {
+            for (k, v) in cells.into_iter().enumerate().filter(|(_, v)| !v.is_empty()) {
+                sec.3.push((r + 1, k, v));
+            }
+        }
+        Some(t)
     }
 
     fn draw_table(&self, out: &mut Sheet2d, tb: &Table, o: V3, body: &[Vec<String>]) -> Option<[f64; 4]> {

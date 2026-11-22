@@ -1138,6 +1138,11 @@ impl Annots {
         self.number_of_kind(*self.param_units.get(&param)?, v, own)
     }
 
+    /// The unit kind of parameter `param` (`m_unitType`: 0 length, 15 air flow…).
+    pub(crate) fn param_kind(&self, param: i64) -> Option<i64> {
+        self.param_units.get(&param).copied()
+    }
+
     /// An air flow (cubic feet a second) in format `own`, else the project's.
     pub(crate) fn air_flow(&self, v: f64, own: Option<(Fmt, bool)>) -> Option<String> {
         self.number_of_kind(AIR_FLOW, v, own)
