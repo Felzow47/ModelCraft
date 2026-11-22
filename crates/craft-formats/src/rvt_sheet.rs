@@ -5078,8 +5078,10 @@ impl Sheets {
                 continue;
             }
             // a tag of a family turned with its component follows the tagged duct or pipe,
-            // kept readable (a tag with a leader stays as placed)
-            let angle = match self.mep_dirs.get(&tg.target).filter(|_| self.turning_tags.contains(&sy.family) && tg.leader.is_none()) {
+            // kept readable (a tag with a leader stays as placed, unless its leader is folded
+            // onto its head along an oblique duct or pipe running in the view's plane: AC-153's)
+            let folded = tg.leader.is_some_and(|(e, f)| e == [0.0; 2] && f == [0.0; 2]);
+            let angle = match self.mep_dirs.get(&tg.target).filter(|_| self.turning_tags.contains(&sy.family) && (tg.leader.is_none() || folded)) {
                 Some(d) => {
                     let p = mp.lin(*d);
                     let mut a = p[1].atan2(p[0]);
@@ -5088,7 +5090,8 @@ impl Sheets {
                     } else if a <= -std::f64::consts::FRAC_PI_2 + 1e-6 {
                         a += std::f64::consts::PI;
                     }
-                    if p[0].hypot(p[1]) > 1e-9 { a } else { tg.angle }
+                    let oblique = (a.abs() - std::f64::consts::FRAC_PI_2).abs() > 0.02 && a.abs() > 0.02;
+                    if p[0].hypot(p[1]) > 1e-9 && (tg.leader.is_none() || (oblique && d[2].abs() < 0.5)) { a } else { tg.angle }
                 }
                 None => tg.angle,
             };
