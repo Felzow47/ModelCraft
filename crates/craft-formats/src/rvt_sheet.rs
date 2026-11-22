@@ -5839,7 +5839,17 @@ fn push_text(out: &mut Sheet2d, t: &RawText, tf: Option<&Trf>, hk: f64, text: St
     let turned = t.flags & 0x1c0 != 0 && (t.flags & 3) as u8 != h;
     let readable = (t.params.is_empty() || t.flags & 0x2000 != 0) && !turned;
     let over = readable && (ang > std::f64::consts::FRAC_PI_2 + 1e-4 || ang <= -std::f64::consts::FRAC_PI_2 + 1e-4);
-    let (b, h, v) = if over { ([-b[0], -b[1], b[2]], 2 - h.min(2), 2 - v) } else { (b, h, v) };
+    // (a text in a box of its own width turned about the box's middle: its alignment kept,
+    // where its box's other side was: P-608's "TUYAUTERIE - 07" left-aligned at the left of
+    // its box, its leader leaving the box's right side)
+    let (o, b, h, v) = match (over, t.wrap > 0.0 && t.params.is_empty()) {
+        (true, true) => {
+            let k = t.wrap * hk * (1.0 - h.min(2) as f64) / l;
+            ([o[0] + b[0] * k, o[1] + b[1] * k, o[2]], [-b[0], -b[1], b[2]], h, 2 - v)
+        }
+        (true, false) => (o, [-b[0], -b[1], b[2]], 2 - h.min(2), 2 - v),
+        _ => (o, b, h, v),
+    };
     // (its rich text's parts when it is the text itself, not a label's values)
     let spans = if text == t.text { t.spans.clone() } else { Vec::new() };
     // (bold by its type or when its rich text mostly is, unless its parts say which are, whatever
