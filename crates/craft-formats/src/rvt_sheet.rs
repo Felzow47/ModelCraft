@@ -3440,7 +3440,18 @@ impl Sheets {
             // turned (a vertical heading): centred in its cell
             let turn = look.map_or(0.0, |l| l.angle).to_radians();
             if turn.abs() > 1e-6 {
-                out.texts.push(Text2d { pos: [m(cx + cw * 0.5), m((y0 + y1) * 0.5)], dir: [turn.cos() as f32, turn.sin() as f32], height: m(th), halign: 1, valign: 1, text: text.to_string(), bold, color, font, italic, underline, ..Default::default() });
+                // (at its cell's bottom or top, 1/32" in from it, when it is aligned there: it
+                // reads from there, AC-101's vertical headings; else centred)
+                let (up, inset) = (turn.sin() > 0.0, 1.0 / 32.0 / 12.0);
+                let (y, halign) = match look.map_or(4, |l| l.valign) {
+                    8 => (y0 + inset, if up { 0 } else { 2 }),
+                    0 => (y1 - inset, if up { 2 } else { 0 }),
+                    _ => ((y0 + y1) * 0.5, 1),
+                };
+                // (wrapped 1/64" short of its cell's height, a word longer than it broken: "RENDEMEN" / "T",
+                // "T." / "SOR.", AC-101)
+                let wrap = if wrap { m((y1 - y0 - inset * 0.5).max((y1 - y0) * 0.5)) } else { 0.0 };
+                out.texts.push(Text2d { pos: [m(cx + cw * 0.5), m(y)], dir: [turn.cos() as f32, turn.sin() as f32], height: m(th), halign, valign: 1, text: text.to_string(), bold, color, font, italic, underline, wrap, break_words: wrap > 0.0, ..Default::default() });
                 return;
             }
             // 1/32"
