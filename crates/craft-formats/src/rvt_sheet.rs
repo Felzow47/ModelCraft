@@ -3639,7 +3639,10 @@ impl Sheets {
             }
             for (key, text) in &rows {
                 let (key, text) = (key.as_str(), *text);
-                let (y0, y1) = (y - pitch, y);
+                // (as high as its text wrapped at its column's width needs: "… (HORS LOT) -" /
+                // "ARCHITECTE.", P-212)
+                let tall = cols.get(1).map_or(0.0, |w| body_row(tb.body_looks.get(1), text, *w));
+                let (y0, y1) = (y - pitch.max(tall), y);
                 lo = lo.min(y0);
                 if tb.grid {
                     rect(out, y0, y1);
@@ -3651,7 +3654,8 @@ impl Sheets {
                     }
                     let t = if k == 0 { key } else if k == 1 { text } else { "" };
                     if !t.is_empty() {
-                        put(out, t, tb.body_looks.get(k), x, *w, y0, y1, false, false);
+                        // (its number level with the text's first line: "3", P-212)
+                        put(out, t, tb.body_looks.get(k), x, *w, if k == 1 { y0 } else { y1 - pitch }, y1, k == 1, false);
                     }
                     x += w;
                 }
