@@ -5097,6 +5097,11 @@ impl Sheets {
                     } else if a <= -std::f64::consts::FRAC_PI_2 + 1e-6 {
                         a += std::f64::consts::PI;
                     }
+                    // (one within half a degree of the vertical reads upwards, as Revit's: AC-253's
+                    // "AE - Ø250"; AC-254's a degree off reads downwards)
+                    if (a.abs() - std::f64::consts::FRAC_PI_2).abs() < 0.5f64.to_radians() {
+                        a = std::f64::consts::FRAC_PI_2;
+                    }
                     if p[0].hypot(p[1]) > 1e-9 && (tg.leader.is_none() || d[2].abs() < 0.5) { a } else { tg.angle }
                 }
                 None => tg.angle,
