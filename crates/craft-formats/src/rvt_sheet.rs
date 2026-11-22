@@ -5590,7 +5590,16 @@ fn closed_centre(sy: &Sym, drawn: Option<&crate::rvt_annot::Drawn>) -> P2 {
             b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])];
         }
     }
-    if b[0].is_finite() { [(b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5] } else { [0.0, 0.0] }
+    if b[0].is_finite() {
+        return [(b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5];
+    }
+    // (no closed curve: the middle of its lines along its line, on the line; a "▷" head drawn as
+    // three single lines, its "IOU" and "Coupe 37" upright on the section line, AC-XX2)
+    let mut x = [f64::INFINITY, f64::NEG_INFINITY];
+    for p in sy.curves.iter().flatten().map(|p| p[0]).chain(drawn.into_iter().flat_map(|d| d.strokes.iter().flat_map(|s| s.0.iter().map(|p| p[0])))) {
+        x = [x[0].min(p), x[1].max(p)];
+    }
+    if x[0].is_finite() { [(x[0] + x[1]) * 0.5, 0.0] } else { [0.0, 0.0] }
 }
 
 /// The drawing `d` turned about `c` (paper metres) by `turns` quarter turns counter-clockwise.
