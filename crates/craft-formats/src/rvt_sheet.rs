@@ -5087,7 +5087,7 @@ impl Sheets {
             }
             // a tag of a family turned with its component follows the tagged duct or pipe,
             // kept readable (a tag with a leader stays as placed, unless its leader is folded
-            // onto its head along an oblique duct or pipe running in the view's plane: AC-153's)
+            // onto its head along a duct or pipe running in the view's plane: AC-153's, AC-211's)
             let angle = match self.mep_dirs.get(&tg.target).filter(|_| self.turning_tags.contains(&sy.family) && (tg.leader.is_none() || folded)) {
                 Some(d) => {
                     let p = mp.lin(*d);
@@ -5097,11 +5097,13 @@ impl Sheets {
                     } else if a <= -std::f64::consts::FRAC_PI_2 + 1e-6 {
                         a += std::f64::consts::PI;
                     }
-                    let oblique = (a.abs() - std::f64::consts::FRAC_PI_2).abs() > 0.02 && a.abs() > 0.02;
-                    if p[0].hypot(p[1]) > 1e-9 && (tg.leader.is_none() || (oblique && d[2].abs() < 0.5)) { a } else { tg.angle }
+                    if p[0].hypot(p[1]) > 1e-9 && (tg.leader.is_none() || d[2].abs() < 0.5) { a } else { tg.angle }
                 }
                 None => tg.angle,
             };
+            if tag_debug {
+                eprintln!("TAGANG {} view {} turning {} leader {:?} dir {:?} angle {:.1} stored {:.3}", tg.id, vp.view, self.turning_tags.contains(&sy.family), tg.leader, self.mep_dirs.get(&tg.target), angle.to_degrees(), tg.angle);
+            }
             let (c, s) = (angle.cos(), angle.sin());
             let tf = Trf::new([c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0], [h[0], h[1], 0.0]);
             // shown only when wholly inside the annotation crop, as Revit does
