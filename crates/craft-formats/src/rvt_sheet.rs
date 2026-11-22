@@ -5554,7 +5554,15 @@ impl Sheets {
             let q = to_paper(h);
             let prev = if pts.len() >= 2 { pts[pts.len() - 2] } else { q };
             let upright = (prev[1] - q[1]).abs() > (prev[0] - q[0]).abs();
+            let (dx, dy) = (q[0] - prev[0], q[1] - prev[1]);
+            let dl = dx.hypot(dy);
+            let slanted = dl > 1e-9 && dx.abs().min(dy.abs()) > 0.2 * dl;
             let at = match drawn_box(sy, self.family_drawing(sy, None).as_deref()) {
+                // reached aslant: the leader aimed at its middle, touching it there (AC-232's)
+                Some(b) if slanted => {
+                    let r = (b[2] - b[0]).min(b[3] - b[1]) * 0.5;
+                    [(b[0] + b[2]) * 0.5 - r * dx / dl, (b[1] + b[3]) * 0.5 - r * dy / dl]
+                }
                 Some(b) if upright => [(b[0] + b[2]) * 0.5, if prev[1] > q[1] { b[3] } else { b[1] }],
                 Some(b) => [if prev[0] <= q[0] { b[0] } else { b[2] }, 0.0],
                 None => [0.0; 2],
