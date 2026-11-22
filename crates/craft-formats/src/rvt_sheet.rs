@@ -2819,6 +2819,7 @@ impl Sheets {
             };
             d.strokes.extend(n.strokes.iter().map(|(pts, w, c)| (pts.iter().map(|p| at(*p)).collect(), *w, *c)));
             d.fills.extend(n.fills.iter().map(|(tris, c)| (tris.iter().map(|t| t.map(at)).collect(), *c)));
+            d.hatches.extend(n.hatches.iter().map(|(edges, pat, w, c)| (edges.iter().map(|e| e.map(at)).collect(), pat.clone(), *w, *c)));
             d.texts.extend(n.texts.iter().map(|(p, dir, h, t)| {
                 let (a, b) = (at(*p), at([p[0] + dir[0], p[1] + dir[1]]));
                 (a, [b[0] - a[0], b[1] - a[1]], *h, t.clone())
@@ -5183,6 +5184,15 @@ impl Sheets {
                 }
                 continue;
             }
+            // a tag of an element on a workset the view hides is not shown (AC-293's "ZF13": areas
+            // on MF_Air_Conditioning, the tags on the view's own workset)
+            let base = self.views.get(&view.primary).filter(|_| view.primary > 0).unwrap_or(view);
+            if self.elem_ws.get(&tg.target).is_some_and(|w| view.hidden_ws.contains(w) || base.hidden_ws.contains(w)) {
+                if tag_debug {
+                    eprintln!("TAG {} view {} target {} on a hidden workset", tg.id, vp.view, tg.target);
+                }
+                continue;
+            }
             // a tag of a duct's or pipe's insulation: shown with its insulation (its category
             // shown, its duct or pipe in the view's range: "SOUFFLAGE DEPUIS CTA 02" not on
             // AC-213)
@@ -6240,6 +6250,13 @@ fn put_drawn(out: &mut Sheet2d, d: &crate::rvt_annot::Drawn, to_paper: &dyn Fn(P
     }
     for (at, tris) in &d.masks {
         out.fills.push(Fill2d { tris: tris.iter().map(|t| [pt(t[0]), pt(t[1]), pt(t[2])]).collect(), color: [255; 3], under: Some(s0 + at) });
+    }
+    // a family's drafting hatches, laid out on the paper from the sheet's origin
+    for (edges, pat, w, c) in &d.hatches {
+        let edges: Vec<[P2; 2]> = edges.iter().map(|e| [to_paper(e[0]), to_paper(e[1])]).collect();
+        for line in crate::rvt_annot::hatch(&edges, pat, pat.scale(), [0.0; 2], 1.0) {
+            out.strokes.push(Stroke2d { pts: line.iter().map(|q| [m(q[0]), m(q[1])]).collect(), width: m(*w), color: *c });
+        }
     }
     for (p, dir, h, text) in &d.texts {
         let (a, b) = (to_paper(*p), to_paper([p[0] + dir[0], p[1] + dir[1]]));

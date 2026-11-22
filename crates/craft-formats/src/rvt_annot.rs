@@ -226,7 +226,7 @@ struct Grid {
 }
 
 #[derive(Debug, Clone)]
-struct Pattern {
+pub(crate) struct Pattern {
     grids: Vec<Grid>,
     scale: f64,
     /// Model pattern (sizes in model units) rather than drafting (sizes on paper).
@@ -423,6 +423,9 @@ pub(crate) struct Drawn {
     /// A dimension value's segment: its text's index, the segment's ends on the dimension line
     /// (a chain crossing an annotation crop shows the values whose segment is inside).
     pub spans: Vec<(usize, [P2; 2])>,
+    /// Drafting patterns of a family's filled regions, hatched where it is placed: the region's
+    /// edges, its pattern, pen and colour.
+    pub hatches: Vec<(Vec<[P2; 2]>, Pattern, f64, [u8; 3])>,
 }
 
 impl Drawn {
@@ -1307,47 +1310,15 @@ impl Annots {
                 out.fills.push((fill(&edges), tint));
                 continue;
             }
+            // a drafting pattern in a family: laid out on the paper once placed, as Revit prints
+            // it (a north arrow turned with its sheet's view keeps its hatch upright, AC-111)
+            if owner < 0 && !pat.model {
+                out.hatches.push((edges, pat.clone(), self.pen(1), tint));
+                continue;
+            }
             let unit = if pat.model { pat.scale } else { pat.scale / k };
-            let o0 = proj([0.0; 3]);
-            let mut n = 0;
-            for g in &pat.grids {
-                let off = g.offset.abs() * unit;
-                if off * k < 0.3 / 304.8 {
-                    continue; // denser than 0.3 mm on paper
-                }
-                let (d, nv) = ([g.angle.cos(), g.angle.sin()], [-g.angle.sin(), g.angle.cos()]);
-                let org = [o0[0] + g.origin[0] * unit, o0[1] + g.origin[1] * unit];
-                let cs: Vec<f64> = edges.iter().flat_map(|e| e.iter().map(|p| sdot([p[0] - org[0], p[1] - org[1]], nv))).collect();
-                let (cmin, cmax) = cs.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |a, &c| (a.0.min(c), a.1.max(c)));
-                let segs: Vec<(f64, bool)> = g.segs.iter().enumerate().map(|(i, l)| (l.abs() * unit, i % 2 == 0)).map(|(l, dr)| (if dr && l < 1e-9 { 0.5 / 304.8 / k } else { l }, dr)).collect();
-                for i in (cmin / off).floor() as i64..=(cmax / off).ceil() as i64 {
-                    n += 1;
-                    if n > MAX_HATCH {
-                        break;
-                    }
-                    let b = [org[0] + nv[0] * off * i as f64 + d[0] * g.shift * unit * i as f64, org[1] + nv[1] * off * i as f64 + d[1] * g.shift * unit * i as f64];
-                    // crossings of the line b + s·d with the boundary
-                    let mut ss: Vec<f64> = Vec::new();
-                    for e in &edges {
-                        let (pa, pb) = (sdot([e[0][0] - b[0], e[0][1] - b[1]], nv), sdot([e[1][0] - b[0], e[1][1] - b[1]], nv));
-                        if (pa > 0.0) != (pb > 0.0) {
-                            let t = pa / (pa - pb);
-                            let x = [e[0][0] + (e[1][0] - e[0][0]) * t, e[0][1] + (e[1][1] - e[0][1]) * t];
-                            ss.push(sdot([x[0] - b[0], x[1] - b[1]], d));
-                        }
-                    }
-                    ss.sort_by(f64::total_cmp);
-                    for p in ss.chunks_exact(2) {
-                        let line = vec![[b[0] + d[0] * p[0], b[1] + d[1] * p[0]], [b[0] + d[0] * p[1], b[1] + d[1] * p[1]]];
-                        if segs.len() >= 2 && segs.iter().all(|s| s.0 > 0.0) {
-                            for piece in dashes(&line, &segs, p[0]) {
-                                out.strokes.push((piece, self.pen(1), tint));
-                            }
-                        } else {
-                            out.strokes.push((line, self.pen(1), tint));
-                        }
-                    }
-                }
+            for line in hatch(&edges, pat, unit, proj([0.0; 3]), k) {
+                out.strokes.push((line, self.pen(1), tint));
             }
         }
         // linear dimensions
@@ -1615,6 +1586,58 @@ pub(crate) fn dashes(pts: &[P2], pat: &[(f64, bool)], phase: f64) -> Vec<Vec<P2>
         }
         s += l;
         i += 1;
+    }
+    out
+}
+
+impl Pattern {
+    /// Its sizes' scale (paper feet a unit for a drafting pattern).
+    pub(crate) fn scale(&self) -> f64 {
+        self.scale
+    }
+}
+
+/// The hatch lines of pattern `pat` over the area enclosed by `edges` (its sizes times
+/// `unit`, its origin at `o0`, `k` paper per unit of the edges), as many as `MAX_HATCH`.
+pub(crate) fn hatch(edges: &[[P2; 2]], pat: &Pattern, unit: f64, o0: P2, k: f64) -> Vec<Vec<P2>> {
+    let mut out = Vec::new();
+    let mut n = 0;
+    for g in &pat.grids {
+        let off = g.offset.abs() * unit;
+        if off * k < 0.3 / 304.8 {
+            continue; // denser than 0.3 mm on paper
+        }
+        let (d, nv) = ([g.angle.cos(), g.angle.sin()], [-g.angle.sin(), g.angle.cos()]);
+        let org = [o0[0] + g.origin[0] * unit, o0[1] + g.origin[1] * unit];
+        let cs: Vec<f64> = edges.iter().flat_map(|e| e.iter().map(|p| sdot([p[0] - org[0], p[1] - org[1]], nv))).collect();
+        let (cmin, cmax) = cs.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |a, &c| (a.0.min(c), a.1.max(c)));
+        let segs: Vec<(f64, bool)> = g.segs.iter().enumerate().map(|(i, l)| (l.abs() * unit, i % 2 == 0)).map(|(l, dr)| (if dr && l < 1e-9 { 0.5 / 304.8 / k } else { l }, dr)).collect();
+        for i in (cmin / off).floor() as i64..=(cmax / off).ceil() as i64 {
+            n += 1;
+            if n > MAX_HATCH {
+                return out;
+            }
+            let b = [org[0] + nv[0] * off * i as f64 + d[0] * g.shift * unit * i as f64, org[1] + nv[1] * off * i as f64 + d[1] * g.shift * unit * i as f64];
+            // crossings of the line b + s·d with the boundary
+            let mut ss: Vec<f64> = Vec::new();
+            for e in edges {
+                let (pa, pb) = (sdot([e[0][0] - b[0], e[0][1] - b[1]], nv), sdot([e[1][0] - b[0], e[1][1] - b[1]], nv));
+                if (pa > 0.0) != (pb > 0.0) {
+                    let t = pa / (pa - pb);
+                    let x = [e[0][0] + (e[1][0] - e[0][0]) * t, e[0][1] + (e[1][1] - e[0][1]) * t];
+                    ss.push(sdot([x[0] - b[0], x[1] - b[1]], d));
+                }
+            }
+            ss.sort_by(f64::total_cmp);
+            for p in ss.chunks_exact(2) {
+                let line = vec![[b[0] + d[0] * p[0], b[1] + d[1] * p[0]], [b[0] + d[0] * p[1], b[1] + d[1] * p[1]]];
+                if segs.len() >= 2 && segs.iter().all(|s| s.0 > 0.0) {
+                    out.extend(dashes(&line, &segs, p[0]));
+                } else {
+                    out.push(line);
+                }
+            }
+        }
     }
     out
 }
