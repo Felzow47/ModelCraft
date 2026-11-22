@@ -1568,8 +1568,18 @@ pub(crate) fn dashes(pts: &[P2], pat: &[(f64, bool)], phase: f64) -> Vec<Vec<P2>
     while s < total {
         let (l, dr) = pat[i % pat.len()];
         let (a, b) = (s.max(0.0), (s + l).min(total));
+        // (a dash keeps the corners it runs round: a callout's rounded corner)
         if dr && b > a {
-            out.push(vec![at(a), at(b)]);
+            let mut piece = vec![at(a)];
+            let mut acc = 0.0;
+            for w in pts.windows(2) {
+                acc += ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt();
+                if acc > a && acc < b {
+                    piece.push(w[1]);
+                }
+            }
+            piece.push(at(b));
+            out.push(piece);
         }
         s += l;
         i += 1;

@@ -5450,8 +5450,8 @@ impl Sheets {
             if outline.is_empty() || outline.iter().flatten().any(|p| !inside(to_paper(*p))) {
                 continue;
             }
-            for ring in &outline {
-                let pts: Vec<P2> = ring.iter().chain(ring.first()).map(|p| to_paper(*p)).collect();
+            for curve in loops.iter().filter(|l| l.len() >= 3).flat_map(|lp| rounded_curves(lp, radius / k)) {
+                let pts: Vec<P2> = curve.iter().map(|p| to_paper(*p)).collect();
                 let pieces = self.ann.category_line(CALLOUT_BOUNDARY, &pts).unwrap_or_else(|| vec![(pts.clone(), self.ann.pen(5), [0; 3])]);
                 for (pts, w, col) in pieces {
                     out.strokes.push(Stroke2d { pts: pts.iter().map(|q| [m(q[0]), m(q[1])]).collect(), width: m(w), color: col });
@@ -5460,12 +5460,21 @@ impl Sheets {
             // its head in this view (else in the view it depends on), the leader to it from the
             // nearest point of the boundary
             let Some((h, leader)) = mk.heads.iter().find(|h| h.0 == vp.view).or_else(|| mk.heads.iter().find(|h| h.0 == view.primary)).or(mk.heads.first()).map(|h| (proj(h.1), h.2)) else { continue };
-            // (its leader: from its end on the boundary by its elbow, else straight from the
-            // boundary's nearest point)
+            // (its leader: from the boundary's point nearest its elbow by its elbow, else
+            // straight from the boundary's point nearest the head: P-111's leaving the
+            // boundary square to it)
             let pts: Vec<P2> = match leader {
-                Some((end, elbow)) => vec![to_paper(proj(end)), to_paper(proj(elbow)), to_paper(h)],
+                Some((end, elbow)) => {
+                    let e = proj(elbow);
+                    vec![to_paper(nearest_on(&outline, e).unwrap_or(proj(end))), to_paper(e), to_paper(h)]
+                }
                 None => nearest_on(&outline, h).map(|e| vec![to_paper(e), to_paper(h)]).unwrap_or_default(),
             };
+            if std::env::var_os("CALLOUT_DEBUG").is_some() {
+                let e = out.extent;
+                let mm = |q: &P2| [((q[0] * FEET - e[0] as f64) * 1000.0 * 10.0).round() / 10.0, ((e[3] as f64 - q[1] * FEET) * 1000.0 * 10.0).round() / 10.0];
+                eprintln!("CALLOUT {} view {} leader {:?} head {:?}", mk.id, vp.view, pts.iter().map(mm).collect::<Vec<_>>(), mm(&to_paper(h)));
+            }
             if pts.len() >= 2 {
                 let pieces = self.ann.category_line(CALLOUT_LEADER, &pts).unwrap_or_else(|| vec![(pts.clone(), self.ann.pen(4), [0; 3])]);
                 for (pts, w, col) in pieces {
@@ -5473,11 +5482,17 @@ impl Sheets {
                 }
             }
             let Some(sy) = self.symbols.get(&head) else { continue };
-            // the head touches the leader by its side facing it, level with its origin
+            // the head touches the leader by its side facing it, level with its origin; reached
+            // from above or below, by its top or bottom, its middle there (P-211's)
             let q = to_paper(h);
-            let from_left = pts.len() >= 2 && pts[pts.len() - 2][0] <= q[0];
-            let side = drawn_box(sy, self.family_drawing(sy, None).as_deref()).map_or(0.0, |b| if from_left { b[0] } else { b[2] });
-            let tf = Trf::new([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], [q[0] - side, q[1], 0.0]);
+            let prev = if pts.len() >= 2 { pts[pts.len() - 2] } else { q };
+            let upright = (prev[1] - q[1]).abs() > (prev[0] - q[0]).abs();
+            let at = match drawn_box(sy, self.family_drawing(sy, None).as_deref()) {
+                Some(b) if upright => [(b[0] + b[2]) * 0.5, if prev[1] > q[1] { b[3] } else { b[1] }],
+                Some(b) => [if prev[0] <= q[0] { b[0] } else { b[2] }, 0.0],
+                None => [0.0; 2],
+            };
+            let tf = Trf::new([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], [q[0] - at[0], q[1] - at[1], 0.0]);
             self.put_symbol(out, sy, &tf, None);
             for t in &sy.texts {
                 push_text(out, t, Some(&tf), 1.0, t.text.clone(), self.look(t));
@@ -5565,9 +5580,30 @@ fn turn_about(d: &mut Sheet2d, c: [f32; 2], turns: i64) {
 /// Polygon `pts` (closed) with each corner rounded by an arc of radius `r` (as far as its
 /// sides allow), as a polyline.
 fn rounded(pts: &[P2], r: f64) -> Vec<P2> {
+    rounded_corners(pts, r).concat()
+}
+
+/// The curves of polygon `pts` rounded as [`rounded`] does, each drawn on its own as Revit
+/// draws a callout's (its line pattern starting again on each): its sides and corner arcs.
+fn rounded_curves(pts: &[P2], r: f64) -> Vec<Vec<P2>> {
+    let corners = rounded_corners(pts, r);
+    let n = corners.len();
+    let mut out = Vec::new();
+    for i in 0..n {
+        let (c, next) = (&corners[i], &corners[(i + 1) % n]);
+        if c.len() > 1 {
+            out.push(c.clone());
+        }
+        out.push(vec![*c.last().unwrap(), next[0]]);
+    }
+    out
+}
+
+/// Each corner of polygon `pts` rounded by radius `r`: its arc's points, else the corner.
+fn rounded_corners(pts: &[P2], r: f64) -> Vec<Vec<P2>> {
     let n = pts.len();
     if r <= 1e-9 || n < 3 {
-        return pts.to_vec();
+        return pts.iter().map(|p| vec![*p]).collect();
     }
     let mut out = Vec::new();
     for i in 0..n {
@@ -5575,7 +5611,7 @@ fn rounded(pts: &[P2], r: f64) -> Vec<P2> {
         let (u, w) = ([a[0] - p[0], a[1] - p[1]], [b[0] - p[0], b[1] - p[1]]);
         let (lu, lw) = (u[0].hypot(u[1]), w[0].hypot(w[1]));
         if lu < 1e-9 || lw < 1e-9 {
-            out.push(p);
+            out.push(vec![p]);
             continue;
         }
         let (u, w) = ([u[0] / lu, u[1] / lu], [w[0] / lw, w[1] / lw]);
@@ -5583,7 +5619,7 @@ fn rounded(pts: &[P2], r: f64) -> Vec<P2> {
         let half = cos.acos() * 0.5;
         // straight on: no corner
         if half > std::f64::consts::FRAC_PI_2 - 1e-6 || half < 1e-6 {
-            out.push(p);
+            out.push(vec![p]);
             continue;
         }
         // where the arc meets each side, its centre on the bisector
@@ -5603,10 +5639,7 @@ fn rounded(pts: &[P2], r: f64) -> Vec<P2> {
             sweep += std::f64::consts::TAU;
         }
         let steps = 8;
-        for j in 0..=steps {
-            let ang = a0 + sweep * j as f64 / steps as f64;
-            out.push([c[0] + rr * ang.cos(), c[1] + rr * ang.sin()]);
-        }
+        out.push((0..=steps).map(|j| a0 + sweep * j as f64 / steps as f64).map(|ang| [c[0] + rr * ang.cos(), c[1] + rr * ang.sin()]).collect());
     }
     out
 }
