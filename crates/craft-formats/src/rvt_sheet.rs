@@ -5367,13 +5367,16 @@ impl Sheets {
         for rv in self.ref_viewers.iter().filter(|r| mine(r.owner) && r.target != vp.view && !view.hidden.contains(&r.id) && !self.views.get(&view.primary).is_some_and(|p| p.hidden.contains(&r.id))) {
             let Some(sy) = self.level_heads.get(&rv.attr).and_then(|h| self.symbols.get(h)) else { continue };
             let h = mp.apply(rv.at);
-            if !inside([h[0], h[1]]) {
+            // (one to a 3D view within the view's crop itself: between it and the annotation
+            // crop it is not shown, P-501's "6 / P-501" in view 01; a "VOIR PLAN" there is)
+            let to_3d = self.views.get(&rv.target).is_some_and(|t| t.class.starts_with("DBView3d"));
+            if !inside([h[0], h[1]]) || (to_3d && !in_model_crop([h[0], h[1]])) {
                 continue;
             }
             let d = mp.lin(rv.dir);
             let angle = if d[0].hypot(d[1]) > 1e-9 { d[1].atan2(d[0]) } else { 0.0 };
             if std::env::var_os("REF_DEBUG").is_some() {
-                eprintln!("REF {} view {} dir {:?} angle {:.1} texts {:?} tags {:?}", rv.id, view.name, rv.dir, angle.to_degrees(), sy.texts.iter().map(|t| (t.text.clone(), t.base, t.orig)).collect::<Vec<_>>(), sy.tags.iter().map(|t| (t.base, t.orig, t.flags)).collect::<Vec<_>>());
+                eprintln!("REF {} at {:?} range {:?} {:?} level {} view {} dir {:?} angle {:.1} texts {:?} tags {:?}", rv.id, rv.at, view.range_abs, view.range_rel, view.level, view.name, rv.dir, angle.to_degrees(), sy.texts.iter().map(|t| (t.text.clone(), t.base, t.orig)).collect::<Vec<_>>(), sy.tags.iter().map(|t| (t.base, t.orig, t.flags)).collect::<Vec<_>>());
             }
             let (c, s) = (angle.cos(), angle.sin());
             let tf = Trf::new([c, s, 0.0, -s, c, 0.0, 0.0, 0.0, 1.0], [h[0], h[1], 0.0]);
