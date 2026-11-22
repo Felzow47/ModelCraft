@@ -2122,8 +2122,9 @@ fn sheet_2d(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, r: &sw_format::Br
         }
     };
     draw_images(false);
-    // filled regions (solid fills) under the lines
-    for f in &sh.fills {
+    // filled regions (solid fills) under the lines; a masking region's among them, over the
+    // strokes before its own
+    let draw_fill = |f: &sw_format::Fill2d| {
         let col = Color32::from_rgb(f.color[0], f.color[1], f.color[2]);
         let mut mesh = egui::Mesh::default();
         for t in &f.tris {
@@ -2140,7 +2141,13 @@ fn sheet_2d(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, r: &sw_format::Br
         if !mesh.is_empty() {
             p.add(egui::Shape::mesh(mesh));
         }
+    };
+    for f in sh.fills.iter().filter(|f| f.under.is_none()) {
+        draw_fill(f);
     }
+    let mut masks: Vec<&sw_format::Fill2d> = sh.fills.iter().filter(|f| f.under.is_some()).collect();
+    masks.sort_by_key(|f| f.under);
+    let mut mi = 0;
     // model edges of the placed views, thin
     let fine = Stroke::new((s * 0.00018).clamp(1.0, 1.2), thin);
     for seg in &sh.fine {
@@ -2150,7 +2157,11 @@ fn sheet_2d(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, r: &sw_format::Br
         }
     }
     // annotations with their line weight and colour (detail lines, hatches, dimensions, tags)
-    for st in &sh.strokes {
+    for (i, st) in sh.strokes.iter().enumerate() {
+        while mi < masks.len() && masks[mi].under.is_some_and(|u| u <= i) {
+            draw_fill(masks[mi]);
+            mi += 1;
+        }
         let pts: Vec<egui::Pos2> = st.pts.iter().map(|q| to(*q)).collect();
         if pts.len() < 2 || !pts.windows(2).any(|w| vis.intersects(Rect::from_two_pos(w[0], w[1]))) {
             continue;
@@ -2158,6 +2169,9 @@ fn sheet_2d(ui: &mut egui::Ui, doc: &mut Document, rect: Rect, r: &sw_format::Br
         // never thinner than a pixel, as Revit draws its thinnest lines
         let w = (st.width * s).clamp(1.0, 16.0);
         p.add(egui::Shape::line(pts, Stroke::new(w, Color32::from_rgb(st.color[0], st.color[1], st.color[2]))));
+    }
+    for f in &masks[mi..] {
+        draw_fill(f);
     }
     let bold = Stroke::new((s * 0.00035).clamp(0.8, 2.0), ink);
     for l in &sh.lines {

@@ -2073,7 +2073,7 @@ impl Sheets {
                 }
                 let edges: Vec<[P2; 2]> = face.iter().map(|ab| ab.map(|q| { let p = mp.apply([q[0], q[1], 0.0]); [p[0], p[1]] })).collect();
                 let tris = crate::rvt_annot::fill(&edges).into_iter().map(|t| t.map(|q| [m(q[0]), m(q[1])])).collect();
-                fills.push(Fill2d { tris, color: *c });
+                fills.push(Fill2d { tris, color: *c, under: None });
             }
         }
         out.fills.splice(f0..f0, fills);
@@ -2125,7 +2125,7 @@ impl Sheets {
             let (w, h) = (m(sw[0]), m(sw[1]));
             for (c, v) in rows {
                 let (a, b) = ([x0, y], [x0 + w, y - h]);
-                out.fills.push(Fill2d { tris: vec![[a, [b[0], a[1]], b], [a, b, [a[0], b[1]]]], color: c });
+                out.fills.push(Fill2d { tris: vec![[a, [b[0], a[1]], b], [a, b, [a[0], b[1]]]], color: c, under: None });
                 out.strokes.push(Stroke2d { pts: vec![a, [b[0], a[1]], b, [a[0], b[1]], a], width: 0.000_368_55, color: [0; 3] });
                 text(out, x0 + w + 0.00157, y - 0.006482, row, v);
                 y -= 0.0133345;
@@ -3045,7 +3045,7 @@ impl Sheets {
                 let (ux, uy) = (dx / len, dy / len);
                 let (s, h) = (ARROW, ARROW * 0.2);
                 let (bx, by) = (z[0] + ux * s, z[1] + uy * s);
-                out.fills.push(Fill2d { tris: vec![[[m(z[0]), m(z[1])], [m(bx - uy * h), m(by + ux * h)], [m(bx + uy * h), m(by - ux * h)]]], color: [0; 3] });
+                out.fills.push(Fill2d { tris: vec![[[m(z[0]), m(z[1])], [m(bx - uy * h), m(by + ux * h)], [m(bx + uy * h), m(by - ux * h)]]], color: [0; 3], under: None });
             }
         }
         let width = if t.width > 0.0 { t.width } else { t.wrap };
@@ -3580,7 +3580,7 @@ impl Sheets {
                         let look = tb.looks.get(&(si, r, k));
                         if let Some(bg) = look.and_then(|l| l.background) {
                             let q = |x: f64, y: f64| [m(x), m(y)];
-                            out.fills.push(Fill2d { tris: vec![[q(x0, y0), q(x1, y0), q(x1, y1)], [q(x0, y0), q(x1, y1), q(x0, y1)]], color: bg });
+                            out.fills.push(Fill2d { tris: vec![[q(x0, y0), q(x1, y0), q(x1, y1)], [q(x0, y0), q(x1, y1), q(x0, y1)]], color: bg, under: None });
                         }
                         if tb.grid {
                             out.lines.push(vec![[m(x0), m(y0)], [m(x1), m(y0)], [m(x1), m(y1)], [m(x0), m(y1)], [m(x0), m(y0)]]);
@@ -3611,7 +3611,7 @@ impl Sheets {
                 // its background (a title cell's colour, over the whole row it spans)
                 if let Some(bg) = (0..cols.len()).find_map(|k| tb.looks.get(&(si, r, k)).and_then(|l| l.background)) {
                     let q = |x: f64, y: f64| [m(x), m(y)];
-                    out.fills.push(Fill2d { tris: vec![[q(o[0], y0), q(o[0] + width, y0), q(o[0] + width, y1)], [q(o[0], y0), q(o[0] + width, y1), q(o[0], y1)]], color: bg });
+                    out.fills.push(Fill2d { tris: vec![[q(o[0], y0), q(o[0] + width, y0), q(o[0] + width, y1)], [q(o[0], y0), q(o[0] + width, y1), q(o[0], y1)]], color: bg, under: None });
                 }
                 if tb.grid {
                     rect(out, y0, y1);
@@ -3843,7 +3843,7 @@ impl Sheets {
                 (Some(k), Some(top)) if top.is_finite() => Some(to_top(k, top)),
                 (k, _) => k,
             };
-            if !self.hides(view, *id, *cat) && (std::env::var_os("XP_RANGE").is_some() || !range.is_some_and(|k| k.misses(ft(*lo), ft(*hi)))) {
+            if !self.hides(view, *id, *cat) && !range.is_some_and(|k| k.misses(ft(*lo), ft(*hi))) {
                 in_range.insert(*id);
             }
             if let Some(k) = range.filter(|_| std::env::var_os("TAG_DEBUG").is_some()) {
@@ -4655,13 +4655,13 @@ impl Sheets {
                         }
                     }
                 }
-                Some(_) => out.fills.push(Fill2d { tris: vec![[[m(p[0][0]), m(p[0][1])], [m(p[1][0]), m(p[1][1])], [m(p[2][0]), m(p[2][1])]]], color: *col }),
+                Some(_) => out.fills.push(Fill2d { tris: vec![[[m(p[0][0]), m(p[0][1])], [m(p[1][0]), m(p[1][1])], [m(p[2][0]), m(p[2][1])]]], color: *col, under: None }),
                 None => {}
             }
         }
         for (t, col) in &sym_fills {
             let p: Vec<P2> = t.iter().map(|q| to_paper([q[0], q[1]])).collect();
-            out.fills.push(Fill2d { tris: vec![[[m(p[0][0]), m(p[0][1])], [m(p[1][0]), m(p[1][1])], [m(p[2][0]), m(p[2][1])]]], color: *col });
+            out.fills.push(Fill2d { tris: vec![[[m(p[0][0]), m(p[0][1])], [m(p[1][0]), m(p[1][1])], [m(p[2][0]), m(p[2][1])]]], color: *col, under: None });
         }
         // cut lines: on the front plane, never hidden
         let cut_w = m(CUT_PEN);
@@ -5096,7 +5096,7 @@ impl Sheets {
                 continue;
             }
             if tag_debug {
-                eprintln!("TAG {} view {} drawn target {} symbol {} family {} at {:.1},{:.1} mm labels {:?}", tg.id, vp.view, tg.target, tg.symbol, sy.family, h[0] * 304.8, h[1] * 304.8, sy.tags.iter().map(|t| t.params.iter().map(|p| p.0).collect::<Vec<_>>()).collect::<Vec<_>>());
+                eprintln!("TAG {} view {} drawn target {} (cat {:?} in range {} hides {:?}) symbol {} family {} at {:.1},{:.1} mm labels {:?}", tg.id, vp.view, tg.target, model_cats.get(&tg.target), in_range.contains(&tg.target), model_cats.get(&tg.target).map(|c| self.hides(view, tg.target, *c)), tg.symbol, sy.family, h[0] * 304.8, h[1] * 304.8, sy.tags.iter().map(|t| t.params.iter().map(|p| p.0).collect::<Vec<_>>()).collect::<Vec<_>>());
             }
             let texts0 = out.texts.len();
             self.put_symbol(out, sy, &tf, None);
@@ -5883,7 +5883,7 @@ fn push_text(out: &mut Sheet2d, t: &RawText, tf: Option<&Trf>, hk: f64, text: St
     }
     if let Some(q) = std::env::var_os("TEXT_DEBUG") {
         if text.contains(q.to_string_lossy().as_ref()) {
-            eprintln!("PUSH {text:?} attr {} raw {:?} h {:.4} color {color:?} flags {:#x} base {:?} params {:?}", t.attr, t.text, t.height, t.flags, t.base, t.params);
+            eprintln!("PUSH {text:?} attr {} raw {:?} h {:.4} color {color:?} flags {:#x} base {:?} params {:?} orig {:?} wrap {:.4} width {:.4} leaders {:?}", t.attr, t.text, t.height, t.flags, t.base, t.params, t.orig, t.wrap, t.width, t.leaders);
         }
     }
     let m = |x: f64| (x * FEET) as f32;
@@ -6032,11 +6032,15 @@ fn put_drawn(out: &mut Sheet2d, d: &crate::rvt_annot::Drawn, to_paper: &dyn Fn(P
         let q = to_paper(p);
         [m(q[0]), m(q[1])]
     };
+    let s0 = out.strokes.len();
     for (pts, w, c) in &d.strokes {
         out.strokes.push(Stroke2d { pts: pts.iter().map(|p| pt(*p)).collect(), width: m(*w), color: *c });
     }
     for (tris, c) in &d.fills {
-        out.fills.push(Fill2d { tris: tris.iter().map(|t| [pt(t[0]), pt(t[1]), pt(t[2])]).collect(), color: *c });
+        out.fills.push(Fill2d { tris: tris.iter().map(|t| [pt(t[0]), pt(t[1]), pt(t[2])]).collect(), color: *c, under: None });
+    }
+    for (at, tris) in &d.masks {
+        out.fills.push(Fill2d { tris: tris.iter().map(|t| [pt(t[0]), pt(t[1]), pt(t[2])]).collect(), color: [255; 3], under: Some(s0 + at) });
     }
     for (p, dir, h, text) in &d.texts {
         let (a, b) = (to_paper(*p), to_paper([p[0] + dir[0], p[1] + dir[1]]));

@@ -249,6 +249,9 @@ pub struct Stroke2d {
 pub struct Fill2d {
     pub tris: Vec<[[f32; 2]; 3]>,
     pub color: [u8; 3],
+    /// A mask (a masking region): drawn over the strokes before this index only, those from
+    /// it on over it; none: drawn under all the strokes.
+    pub under: Option<usize>,
 }
 
 /// A text on a sheet: `pos` is the anchor given by `halign` (0 left, 1 centre, 2 right) and

@@ -413,6 +413,8 @@ pub(crate) struct Tag {
 pub(crate) struct Drawn {
     pub strokes: Vec<(Vec<P2>, f64, [u8; 3])>,
     pub fills: Vec<(Vec<[P2; 3]>, [u8; 3])>,
+    /// Masking regions: the strokes before this index they hide (white), their triangles.
+    pub masks: Vec<(usize, Vec<[P2; 3]>)>,
     /// (position, direction, height, text) centred above the position.
     pub texts: Vec<(P2, P2, f64, String)>,
     /// Where each whole annotation (dimension, spot) starts: strokes, fills, texts. Shown
@@ -461,6 +463,8 @@ pub struct Annots {
     /// Area boundary lines (`AreaMeasureCurveData`): their level, their points (model feet).
     pub(crate) area_lines: Vec<(i64, Vec<V3>)>,
     /// (owner, sketch, type, visibility, id)
+    /// The sketches of the masking regions.
+    masking: crate::det::HashSet<i64>,
     regions: Vec<(i64, i64, i64, Visible, i64)>,
     /// (family or family document, parameter name) -> parameter, and parameter -> name
     fam_params: HashMap<(i64, String), i64>,
@@ -700,6 +704,9 @@ impl Annots {
             "FilledRegion" if owner != -1 => {
                 if let (Some(sk), Some(at)) = (r.int("m_sketchId"), r.int("m_attrId")) {
                     self.regions.push((owner, sk, at, Visible::of(tr, s), tr.id));
+                    if r.int("m_bMasking").unwrap_or(0) != 0 {
+                        self.masking.insert(sk);
+                    }
                 }
             }
             "DimensionStyle" => {
@@ -1226,6 +1233,8 @@ impl Annots {
             }
             eprintln!("  vals {vals:?}");
         }
+        // (the strokes of the masking regions' boundaries)
+        let mut bounds: HashMap<i64, Vec<std::ops::Range<usize>>> = HashMap::default();
         for c in self.curves.iter().filter(|c| c.owner == owner && shows(&c.vis) && !hidden.contains(&c.sketch) && !hide(c.id) && !(owner > 0 && c.style == -1)) {
             // (a family's line: its subcategory's style, the project's when the project has a
             // subcategory of that name, as its object styles win)
@@ -1243,6 +1252,7 @@ impl Annots {
             if st.pattern == -1 || self.invisible_style(doc, c.style) {
                 continue; // invisible lines
             }
+            let first = out.strokes.len();
             let mut pts: Vec<P2> = c.pts.iter().map(|p| proj(*p)).collect();
             if let (Some(cl), 2) = (c.cloud, pts.len()) {
                 pts = cloud_points(pts[0], pts[1], cl, CLOUD_ARC / k);
@@ -1257,11 +1267,26 @@ impl Annots {
                 }
                 None => out.strokes.push((pts, w, st.color)),
             }
+            if self.masking.contains(&c.sketch) {
+                bounds.entry(c.sketch).or_default().push(first..out.strokes.len());
+            }
         }
         // filled regions
         for (_, sk, at, _, rid) in self.regions.iter().filter(|r| r.0 == owner && shows(&r.3) && !hide(r.4)) {
             let edges: Vec<[P2; 2]> = self.curves.iter().filter(|c| c.sketch == *sk).flat_map(|c| c.pts.windows(2).map(|w| [proj(w[0]), proj(w[1])]).collect::<Vec<_>>()).collect();
             if edges.len() < 3 {
+                continue;
+            }
+            // a masking region: white over the lines drawn before it, its own boundary drawn
+            // again over it (a keynote tag's box hiding its family's small square, P-213)
+            if self.masking.contains(sk) {
+                out.masks.push((out.strokes.len(), fill(&edges)));
+                for r in bounds.get(sk).into_iter().flatten() {
+                    for i in r.clone() {
+                        let st = out.strokes[i].clone();
+                        out.strokes.push(st);
+                    }
+                }
                 continue;
             }
             if std::env::var("REGION_DEBUG").is_ok_and(|v| v == owner.to_string()) {

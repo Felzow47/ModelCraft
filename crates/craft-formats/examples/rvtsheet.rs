@@ -65,7 +65,18 @@ fn main() {
                 _ => svg += &format!("<rect x='{:.3}' y='{:.3}' width='{:.3}' height='{:.3}' fill='#dde6ee' stroke='none'/>", p.0, p.1, q.0 - p.0, q.1 - p.1),
             }
         }
+        // (masking regions: drawn among the strokes, over those before their own)
+        let mut masks: Vec<(usize, String)> = Vec::new();
         for f in &sh.fills {
+            if let Some(u) = f.under {
+                let mut m = String::new();
+                for t in &f.tris {
+                    let (p, q, r) = (tx(t[0]), tx(t[1]), tx(t[2]));
+                    m += &format!("<polygon points='{:.3},{:.3} {:.3},{:.3} {:.3},{:.3}' fill='{}' stroke='{}' stroke-width='0.02'/>", p.0, p.1, q.0, q.1, r.0, r.1, rgb(f.color), rgb(f.color));
+                }
+                masks.push((u, m));
+                continue;
+            }
             for t in &f.tris {
                 let (p, q, r) = (tx(t[0]), tx(t[1]), tx(t[2]));
                 svg += &format!("<polygon points='{:.3},{:.3} {:.3},{:.3} {:.3},{:.3}' fill='{}' stroke='{}' stroke-width='0.02'/>", p.0, p.1, q.0, q.1, r.0, r.1, rgb(f.color), rgb(f.color));
@@ -75,14 +86,8 @@ fn main() {
             let (p, q) = (tx(sg[0]), tx(sg[1]));
             svg += &format!("<line x1='{:.3}' y1='{:.3}' x2='{:.3}' y2='{:.3}' stroke='rgb(90,90,90)' stroke-width='0.13'/>", p.0, p.1, q.0, q.1);
         }
-        for st in &sh.strokes {
-            let pts: Vec<String> = st.pts.iter().map(|p| { let (x, y) = tx(*p); format!("{x:.3},{y:.3}") }).collect();
-            svg += &format!("<polyline points='{}' fill='none' stroke='{}' stroke-width='{:.3}' stroke-linecap='round' stroke-linejoin='round'/>", pts.join(" "), rgb(st.color), (st.width * k).max(0.05));
-        }
-        for l in &sh.lines {
-            let pts: Vec<String> = l.iter().map(|p| { let (x, y) = tx(*p); format!("{x:.3},{y:.3}") }).collect();
-            svg += &format!("<polyline points='{}' fill='none' stroke='rgb(25,25,25)' stroke-width='0.35'/>", pts.join(" "));
-        }
+        // the texts, over the lines
+        let mut svg_texts = String::new();
         for t in &sh.texts {
             if t.text.is_empty() {
                 continue;
@@ -222,7 +227,7 @@ fn main() {
                         let ty = by - if sc > 0 { 0.302 * fs } else if sc < 0 { -0.15 * fs } else { 0.0 };
                         // (narrow: squeezed along its line from where it starts)
                         let sq = if narrow { format!(" translate({tx0:.3} 0) scale({squeeze} 1) translate({:.3} 0)", -tx0) } else { String::new() };
-                        svg += &format!(
+                        svg_texts += &format!(
                             "<text x='{tx0:.3}' y='{ty:.3}' font-family='{}' font-size='{f:.3}' fill='{}' xml:space='preserve' transform='rotate({ang:.2} {x:.3} {y:.3}){sq}'>{runs}</text>",
                             if sym { "Segoe UI Symbol" } else { "Arial" },
                             rgb(t.color)
@@ -231,6 +236,24 @@ fn main() {
                 }
             }
         }
+        masks.sort_by_key(|m| m.0); // (stable: in the order drawn)
+        let mut mi = 0;
+        for (i, st) in sh.strokes.iter().enumerate() {
+            while mi < masks.len() && masks[mi].0 <= i {
+                svg += &masks[mi].1;
+                mi += 1;
+            }
+            let pts: Vec<String> = st.pts.iter().map(|p| { let (x, y) = tx(*p); format!("{x:.3},{y:.3}") }).collect();
+            svg += &format!("<polyline points='{}' fill='none' stroke='{}' stroke-width='{:.3}' stroke-linecap='round' stroke-linejoin='round'/>", pts.join(" "), rgb(st.color), (st.width * k).max(0.05));
+        }
+        for m in &masks[mi..] {
+            svg += &m.1;
+        }
+        for l in &sh.lines {
+            let pts: Vec<String> = l.iter().map(|p| { let (x, y) = tx(*p); format!("{x:.3},{y:.3}") }).collect();
+            svg += &format!("<polyline points='{}' fill='none' stroke='rgb(25,25,25)' stroke-width='0.35'/>", pts.join(" "));
+        }
+        svg += &svg_texts;
         // pictures in front of the drawing
         for i in sh.images.iter().filter(|i| i.front) {
             let (p, q) = (tx([i.rect[0], i.rect[3]]), tx([i.rect[2], i.rect[1]]));
