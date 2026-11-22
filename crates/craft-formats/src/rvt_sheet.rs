@@ -4456,6 +4456,11 @@ impl Sheets {
             [p[0] - a[0], p[1] - a[3], q[0] + a[1], q[1] + a[2]]
         });
         let inside = |p: P2| acrop.map_or(true, |r| p[0] >= r[0] && p[0] <= r[2] && p[1] >= r[1] && p[1] <= r[3]);
+        let mcrop = acrop.map(|_| {
+            let (p, q) = (to_paper([ub[0], ub[1]]), to_paper([ub[2], ub[3]]));
+            [p[0], p[1], q[0], q[1]]
+        });
+        let in_model_crop = |p: P2| mcrop.map_or(true, |r| p[0] >= r[0].min(r[2]) && p[0] <= r[2].max(r[0]) && p[1] >= r[1].min(r[3]) && p[1] <= r[3].max(r[1]));
         let mut ann = ann;
         if acrop.is_some() && std::env::var_os("SHEET_DEBUG").is_some() {
             eprintln!("    annotation crop {acrop:?}");
@@ -5071,7 +5076,10 @@ impl Sheets {
                 continue;
             }
             let h = mp.apply(tg.head);
-            if !inside([h[0], h[1]]) {
+            // a tag whose leader folds onto its head sits on its duct or pipe: not shown where
+            // the view's crop cuts that away, though inside the annotation crop (AC-154's)
+            let folded = tg.leader.is_some_and(|(e, f)| e == [0.0; 2] && f == [0.0; 2]);
+            if !inside([h[0], h[1]]) || (folded && !in_model_crop([h[0], h[1]])) {
                 if tag_debug {
                     eprintln!("TAG {} view {} head outside", tg.id, vp.view);
                 }
@@ -5080,7 +5088,6 @@ impl Sheets {
             // a tag of a family turned with its component follows the tagged duct or pipe,
             // kept readable (a tag with a leader stays as placed, unless its leader is folded
             // onto its head along an oblique duct or pipe running in the view's plane: AC-153's)
-            let folded = tg.leader.is_some_and(|(e, f)| e == [0.0; 2] && f == [0.0; 2]);
             let angle = match self.mep_dirs.get(&tg.target).filter(|_| self.turning_tags.contains(&sy.family) && (tg.leader.is_none() || folded)) {
                 Some(d) => {
                     let p = mp.lin(*d);
