@@ -5098,31 +5098,7 @@ impl Sheets {
             if tag_debug {
                 eprintln!("TAG {} view {} drawn target {} symbol {} family {} at {:.1},{:.1} mm labels {:?}", tg.id, vp.view, tg.target, tg.symbol, sy.family, h[0] * 304.8, h[1] * 304.8, sy.tags.iter().map(|t| t.params.iter().map(|p| p.0).collect::<Vec<_>>()).collect::<Vec<_>>());
             }
-            if let Some((elbow, end)) = tg.leader {
-                let k = vp.scale;
-                let pt = |o: [f64; 2]| [m(h[0] + o[0] * k), m(h[1] + o[1] * k)];
-                let mut pts = vec![pt([0.0; 2])];
-                if elbow[0].hypot(elbow[1]) > 1e-9 {
-                    pts.push(pt(elbow));
-                }
-                // an end left at the head: attached to the tagged curve, at its point nearest
-                // the elbow
-                let attached = (end[0].hypot(end[1]) < 1e-9).then(|| self.mep_lines.get(&tg.target)).flatten();
-                match attached {
-                    Some((a, b)) => {
-                        let (pa, pb) = (mp.apply(*a), mp.apply(*b));
-                        let e = [h[0] + elbow[0] * k, h[1] + elbow[1] * k];
-                        let (dx, dy) = (pb[0] - pa[0], pb[1] - pa[1]);
-                        let l2 = dx * dx + dy * dy;
-                        let t = if l2 > 1e-18 { (((e[0] - pa[0]) * dx + (e[1] - pa[1]) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
-                        pts.push([m(pa[0] + dx * t), m(pa[1] + dy * t)]);
-                    }
-                    None => pts.push(pt(end)),
-                }
-                if pts.len() >= 2 {
-                    out.strokes.push(Stroke2d { pts, width: m(self.ann.pen(1)), color: [0; 3] });
-                }
-            }
+            let texts0 = out.texts.len();
             self.put_symbol(out, sy, &tf, None);
             for t in &sy.texts {
                 push_text(out, t, Some(&tf), 1.0, t.text.clone(), self.look(t));
@@ -5160,6 +5136,36 @@ impl Sheets {
                     (!v.is_empty()).then(|| (i, format!("{pre}{v}{suf}")))
                 }).collect();
                 push_text(out, t, Some(&tf), 1.0, t.join(&vals), self.look(t));
+            }
+            if let Some((elbow, end)) = tg.leader {
+                let k = vp.scale;
+                let pt = |o: [f64; 2]| [m(h[0] + o[0] * k), m(h[1] + o[1] * k)];
+                // (from its texts' side facing its elbow, level with its head, as Revit attaches
+                // it: past "DN22" on P-213, not through it)
+                let first = pt(elbow.map(|_| 0.0));
+                let toward = if elbow[0].hypot(elbow[1]) > 1e-9 { pt(elbow) } else { pt(end) };
+                let attach = texts_box(&out.texts[texts0..]).filter(|b| toward[0] < b[0] || toward[0] > b[2]).map_or(first, |b| [if toward[0] < b[0] { b[0] } else { b[2] }, first[1]]);
+                let mut pts = vec![attach];
+                if elbow[0].hypot(elbow[1]) > 1e-9 {
+                    pts.push(pt(elbow));
+                }
+                // an end left at the head: attached to the tagged curve, at its point nearest
+                // the elbow
+                let attached = (end[0].hypot(end[1]) < 1e-9).then(|| self.mep_lines.get(&tg.target)).flatten();
+                match attached {
+                    Some((a, b)) => {
+                        let (pa, pb) = (mp.apply(*a), mp.apply(*b));
+                        let e = [h[0] + elbow[0] * k, h[1] + elbow[1] * k];
+                        let (dx, dy) = (pb[0] - pa[0], pb[1] - pa[1]);
+                        let l2 = dx * dx + dy * dy;
+                        let t = if l2 > 1e-18 { (((e[0] - pa[0]) * dx + (e[1] - pa[1]) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+                        pts.push([m(pa[0] + dx * t), m(pa[1] + dy * t)]);
+                    }
+                    None => pts.push(pt(end)),
+                }
+                if pts.len() >= 2 {
+                    out.strokes.push(Stroke2d { pts, width: m(self.ann.pen(1)), color: [0; 3] });
+                }
             }
         }
         // view references: their symbol at their point, along their direction, labelled with
@@ -5534,6 +5540,25 @@ impl Sheets {
             }
         }
     }
+}
+
+/// The box on paper (metres: left, bottom, right, top) of horizontal texts `ts` as drawn,
+/// each line's width measured in Arial; none when one is turned or there are none.
+fn texts_box(ts: &[Text2d]) -> Option<[f32; 4]> {
+    let mut b = [f32::INFINITY, f32::INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY];
+    for t in ts.iter().filter(|t| !t.text.trim().is_empty()) {
+        if t.dir[1].abs() > 1e-3 || t.dir[0] <= 0.0 {
+            return None;
+        }
+        let fs = sw_format::font_size(t.height);
+        let mut w = t.text.split('\n').map(|l| sw_format::arial_width(l.trim_end(), fs, t.bold)).fold(0.0f32, f32::max);
+        if t.wrap > 0.0 {
+            w = w.min(t.wrap * sw_format::WRAP_SLACK);
+        }
+        let x0 = t.pos[0] - [0.0, 0.5, 1.0][t.halign.min(2) as usize] * w * sw_format::align_scale(t.height);
+        b = [b[0].min(x0), b[1].min(t.pos[1] - t.height), b[2].max(x0 + w), b[3].max(t.pos[1] + t.height)];
+    }
+    b[0].is_finite().then_some(b)
 }
 
 /// The box of a family's lines (its own and its family drawing's), in its coordinates.
