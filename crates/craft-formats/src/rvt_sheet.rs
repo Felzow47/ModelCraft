@@ -424,6 +424,8 @@ pub const SYSTEM_COLORED: [i64; 9] = [-2008000, -2008010, -2008016, -2008020, -2
 const SYSTEM_ABBREVIATION: i64 = -1150468;
 const MEP_SIZE: i64 = -1114240;
 const PIPE_DIAMETER: i64 = -1140225;
+/// A view range's top set to unlimited (feet above anything modelled).
+const UNLIMITED: f64 = 1e6;
 /// A cable tray's width (mm).
 const CABLE_TRAY_WIDTH: i64 = -1140122;
 /// The air flow of an air terminal (its connector's).
@@ -1814,7 +1816,12 @@ impl Sheets {
                 let Some(lp) = r.ptrs("m_bndyCurvesLoops").first().and_then(|&i| tr.objs.get(i)) else { return };
                 let pts: Vec<P2> = lp.ptrs("m_curves").iter().filter_map(|&i| tr.objs.get(i)).flat_map(|c| curve_points(c, s)).map(|p| [p[0], p[1]]).collect();
                 if pts.len() >= 3 {
-                    let top = elev("m_topClipPlaneElev").unwrap_or(cut).max(cut);
+                    // (an unlimited top, stored as 1e9: everything above shows, AC-255's ducts
+                    // over the roof)
+                    let top = match num(r, "m_topClipPlaneElev") {
+                        Some(t) if t >= 1e8 => UNLIMITED,
+                        t => t.filter(|v| v.abs() < 1e8).unwrap_or(cut).max(cut),
+                    };
                     self.plan_regions.push((r.int("m_ownerDBViewId").unwrap_or(-1), tr.id, (pts, lo.min(cut), lo.max(cut), top)));
                 }
             }
@@ -3777,6 +3784,7 @@ impl Sheets {
         let mut drawn: crate::det::HashSet<i64> = Default::default();
         // (the elements within its range, up to its top clip plane, drawn or not: their tags show)
         let mut in_range: crate::det::HashSet<i64> = Default::default();
+        let mut range_info: HashMap<i64, String> = HashMap::default();
         let model_cats: HashMap<i64, i64> = edges.items.iter().map(|e| (e.0, e.1)).collect();
         // drafting views and legends draw no model, only their own lines, texts and symbols
         let drafting = view.class.contains("Drafting") || view.class.contains("Legend");
@@ -3835,8 +3843,12 @@ impl Sheets {
                 (Some(k), Some(top)) if top.is_finite() => Some(to_top(k, top)),
                 (k, _) => k,
             };
-            if !self.hides(view, *id, *cat) && !range.is_some_and(|k| k.misses(ft(*lo), ft(*hi))) {
+            if !self.hides(view, *id, *cat) && (std::env::var_os("XP_RANGE").is_some() || !range.is_some_and(|k| k.misses(ft(*lo), ft(*hi)))) {
                 in_range.insert(*id);
+            }
+            if let Some(k) = range.filter(|_| std::env::var_os("TAG_DEBUG").is_some()) {
+                let (a, b) = k.box_range(ft(*lo), ft(*hi));
+                range_info.insert(*id, format!("cat {cat} box {:?}..{:?} range {:?}..{:?} hidden {}", a.map(|v| (v * 100.0).round() / 100.0), b.map(|v| (v * 100.0).round() / 100.0), k.lo.map(|v| (v * 100.0).round() / 100.0), k.hi.map(|v| (v * 100.0).round() / 100.0), self.hides(view, *id, *cat)));
             }
             if std::env::var("RANGE_DEBUG").is_ok_and(|v| v == id.to_string()) {
                 let c = ft([(lo[0] + hi[0]) * 0.5, (lo[1] + hi[1]) * 0.5, 0.0]);
@@ -5009,7 +5021,7 @@ impl Sheets {
             if model_cats.contains_key(&tg.target) && !in_range.contains(&tg.target) {
                 if tag_debug {
                     let h = mp.apply(tg.head);
-                    eprintln!("TAG {} view {} target {} not drawn, head at {:.4},{:.4} m (paper)", tg.id, vp.view, tg.target, h[0] * FEET, h[1] * FEET);
+                    eprintln!("TAG {} view {} target {} not drawn, head at {:.4},{:.4} m (paper) {}", tg.id, vp.view, tg.target, h[0] * FEET, h[1] * FEET, range_info.get(&tg.target).map_or("", |s| s.as_str()));
                 }
                 continue;
             }
@@ -5473,7 +5485,7 @@ impl Sheets {
             if std::env::var_os("CALLOUT_DEBUG").is_some() {
                 let e = out.extent;
                 let mm = |q: &P2| [((q[0] * FEET - e[0] as f64) * 1000.0 * 10.0).round() / 10.0, ((e[3] as f64 - q[1] * FEET) * 1000.0 * 10.0).round() / 10.0];
-                eprintln!("CALLOUT {} view {} leader {:?} head {:?}", mk.id, vp.view, pts.iter().map(mm).collect::<Vec<_>>(), mm(&to_paper(h)));
+                eprintln!("CALLOUT {} view {} primary {} leader {:?} head {:?} heads {:?}", mk.id, vp.view, view.primary, pts.iter().map(mm).collect::<Vec<_>>(), mm(&to_paper(h)), mk.heads.iter().map(|x| (x.0, mm(&to_paper(proj(x.1))), x.2.is_some())).collect::<Vec<_>>());
             }
             if pts.len() >= 2 {
                 let pieces = self.ann.category_line(CALLOUT_LEADER, &pts).unwrap_or_else(|| vec![(pts.clone(), self.ann.pen(4), [0; 3])]);
