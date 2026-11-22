@@ -2723,6 +2723,8 @@ impl Sheets {
         let root = *self.fam_roots.get(&sy.family)?;
         let vals: HashMap<i64, bool> = sy.ints.iter().chain(ints.into_iter().flatten()).filter_map(|(p, v)| Some((self.ann.doc_param(root, *p)?, *v != 0))).collect();
         if std::env::var("FAMDRAW_DEBUG").is_ok_and(|v| v == sy.id.to_string()) {
+            let cat = self.fam_cats.get(&sy.family).copied();
+            eprintln!("FAMDRAW {} family {} cat {cat:?} style {:?} section line {:?} pens {:?}", sy.id, sy.family, cat.and_then(|c| self.ann.category_style(c)), self.ann.category_style(-2000201), (1..=8).map(|n| (self.ann.pen(n) * 304.8 * 100.0).round() / 100.0).collect::<Vec<_>>());
             eprintln!("FAMDRAW {} root {root} type ints {:?} given {:?} -> vals {vals:?}", sy.id, sy.ints.iter().map(|(p, v)| (*p, *v, self.ann.doc_param(root, *p))).collect::<Vec<_>>(), ints.map(|m| m.iter().map(|(p, v)| (*p, *v, self.ann.doc_param(root, *p))).collect::<Vec<_>>()));
         }
         let mut key: Vec<(i64, bool)> = vals.iter().map(|(a, b)| (*a, *b)).collect();
@@ -5124,10 +5126,22 @@ impl Sheets {
                         KEYNOTE_NUMBER => self.ann.keys.get(&tg.id).map(|k| format!("{KEY_MARK}{:020}{KEY_MARK}{k}", tg.id)),
                         SYSTEM_ABBREVIATION => self.elem_systems.get(&tg.target).and_then(|sy| self.system_types.get(sy)).and_then(|ty| self.system_abbr.get(ty)).cloned(),
                         // written as the project writes duct sizes ("1 300x700", "Ø355")
-                        MEP_SIZE => self.mep_size_texts.get(&tg.target).cloned().or_else(|| self.mep_sizes.get(&tg.target).map(|&(w, h)| match h {
-                            Some(h) => format!("{}x{}", self.ann.size_mm(w), self.ann.size_mm(h)),
-                            None => format!("Ø{}", self.ann.size_mm(w)),
-                        })),
+                        // (in a section, a rectangular duct running across it level reads its
+                        // height first: AC-404's "AR - 300x550", AC-406's "AR - 450x700")
+                        MEP_SIZE => {
+                            let across = match (view.dir, self.mep_dirs.get(&tg.target), self.mep_sizes.get(&tg.target)) {
+                                (Some(v), Some(d), Some((_, Some(_)))) => v[2].abs() < 1e-6 && d[2].abs() < 0.5 && (d[0] * v[0] + d[1] * v[1]).abs() < 0.5,
+                                _ => false,
+                            };
+                            let text = self.mep_size_texts.get(&tg.target).cloned().or_else(|| self.mep_sizes.get(&tg.target).map(|&(w, h)| match h {
+                                Some(h) => format!("{}x{}", self.ann.size_mm(w), self.ann.size_mm(h)),
+                                None => format!("Ø{}", self.ann.size_mm(w)),
+                            }));
+                            match text.as_deref().and_then(|t| t.split_once('x')).filter(|_| across) {
+                                Some((w, h)) => Some(format!("{}x{}", h.trim(), w.trim())),
+                                None => text,
+                            }
+                        }
                         PIPE_DIAMETER => self.mep_diams.get(&tg.target).cloned(),
                         TERMINAL_FLOW => self.elem_flows.get(&tg.target).and_then(|v| self.ann.air_flow(*v, t.fmts.get(i).copied().flatten())),
                         CABLE_TRAY_WIDTH => self.mep_sizes.get(&tg.target).map(|&(w, _)| self.ann.size_mm(w)),
