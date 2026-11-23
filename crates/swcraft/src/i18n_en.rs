@@ -452,7 +452,7 @@ pub static EN: &[(&str, &str)] = &[
     ("Universal Scene Description", "Universal Scene Description"),
     ("USD / USDZ (lecteur tinyusdz), maillages et transformations.", "USD / USDZ (tinyusdz reader), meshes and transforms."),
     ("AutoCAD DXF", "AutoCAD DXF"),
-    ("Faces 3D et maillages uniquement (pas les dessins 2D ni les solides ACIS).", "3D faces and meshes only (no 2D drawings or ACIS solids)."),
+    ("Dessins 2D (lignes, polylignes, arcs, textes, blocs, cotes, remplissages) et faces 3D ; pas les solides ACIS ni les hachures à motif.", "2D drawings (lines, polylines, arcs, texts, blocks, dimensions, fills) and 3D faces; no ACIS solids or pattern hatches."),
     ("Blender", "Blender"),
     ("Anciens .blend (2.7x) seulement, via assimp. Blender 2.8 et plus : Fichier › Exporter › Wavefront (.obj, avec .mtl), glTF 2.0 ou FBX.", "Old .blend files (2.7x) only, through assimp. Blender 2.8 and later: File › Export › Wavefront (.obj, with .mtl), glTF 2.0 or FBX."),
     ("Autres formats 3D", "Other 3D formats"),
