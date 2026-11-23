@@ -57,6 +57,10 @@ fn assimp() {
     b.compile("assimpshim");
     println!("cargo:rustc-link-search=native={}", dir.join("lib").display());
     println!("cargo:rustc-link-lib=static=assimp");
+    // Draco-compressed glTF meshes, when assimp was built with it (scripts/build-deps.sh)
+    if dir.join("lib").join("libdraco.a").exists() {
+        println!("cargo:rustc-link-lib=static=draco");
+    }
     println!("cargo:rustc-link-lib=static=zlibstatic");
     if windows {
         for f in ["libstdc++.a", "libwinpthread.a"] {

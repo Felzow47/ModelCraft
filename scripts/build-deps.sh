@@ -53,12 +53,14 @@ if [ ! -f "$DEPS/assimp/lib/libassimp.a" ]; then
         -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$DEPS/assimp" -DBUILD_SHARED_LIBS=OFF \
         -DASSIMP_BUILD_VRML_IMPORTER=OFF -DASSIMP_BUILD_USD_IMPORTER=ON -DASSIMP_BUILD_TESTS=OFF \
         -DASSIMP_BUILD_ASSIMP_TOOLS=OFF -DASSIMP_BUILD_SAMPLES=OFF -DASSIMP_NO_EXPORT=ON \
-        -DASSIMP_BUILD_ZLIB=ON -DASSIMP_WARNINGS_AS_ERRORS=OFF -DASSIMP_INSTALL_PDB=OFF
+        -DASSIMP_BUILD_ZLIB=ON -DASSIMP_WARNINGS_AS_ERRORS=OFF -DASSIMP_INSTALL_PDB=OFF         -DASSIMP_BUILD_DRACO=ON -DASSIMP_BUILD_DRACO_STATIC=ON
     cmake --build "$DEPS/build/assimp" -j "$JOBS"
     cmake --install "$DEPS/build/assimp"
     # the static zlib is built with a "d"/no suffix depending on the generator: keep the name build.rs links
     [ -f "$DEPS/assimp/lib/libzlibstatic.a" ] || cp "$(find "$DEPS/build/assimp" -name 'libzlibstatic*.a' | head -1)" "$DEPS/assimp/lib/libzlibstatic.a"
     [ -f "$DEPS/assimp/lib/libassimp.a" ] || cp "$(find "$DEPS/assimp/lib" -name 'libassimp*.a' | head -1)" "$DEPS/assimp/lib/libassimp.a"
+    # Draco (compressed glTF meshes), built by assimp as a static library of its own
+    [ -f "$DEPS/assimp/lib/libdraco.a" ] || cp "$(find "$DEPS/build/assimp" "$DEPS/assimp" -name 'libdraco*.a' | head -1)" "$DEPS/assimp/lib/libdraco.a" || true
 fi
 
 if [ ! -f "$DEPS/web-ifc/build/libweb-ifc-library.a" ]; then
