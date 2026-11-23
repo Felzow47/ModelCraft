@@ -43,6 +43,7 @@ pub mod assimp;
 pub mod webifc;
 pub mod vrml;
 pub mod off;
+pub mod dxf;
 
 use std::path::Path;
 use std::time::Instant;
@@ -90,7 +91,7 @@ pub fn formats() -> Vec<FormatInfo> {
         FormatInfo { exts: &["wrl", "wrz", "vrml", "x3dv"], name: "VRML 97 / X3D classique", support: Support::Full, note: "Transformations, DEF/USE, couleurs, faces indexées et primitives (lecteur intégré)." },
         FormatInfo { exts: &["x3d", "x3db"], name: "X3D (XML)", support: asm, note: "Scène X3D encodée en XML." },
         FormatInfo { exts: &["usd", "usda", "usdc", "usdz"], name: "Universal Scene Description", support: asm, note: "USD / USDZ (lecteur tinyusdz), maillages et transformations." },
-        FormatInfo { exts: &["dxf"], name: "AutoCAD DXF", support: asm_partial, note: "Faces 3D et maillages uniquement (pas les dessins 2D ni les solides ACIS)." },
+        FormatInfo { exts: &["dxf"], name: "AutoCAD DXF", support: asm_partial, note: "Dessins 2D (lignes, polylignes, arcs, textes, blocs, cotes, remplissages) et faces 3D ; pas les solides ACIS ni les hachures à motif." },
         FormatInfo { exts: &["blend"], name: "Blender", support: asm_partial, note: "Anciens .blend (2.7x) seulement, via assimp. Blender 2.8 et plus : Fichier › Exporter › Wavefront (.obj, avec .mtl), glTF 2.0 ou FBX." },
         FormatInfo { exts: &["x", "lwo", "lws", "ac", "ase", "ms3d", "cob", "smd", "md2", "md3", "md5mesh", "b3d", "nff", "xgl", "zgl", "ogex", "irrmesh", "irr"], name: "Autres formats 3D", support: asm_partial, note: "DirectX .x, LightWave, AC3D, ASE, MilkShape, Quake… (via assimp)." },
         FormatInfo { exts: &["3dxml"], name: "3D XML", support: Support::Partial, note: "Représentations maillées 3DXML (pas de B-rep CATIA)." },
@@ -207,6 +208,8 @@ pub fn load_any(path: &Path, opts: &Options) -> Result<Scene, String> {
         #[cfg(feature = "assimp")]
         e if assimp::handles(e) => assimp::load(path, opts)?,
         "off" => off::load(path, &read(6.0)?)?,
+        // a drawing: its model space as a sheet (3D faces only: the mesh reader below)
+        "dxf" if dxf::has_2d(&read(4.0)?) => dxf::load(path, &read(4.0)?)?,
         "dwg" => return Err("AutoCAD DWG non supporté : il n'existe pas de lecteur libre compatible avec une diffusion intégrée (LibreDWG est sous GPL). Exportez en DXF, STEP ou IFC depuis AutoCAD.".into()),
         "skp" => return Err("SketchUp (.skp) non supporté : le SDK SketchUp est propriétaire. Exportez en COLLADA (.dae), glTF ou STL depuis SketchUp.".into()),
         "3dm" => return Err("Rhino (.3dm) pas encore pris en charge. Exportez en STEP, OBJ ou glTF depuis Rhino.".into()),
