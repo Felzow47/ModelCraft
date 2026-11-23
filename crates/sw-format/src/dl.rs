@@ -28,6 +28,9 @@ pub struct FacePatch {
     pub strips: Vec<u32>,
     /// Byte offset of the position array in the stream (diagnostics).
     pub offset: usize,
+    /// Its appearance colour (sRGB): its own appearance serialized right after it, else the
+    /// one serialized before its document's first face; none when the file gives none.
+    pub color: Option<[u8; 3]>,
 }
 
 /// A run of faces belonging to one document (part) referenced in the stream.
@@ -162,7 +165,7 @@ fn face_at(d: &[u8], i: usize) -> Option<(FacePatch, usize)> {
     if positions.iter().any(|p| !p.iter().all(|x| x.is_finite() && x.abs() < 1.0e5)) {
         return None;
     }
-    Some((FacePatch { positions, normals, strips, offset: i }, ne))
+    Some((FacePatch { positions, normals, strips, offset: i, color: None }, ne))
 }
 
 /// Decode all face tessellations in a DisplayLists stream.
@@ -213,6 +216,17 @@ pub struct Decoder {
     next_m: Option<usize>,
     next_f: Option<usize>,
     next_report: usize,
+    /// The last face found, visited once what follows it is known (its own appearance
+    /// comes right after it); and the appearance given before the document's first face.
+    held: Option<(Option<String>, FacePatch)>,
+    default_color: Option<[u8; 3]>,
+}
+
+/// An appearance (`…plastic`, `…steel`: a CString name, then 0x02 and its colour as a Windows
+/// COLORREF, red green blue 0) at `e`, the end of its name.
+fn appearance_color(d: &[u8], e: usize) -> Option<[u8; 3]> {
+    let b = d.get(e..e + 5)?;
+    (b[0] == 2 && b[4] == 0).then(|| [b[1], b[2], b[3]])
 }
 
 enum Extent {
@@ -295,7 +309,20 @@ impl Decoder {
                 match cstring_at(d, li) {
                     Some((s, e)) => {
                         if is_doc_path(&s) {
+                            // a new document: the faces before it are complete
+                            if let Some((p, f)) = self.held.take() {
+                                visit(p.as_deref(), f)?;
+                            }
+                            if self.cur_path.as_deref() != Some(s.as_str()) {
+                                self.default_color = None;
+                            }
                             self.cur_path = Some(s);
+                        } else if let Some(c) = appearance_color(d, e).filter(|_| !s.is_empty() && !s.contains(|c: char| matches!(c, '\\' | '/' | '.'))) {
+                            // after a face: its own; before its document's first face: theirs
+                            match self.held.as_mut() {
+                                Some((_, f)) => f.color = Some(c),
+                                None => self.default_color = Some(c),
+                            }
                         }
                         self.mpos = (base + e).max(at + 1);
                     }
@@ -312,13 +339,22 @@ impl Decoder {
                     Extent::Complete => match face_at(d, li) {
                         Some((mut face, next)) => {
                             face.offset = at;
-                            visit(self.cur_path.as_deref(), face)?;
+                            if let Some((p, f)) = self.held.take() {
+                                visit(p.as_deref(), f)?;
+                            }
+                            face.color = self.default_color;
+                            self.held = Some((self.cur_path.clone(), face));
                             self.fpos = base + next;
                         }
                         None => self.fpos = at + 1,
                     },
                     _ => self.fpos = at + 1,
                 }
+            }
+        }
+        if last {
+            if let Some((p, f)) = self.held.take() {
+                visit(p.as_deref(), f)?;
             }
         }
         Ok(self.mpos.min(self.fpos).saturating_sub(LOOKBACK))

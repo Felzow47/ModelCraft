@@ -194,6 +194,9 @@ pub struct MeshBuilder {
     with_edges: bool,
     cluster: Option<Cluster>,
     edge_count: HashMap<(u32, u32), (u32, u32, u32)>,
+    /// The faces' appearance colours (index 0: none given), and each vertex's.
+    palette: Vec<Option<[u8; 3]>>,
+    vcolor: Vec<u32>,
 }
 
 impl MeshBuilder {
@@ -214,7 +217,7 @@ impl MeshBuilder {
         }
         reserve(&mut m.face_start, expect_faces, "faces")?;
         let with_edges = with_edges && cluster.is_none() && expect_vertices <= EDGE_VERTEX_LIMIT;
-        Ok(MeshBuilder { m, with_edges, cluster, edge_count: HashMap::new() })
+        Ok(MeshBuilder { m, with_edges, cluster, edge_count: HashMap::new(), palette: vec![None], vcolor: Vec::new() })
     }
 
     pub fn vertex_count(&self) -> usize {
@@ -248,6 +251,13 @@ impl MeshBuilder {
                 [0.0, 0.0, 0.0]
             }
         };
+        let pal = match self.palette.iter().position(|c| *c == f.color) {
+            Some(k) => k as u32,
+            None => {
+                self.palette.push(f.color);
+                (self.palette.len() - 1) as u32
+            }
+        };
         let tri_start = self.m.indices.len();
         self.m.face_start.push((tri_start / 3) as u32);
         self.m.face_count += 1;
@@ -267,6 +277,7 @@ impl MeshBuilder {
                         Self::grow(&mut cl.count, 1, "sommets")?;
                         self.m.positions.push([0.0; 3]);
                         self.m.normals.push([0.0; 3]);
+                        self.vcolor.push(pal);
                         cl.count.push(0);
                         cl.map.insert(key, v);
                         v
@@ -301,6 +312,7 @@ impl MeshBuilder {
         Self::grow(&mut self.m.positions, n, "sommets")?;
         Self::grow(&mut self.m.normals, n, "normales")?;
         self.m.positions.extend_from_slice(&f.positions);
+        self.vcolor.extend(std::iter::repeat_n(pal, n));
         for i in 0..n {
             self.m.normals.push(face_normal(i));
         }
@@ -362,8 +374,33 @@ impl MeshBuilder {
             self.m.bbox_min = [0.0; 3];
             self.m.bbox_max = [0.0; 3];
         }
+        // the faces' colours: a palette texture, one texel a colour, each vertex at its own
+        // (faces with none in the default light grey)
+        if self.palette.iter().any(|c| c.is_some()) && self.vcolor.len() == self.m.positions.len() {
+            let w = self.palette.len() as u32;
+            let pixels = self
+                .palette
+                .iter()
+                .flat_map(|c| {
+                    let c = c.unwrap_or(DEFAULT_FACE);
+                    [c[0], c[1], c[2], 255]
+                })
+                .collect();
+            self.m.texture = Some(std::sync::Arc::new(crate::preview::Rgba { width: w, height: 1, pixels }));
+            self.m.uvs = self.vcolor.iter().map(|&k| [(k as f32 + 0.5) / w as f32, 0.5]).collect();
+        }
         self.m
     }
+}
+
+/// Colour of a face the file gives no appearance for, beside coloured ones (SolidWorks'
+/// default grey).
+const DEFAULT_FACE: [u8; 3] = [200, 200, 200];
+
+/// The colour a mesh is drawn in: white under its palette texture (its faces' own colours),
+/// else the viewer's.
+pub fn palette_tint(m: &TriMesh) -> Option<[f32; 4]> {
+    m.texture.is_some().then_some([1.0; 4])
 }
 
 /// Grid cell size giving roughly `target` vertices when clustering a surface of `area`

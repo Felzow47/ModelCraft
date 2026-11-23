@@ -1201,7 +1201,8 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
         DocKind::Model => {}
         DocKind::Part => {
             if let Some((_, m)) = blocks.into_iter().next() {
-                meshes.push(SceneMesh { name: file_stem.clone(), mesh: m, source: MeshSource::Embedded, color: None });
+                let color = mesh::palette_tint(&m);
+                meshes.push(SceneMesh { name: file_stem.clone(), mesh: m, source: MeshSource::Embedded, color });
             }
             components.push(SceneComponent {
                 name: file_stem.clone(),
@@ -1222,7 +1223,8 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
             let mut unkeyed: Vec<usize> = Vec::new();
             for (bpath, m) in blocks {
                 let name = bpath.as_deref().map(stem_of).unwrap_or_else(|| file_stem.clone());
-                meshes.push(SceneMesh { name, mesh: m, source: MeshSource::Embedded, color: None });
+                let color = mesh::palette_tint(&m);
+                meshes.push(SceneMesh { name, mesh: m, source: MeshSource::Embedded, color });
                 match bpath.as_deref().map(dl::file_key) {
                     Some(k) => {
                         by_key.insert(k, meshes.len() - 1);
@@ -1261,11 +1263,12 @@ pub fn load_scene(path: &Path, opts: &LoadOptions) -> Result<Scene> {
                                     return None;
                                 }
                                 let m = mesh::try_build(&faces, opts.edges, ctl).ok()?;
+                                let color = mesh::palette_tint(&m);
                                 meshes.push(SceneMesh {
                                     name: stem_of(&comp.path),
                                     mesh: m,
                                     source: MeshSource::External(p),
-                                    color: None,
+                                    color,
                                 });
                                 used.push(true);
                                 Some(meshes.len() - 1)
